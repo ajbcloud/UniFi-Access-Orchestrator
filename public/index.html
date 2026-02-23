@@ -380,6 +380,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <div class="tab active" data-page="dashboard">Dashboard</div>
   <div class="tab" data-page="events">Live Events</div>
   <div class="tab" data-page="config">Configuration</div>
+  <div class="tab" data-page="settings">Settings</div>
   <div class="tab" data-page="tools">Test Tools</div>
 </div>
 
@@ -595,6 +596,59 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     </div>
   </div>
 
+    <!-- SETTINGS -->
+    <div id="settings" class="page">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div style="font-size:15px;font-weight:600">Settings</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sm btn-secondary" onclick="loadSettings()">Refresh</button>
+          <button class="btn btn-sm btn-primary" id="saveSettingsBtn" onclick="saveSettings()">Save</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Server</div>
+        <div class="form-group">
+          <label class="form-label">App Port</label>
+          <input type="number" id="settingServerPort" placeholder="3000">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Host</label>
+          <input type="text" id="settingServerHost" placeholder="0.0.0.0">
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-title">UniFi Controller</div>
+        <div class="form-group">
+          <label class="form-label">Controller Host / IP</label>
+          <input type="text" id="settingUnifiHost" placeholder="192.168.1.1">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Controller Port</label>
+          <input type="number" id="settingUnifiPort" placeholder="12445">
+        </div>
+        <div class="form-group">
+          <label class="form-label">API Token (masked)</label>
+          <input type="text" id="settingUnifiToken" placeholder="********" autocomplete="new-password">
+          <div style="font-size:12px;color:var(--text-muted);margin-top:8px">For security, the token is masked. Re-enter to change.</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-title">Logging</div>
+        <div class="form-group">
+          <label class="form-label">Log Level</label>
+          <select id="settingLogLevel">
+            <option value="error">error</option>
+            <option value="warn">warn</option>
+            <option value="info">info</option>
+            <option value="debug">debug</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
   <!-- TEST TOOLS -->
   <div id="tools" class="page">
     <div style="font-size:15px;font-weight:600;margin-bottom:16px">Test Tools</div>
@@ -699,6 +753,10 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById(tab.dataset.page).classList.add('active');
+    // Load settings when user opens the Settings tab
+    if (tab.dataset.page === 'settings') {
+      loadSettings();
+    }
   });
 });
 
@@ -873,6 +931,47 @@ async function loadConfig() {
     populateSimForm();
   } catch (e) {
     toast('Failed to load config', 'error');
+  }
+}
+
+// ============================================================
+// Settings page
+// ============================================================
+async function loadSettings() {
+  try {
+    const cfg = await api('GET', '/api/config');
+    document.getElementById('settingServerPort').value = cfg.server?.port || 3000;
+    document.getElementById('settingServerHost').value = cfg.server?.host || '0.0.0.0';
+    document.getElementById('settingUnifiHost').value = cfg.unifi?.host || '';
+    document.getElementById('settingUnifiPort').value = cfg.unifi?.port || 12445;
+    // Do not pre-fill token for security; show placeholder
+    document.getElementById('settingUnifiToken').value = '';
+    document.getElementById('settingLogLevel').value = cfg.logging?.level || 'info';
+  } catch (e) {
+    toast('Failed to load settings', 'error');
+  }
+}
+
+async function saveSettings() {
+  const btn = document.getElementById('saveSettingsBtn');
+  btn.disabled = true;
+  try {
+    const server = { port: parseInt(document.getElementById('settingServerPort').value) || 3000, host: document.getElementById('settingServerHost').value || '0.0.0.0' };
+    const unifi = { host: document.getElementById('settingUnifiHost').value || '', port: parseInt(document.getElementById('settingUnifiPort').value) || 12445 };
+    const tokenVal = document.getElementById('settingUnifiToken').value.trim();
+    if (tokenVal !== '') unifi.token = tokenVal; // only send token when user provided one
+    const logging = { level: document.getElementById('settingLogLevel').value || 'info' };
+
+    await api('PUT', '/api/config', { server, unifi, logging });
+    toast('Settings saved. Reloading service...', 'success');
+    await api('POST', '/reload');
+    // Refresh local state
+    await loadConfig();
+    await loadSettings();
+  } catch (e) {
+    toast('Failed to save settings: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
   }
 }
 
