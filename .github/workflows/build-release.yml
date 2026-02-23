@@ -83,8 +83,22 @@ jobs:
         run: npm ci
 
       - name: Generate macOS app icon (1024x1024)
-        run: sips -z 1024 1024 assets/icon_256.png --out assets/icon-mac.png
+  run: sips -z 1024 1024 assets/icon_256.png --out assets/icon.png
 
+- name: Verify macOS icon dimensions
+  run: |
+    python - <<'PYICON'
+    import struct
+    from pathlib import Path
+    icon = Path('assets/icon.png')
+    data = icon.read_bytes()
+    if data[:8] != b'\x89PNG\r\n\x1a\n':
+      raise SystemExit('assets/icon.png is not a PNG file')
+    width, height = struct.unpack('>II', data[16:24])
+    print(f'assets/icon.png => {width}x{height}')
+    if width < 512 or height < 512:
+      raise SystemExit('Icon must be at least 512x512 for macOS packaging')
+    PYICON
       - name: Build macOS package
         run: npm run build:mac
         env:
