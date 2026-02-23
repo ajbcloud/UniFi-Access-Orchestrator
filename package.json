@@ -1,0 +1,81 @@
+{
+  "name": "unifi-access-orchestrator",
+  "version": "2.0.0",
+  "description": "Multi-door unlock automation for UniFi Access with built-in admin dashboard.",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:headless": "node src/index.js",
+    "dev": "NODE_ENV=development electron .",
+    "validate": "node src/validate.js",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux",
+    "build:mac": "electron-builder --mac",
+    "build:pi": "electron-builder --linux deb --armv7l",
+    "build:all": "electron-builder --win --linux --mac"
+  },
+  "build": {
+    "appId": "com.qitsolutions.unifi-access-orchestrator",
+    "productName": "UniFi Access Orchestrator",
+    "copyright": "Copyright (c) 2026 QIT Solutions",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "src/**/*",
+      "public/**/*",
+      "config/config.example.json",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "config/config.example.json",
+        "to": "config/config.example.json"
+      }
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": true,
+      "uninstallDisplayName": "UniFi Access Orchestrator"
+    },
+    "linux": {
+      "target": ["deb", "AppImage"],
+      "icon": "assets/icon.png",
+      "category": "Utility"
+    },
+    "mac": {
+      "target": ["dmg"],
+      "icon": "assets/icon.png",
+      "category": "public.app-category.utilities"
+    }
+  },
+  "keywords": [
+    "unifi", "unifi-access", "ubiquiti", "access-control",
+    "door-unlock", "orchestrator", "electron", "raspberry-pi"
+  ],
+  "author": "Atticus Brind",
+  "license": "SEE LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ajbcloud/UniFi-Access-Orchestrator.git"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "winston": "^3.11.0",
+    "winston-daily-rotate-file": "^4.7.1",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.0"
+  }
+}

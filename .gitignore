@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Config with secrets (use config.example.json as template)
+config/config.json
+
+# Build output
+dist/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Replit
+.replit
+replit.nix
+.cache/
