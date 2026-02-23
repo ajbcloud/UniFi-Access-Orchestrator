@@ -340,7 +340,7 @@ app.get('/api/config', (req, res) => {
 // PUT /api/config - Save config changes
 // ---------------------------------------------------------------------------
 
-app.put('/api/config', (req, res) => {
+app.put('/api/config', async (req, res) => {
   const updates = req.body;
   if (!updates || typeof updates !== 'object') {
     return res.status(400).json({ error: 'Invalid config data' });
@@ -360,7 +360,41 @@ app.put('/api/config', (req, res) => {
 
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(current, null, 2));
     logger.info('Config saved to disk');
-    res.json({ status: 'saved', note: 'Call POST /reload to apply changes' });
+
+    // Auto-reload the service to apply changes immediately
+    try {
+      const newConfig = loadConfig();
+      unifiClient.shutdown();
+      unifiClient = new UniFiClient(newConfig);
+      resolver = new Resolver(newConfig, unifiClient);
+      rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
+
+      // Re-patch the event handler for SSE broadcasting
+      const newOrigHandler = rulesEngine.handleEvent.bind(rulesEngine);
+      rulesEngine.handleEvent = async function(rawPayload) {
+        const before = { ...this.getStats() };
+        await newOrigHandler(rawPayload);
+        const after = this.getStats();
+        broadcastEvent({
+          type: after.last_event?.type || 'unknown',
+          actor: after.last_event?.actor || 'unknown',
+          location: after.last_event?.location || 'unknown',
+          action: after.unlocks_triggered > before.unlocks_triggered
+            ? `Unlocked: ${after.last_unlock?.door}` : 'Processed',
+          success: after.unlocks_failed <= before.unlocks_failed
+        });
+      };
+
+      await unifiClient.initialize();
+      config = newConfig;
+      broadcastEvent({ type: 'system.config_reload', actor: 'API', location: '-', action: 'Config reloaded', success: true });
+      logger.info('Config reloaded automatically');
+    } catch (reloadErr) {
+      logger.warn(`Auto-reload after config save failed: ${reloadErr.message}`);
+      // Return success anyway; user can click Reload Service manually
+    }
+
+    res.json({ status: 'saved', note: 'Config applied automatically' });
   } catch (err) {
     logger.error(`Config save failed: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -627,6 +661,16 @@ app.get('/api/users', (req, res) => {
     users.push({ id: userId, name: unifiClient.getUserName(userId) || 'unknown', group });
   }
   res.json({ count: users.length, users });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/groups/discovered
+// ---------------------------------------------------------------------------
+
+app.get('/api/groups/discovered', (req, res) => {
+  const groups = unifiClient.getDiscoveredGroups();
+  const users = unifiClient.getDiscoveredUsers();
+  res.json({ groups, users });
 });
 
 // ---------------------------------------------------------------------------

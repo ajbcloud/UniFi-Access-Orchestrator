@@ -998,68 +998,291 @@ function renderConfig() {
     document.getElementById('configDoors').innerHTML = '<div style="color:var(--text-muted)">No doors configured. Connect to your controller and click Rediscover Doors.</div>';
   }
 
-  // Users
+  // Users & Group Mappings
   const users = usersData?.users || [];
+  if (users.length === 0) {
+    document.getElementById('configUsers').innerHTML = '<div style="color:var(--text-muted)">No users synced yet. Connect to your controller, then click Force User Sync in Test Tools to import users and their groups.</div>';
+    document.getElementById('configNfcRules').innerHTML = '<div style="color:var(--text-muted)">Sync users and save group mappings first.</div>';
+    document.getElementById('configDoorbellRules').innerHTML = '<div style="color:var(--text-muted)">Sync users and save group mappings first.</div>';
+    return;
+  }
+
+  // Show users grouped by their logical group
   const groups = {};
   users.forEach(u => {
     if (!groups[u.group]) groups[u.group] = [];
     groups[u.group].push(u.name);
   });
-  let usersHtml = '';
-  for (const [group, members] of Object.entries(groups)) {
-    usersHtml += `<div style="margin-bottom:12px"><div style="font-weight:600;color:var(--accent);margin-bottom:4px">${group}</div><div style="font-size:13px;color:var(--text-secondary)">${members.join(', ')}</div></div>`;
+  let usersHtml = '<div style="margin-bottom:16px">';
+  for (const [group, members] of Object.entries(groups).sort()) {
+    usersHtml += `<div style="margin-bottom:12px"><div style="font-weight:600;color:var(--accent);margin-bottom:4px">${group} (${members.length})</div><div style="font-size:13px;color:var(--text-secondary)">${members.join(', ')}</div></div>`;
   }
-  if (!usersHtml) usersHtml = '<div style="color:var(--text-muted)">No users synced. Connect to your controller, then click Force User Sync in Test Tools.</div>';
+  usersHtml += '</div>';
   document.getElementById('configUsers').innerHTML = usersHtml;
 
-  // NFC Rules
-  const nfcRules = configData?.unlock_rules?.group_actions || {};
-  const nfcEntries = Object.entries(nfcRules).filter(([k]) => !k.startsWith('_'));
-  const triggerLoc = configData?.unlock_rules?.trigger_location || '';
+  // Get all doors for checkboxes
+  const allDoors = Object.keys({ ...discovered, ...configured }).filter(d => !d.startsWith('_'));
+  const currentResolver = configData?.resolver?.unifi_group_to_group || {};
+  const discoveredGroupNames = new Set();
+  
+  users.forEach(u => {
+    if (u.unifiGroupName) discoveredGroupNames.add(u.unifiGroupName);
+  });
 
-  if (nfcEntries.length > 0) {
-    let nfcHtml = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Trigger location: <strong>${triggerLoc || 'Not set'}</strong></div>`;
-    for (const [group, action] of nfcEntries) {
-      const doors = action.unlock || [];
-      nfcHtml += `<div class="rule-row"><span class="rule-group">${group}</span><span class="rule-arrow">&rarr;</span><span class="rule-doors">${doors.length > 0 ? doors.join(', ') : '<span style="color:var(--text-muted)">No additional unlocks</span>'}</span></div>`;
-    }
-    document.getElementById('configNfcRules').innerHTML = nfcHtml;
-  } else {
-    document.getElementById('configNfcRules').innerHTML = '<div style="color:var(--text-muted)">No NFC tap rules configured. Edit config.json to define which doors unlock for each group.</div>';
-  }
-
-  // Doorbell Rules
-  const dbRules = configData?.doorbell_rules || {};
-  const dbActions = Object.entries(dbRules.group_actions || {}).filter(([k]) => !k.startsWith('_'));
-  const dbViewers = Object.entries(dbRules.viewer_to_group || {}).filter(([k]) => !k.startsWith('_'));
-  const dbTriggerLoc = dbRules.trigger_location || '';
-
-  if (dbActions.length > 0 || dbViewers.length > 0) {
-    let dbHtml = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Trigger: reason_code ${dbRules.trigger_reason_code || 107} (admin unlocked) at ${dbTriggerLoc || 'Not set'}</div>`;
-    if (dbActions.length > 0) {
-      dbHtml += '<div style="font-weight:600;font-size:12px;color:var(--text-muted);margin-bottom:8px">BY ANSWERING STAFF GROUP:</div>';
-      for (const [group, action] of dbActions) {
-        dbHtml += `<div class="rule-row"><span class="rule-group">${group}</span><span class="rule-arrow">&rarr;</span><span class="rule-doors">${(action.unlock || []).join(', ') || 'None'}</span></div>`;
-      }
-    }
-    if (dbViewers.length > 0) {
-      dbHtml += '<div style="font-weight:600;font-size:12px;color:var(--text-muted);margin:16px 0 8px">DEVICE FALLBACK (if actor is null):</div>';
-      for (const [viewer, group] of dbViewers) {
-        dbHtml += `<div class="rule-row"><span class="rule-group">${viewer}</span><span class="rule-arrow">&rarr;</span><span class="rule-doors">${group}</span></div>`;
-      }
-    }
-    document.getElementById('configDoorbellRules').innerHTML = dbHtml;
-  } else {
-    document.getElementById('configDoorbellRules').innerHTML = '<div style="color:var(--text-muted)">No doorbell rules configured. Edit config.json to define visitor unlock rules.</div>';
-  }
-
-  // Event Source
-  const es = configData?.event_source || {};
-  document.getElementById('configEventSource').innerHTML = `
-    <div style="font-size:13px"><strong>Mode:</strong> ${es.mode || 'alarm_manager'}</div>
-    ${es.mode === 'api_webhook' ? `<div style="font-size:13px;margin-top:8px"><strong>Endpoint:</strong> ${es.api_webhook?.endpoint_url || '-'}</div>` : ''}
-    ${es.mode === 'websocket' ? `<div style="font-size:13px;margin-top:8px"><strong>Reconnect interval:</strong> ${es.websocket?.reconnect_interval_seconds || 5}s</div>` : ''}
+  // Group Mappings Form (after rendering users)
+  let groupMappingsHtml = `
+    <div style="margin-bottom:20px">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Map UniFi group names to logical names (used in your rules). Leave blank to use the UniFi name.</div>
+      <div style="overflow-x:auto">
+        <table class="event-table" style="min-width:500px">
+          <thead>
+            <tr>
+              <th style="width:50%">UniFi Group Name</th>
+              <th style="width:50%">Logical Name (for rules)</th>
+            </tr>
+          </thead>
+          <tbody>
   `;
+
+  for (const groupName of Array.from(discoveredGroupNames).sort()) {
+    const logicalName = currentResolver[groupName] || groupName;
+    groupMappingsHtml += `
+      <tr>
+        <td style="color:var(--text-primary);font-weight:600">${groupName}</td>
+        <td>
+          <input type="text" id="mapping-${groupName}" value="${logicalName}" placeholder="${groupName}" style="font-size:12px;padding:6px 8px">
+        </td>
+      </tr>
+    `;
+  }
+
+  groupMappingsHtml += `
+          </tbody>
+        </table>
+      </div>
+      <button class="btn btn-primary" onclick="saveGroupMappings()" style="margin-top:12px">Save Group Mappings</button>
+    </div>
+  `;
+  
+  // Append group mappings to users section
+  document.getElementById('configUsers').innerHTML += groupMappingsHtml;
+
+  // NFC Rules Form
+  let nfcHtml = `
+    <div style="margin-bottom:16px">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Select which doors unlock when staff from each group badge in:</div>
+      <div style="margin-bottom:12px">
+        <label class="form-label">Trigger Door (where badge scan happens)</label>
+        <select id="nfcTriggerDoor" style="font-size:12px;padding:6px">
+          <option value="">-- Select door --</option>
+          ${allDoors.filter(d => !d.startsWith('_')).map(d => `<option value="${d}" ${(configData?.unlock_rules?.trigger_location === d) ? 'selected' : ''}>${d}</option>`).join('')}
+        </select>
+      </div>
+      <table class="event-table" style="min-width:600px">
+        <thead>
+          <tr>
+            <th style="width:25%">Group</th>
+            <th style="flex:1">Unlock These Doors</th>
+          </tr>
+        </thead>
+        <tbody id="nfcRulesBody">
+  `;
+
+  for (const groupName of Array.from(discoveredGroupNames).sort()) {
+    const currentUnlocks = configData?.unlock_rules?.group_actions?.[groupName]?.unlock || [];
+    nfcHtml += `<tr><td style="color:var(--accent);font-weight:600;padding:12px">${groupName}</td><td style="padding:12px"><div style="display:flex;flex-wrap:wrap;gap:8px" id="nfc-doors-${groupName}">`;
+    
+    for (const door of allDoors.filter(d => !d.startsWith('_'))) {
+      const checked = currentUnlocks.includes(door);
+      nfcHtml += `<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="nfc-door-check" data-group="${groupName}" data-door="${door}" ${checked ? 'checked' : ''}><span style="font-size:12px">${door}</span></label>`;
+    }
+    nfcHtml += `</div></td></tr>`;
+  }
+
+  nfcHtml += `
+        </tbody>
+      </table>
+      <button class="btn btn-primary" onclick="saveNfcRules()" style="margin-top:12px">Save NFC Rules</button>
+    </div>
+  `;
+  document.getElementById('configNfcRules').innerHTML = nfcHtml;
+
+  // Doorbell Rules Form
+  let dbHtml = `
+    <div style="margin-bottom:16px">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">When a doorbell call is answered (admin unlock), unlock doors for that staff member's group:</div>
+      <div style="margin-bottom:12px">
+        <label class="form-label">Trigger Door (doorbell location)</label>
+        <select id="dbTriggerDoor" style="font-size:12px;padding:6px">
+          <option value="">-- Select door --</option>
+          ${allDoors.filter(d => !d.startsWith('_')).map(d => `<option value="${d}" ${(configData?.doorbell_rules?.trigger_location === d) ? 'selected' : ''}>${d}</option>`).join('')}
+        </select>
+      </div>
+      <table class="event-table" style="min-width:600px">
+        <thead>
+          <tr>
+            <th style="width:25%">Staff Group</th>
+            <th style="flex:1">Unlock These Doors</th>
+          </tr>
+        </thead>
+        <tbody id="dbRulesBody">
+  `;
+
+  for (const groupName of Array.from(discoveredGroupNames).sort()) {
+    const currentUnlocks = configData?.doorbell_rules?.group_actions?.[groupName]?.unlock || [];
+    dbHtml += `<tr><td style="color:var(--accent);font-weight:600;padding:12px">${groupName}</td><td style="padding:12px"><div style="display:flex;flex-wrap:wrap;gap:8px" id="db-doors-${groupName}">`;
+    
+    for (const door of allDoors.filter(d => !d.startsWith('_'))) {
+      const checked = currentUnlocks.includes(door);
+      dbHtml += `<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="db-door-check" data-group="${groupName}" data-door="${door}" ${checked ? 'checked' : ''}><span style="font-size:12px">${door}</span></label>`;
+    }
+    dbHtml += `</div></td></tr>`;
+  }
+
+  dbHtml += `
+        </tbody>
+      </table>
+      <button class="btn btn-primary" onclick="saveDoorbellRules()" style="margin-top:12px">Save Doorbell Rules</button>
+    </div>
+  `;
+  document.getElementById('configDoorbellRules').innerHTML = dbHtml;
+
+  // Event Source Config
+  const es = configData?.event_source || {};
+  const eventSourceHtml = `
+    <div style="margin-bottom:12px">
+      <label class="form-label">Event Source Mode</label>
+      <select id="eventSourceMode" style="font-size:12px;padding:6px" onchange="toggleEventSourceFields()">
+        <option value="alarm_manager" ${es.mode === 'alarm_manager' ? 'selected' : ''}>Alarm Manager (internal event capture)</option>
+        <option value="api_webhook" ${es.mode === 'api_webhook' ? 'selected' : ''}>API Webhook (external POST to /webhook)</option>
+        <option value="websocket" ${es.mode === 'websocket' ? 'selected' : ''}>WebSocket (real-time notifications)</option>
+      </select>
+    </div>
+    <div id="webhookFields" style="display:${es.mode === 'api_webhook' ? 'block' : 'none'};margin-bottom:12px">
+      <div style="padding:12px;background:var(--bg-input);border-radius:var(--radius);border:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--text-secondary)">
+        Send POST requests with JSON body to: <strong style="color:var(--text-primary)">http://your-server:3000/webhook</strong>
+        <div style="margin-top:8px">Optional: Add header X-Orchestrator-Signature: sha256=&lt;HMAC&gt; for authentication</div>
+      </div>
+    </div>
+    <div id="websocketFields" style="display:${es.mode === 'websocket' ? 'block' : 'none'};margin-bottom:12px">
+      <label class="form-label">Reconnect Interval (seconds)</label>
+      <input type="number" id="wsReconnectInterval" value="${es.websocket?.reconnect_interval_seconds || 5}" min="1" max="60" style="font-size:12px;padding:6px" placeholder="5">
+    </div>
+    <button class="btn btn-primary" onclick="saveEventSource()" style="margin-top:12px">Save Event Source</button>
+  `;
+  document.getElementById('configEventSource').innerHTML = eventSourceHtml;
+}
+
+function toggleEventSourceFields() {
+  const mode = document.getElementById('eventSourceMode')?.value || 'alarm_manager';
+  document.getElementById('webhookFields').style.display = mode === 'api_webhook' ? 'block' : 'none';
+  document.getElementById('websocketFields').style.display = mode === 'websocket' ? 'block' : 'none';
+}
+
+async function saveGroupMappings() {
+  try {
+    const discoveredGroups = new Set();
+    document.querySelectorAll('[id^="mapping-"]').forEach(input => {
+      const groupName = input.id.substring(8); // Remove 'mapping-' prefix
+      discoveredGroups.add(groupName);
+    });
+
+    const unifi_group_to_group = {};
+    for (const groupName of discoveredGroups) {
+      const input = document.getElementById(`mapping-${groupName}`);
+      const logicalName = input.value.trim() || groupName;
+      if (logicalName !== groupName) {
+        unifi_group_to_group[groupName] = logicalName;
+      }
+    }
+
+    const resolver = { unifi_group_to_group };
+    await api('PUT', '/api/config', { resolver });
+    toast('Group mappings saved!', 'success');
+    await loadConfig();
+  } catch (e) {
+    toast(`Failed to save: ${e.message}`, 'error');
+  }
+}
+
+async function saveNfcRules() {
+  try {
+    const triggerDoor = document.getElementById('nfcTriggerDoor')?.value || '';
+    if (!triggerDoor) {
+      toast('Please select a trigger door', 'error');
+      return;
+    }
+
+    const groupActions = {};
+    document.querySelectorAll('.nfc-door-check:checked').forEach(checkbox => {
+      const group = checkbox.dataset.group;
+      const door = checkbox.dataset.door;
+      if (!groupActions[group]) groupActions[group] = { unlock: [] };
+      groupActions[group].unlock.push(door);
+    });
+
+    // Ensure all groups are in the actions even if unchecked
+    document.querySelectorAll('[id^="nfc-doors-"]').forEach(div => {
+      const groupName = div.id.substring(10);
+      if (!groupActions[groupName]) groupActions[groupName] = { unlock: [] };
+    });
+
+    const unlock_rules = { trigger_location: triggerDoor, group_actions: groupActions };
+    await api('PUT', '/api/config', { unlock_rules });
+    toast('NFC rules saved!', 'success');
+    await loadConfig();
+  } catch (e) {
+    toast(`Failed to save: ${e.message}`, 'error');
+  }
+}
+
+async function saveDoorbellRules() {
+  try {
+    const triggerDoor = document.getElementById('dbTriggerDoor')?.value || '';
+    if (!triggerDoor) {
+      toast('Please select a trigger door', 'error');
+      return;
+    }
+
+    const groupActions = {};
+    document.querySelectorAll('.db-door-check:checked').forEach(checkbox => {
+      const group = checkbox.dataset.group;
+      const door = checkbox.dataset.door;
+      if (!groupActions[group]) groupActions[group] = { unlock: [] };
+      groupActions[group].unlock.push(door);
+    });
+
+    // Ensure all groups are in the actions even if unchecked
+    document.querySelectorAll('[id^="db-doors-"]').forEach(div => {
+      const groupName = div.id.substring(9);
+      if (!groupActions[groupName]) groupActions[groupName] = { unlock: [] };
+    });
+
+    const doorbell_rules = { trigger_location: triggerDoor, group_actions: groupActions, trigger_reason_code: 107, viewer_to_group: {} };
+    await api('PUT', '/api/config', { doorbell_rules });
+    toast('Doorbell rules saved!', 'success');
+    await loadConfig();
+  } catch (e) {
+    toast(`Failed to save: ${e.message}`, 'error');
+  }
+}
+
+async function saveEventSource() {
+  try {
+    const mode = document.getElementById('eventSourceMode')?.value || 'alarm_manager';
+    const event_source = { mode };
+
+    if (mode === 'websocket') {
+      const reconnectSeconds = parseInt(document.getElementById('wsReconnectInterval')?.value || '5');
+      event_source.websocket = { reconnect_interval_seconds: reconnectSeconds };
+    }
+
+    await api('PUT', '/api/config', { event_source });
+    toast('Event source saved!', 'success');
+    await loadConfig();
+  } catch (e) {
+    toast(`Failed to save: ${e.message}`, 'error');
+  }
 }
 
 // ============================================================

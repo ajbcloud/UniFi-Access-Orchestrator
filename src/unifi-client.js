@@ -35,6 +35,8 @@ class UniFiClient {
     this.doorsById = new Map();      // doorId -> doorName
     this.userGroupMap = new Map();   // userId -> groupName (logical)
     this.userNames = new Map();      // userId -> fullName
+    this.discoveredGroups = [];      // UniFi group names found during sync
+    this.userData = new Map();       // userId -> {name, unifiGroupName, logicalGroupName}
 
     // WebSocket
     this.ws = null;
@@ -283,18 +285,25 @@ class UniFiClient {
 
       const newUserGroupMap = new Map();
       const newUserNames = new Map();
+      const newUserData = new Map();
+      const unmappedGroups = [];
+      const discoveredGroups = [];
 
       // Step 2: For each group, fetch its members
       for (const group of groups) {
         const unifiGroupName = group.name || group.full_name;
         const logicalGroup = this.groupNameMap[unifiGroupName];
 
+        discoveredGroups.push(unifiGroupName);
+
         if (!logicalGroup) {
-          logger.debug(`Skipping unmapped group: "${unifiGroupName}" (id: ${group.id})`);
-          continue;
+          unmappedGroups.push(unifiGroupName);
         }
 
-        logger.debug(`Fetching members of "${unifiGroupName}" -> logical group "${logicalGroup}"`);
+        // Use the logical group name if mapped, otherwise use the raw UniFi group name
+        const groupLabel = logicalGroup || unifiGroupName;
+
+        logger.debug(`Fetching members of "${unifiGroupName}" -> "${groupLabel}"${logicalGroup ? '' : ' (unmapped)'}`);
 
         try {
           // Use /users/all to include subgroup members
@@ -303,11 +312,17 @@ class UniFiClient {
 
           for (const user of users) {
             if (user.status === 'ACTIVE' && user.id) {
-              newUserGroupMap.set(user.id, logicalGroup);
+              newUserGroupMap.set(user.id, groupLabel);
               const displayName = user.full_name || `${user.first_name || ''} ${user.last_name || ''}`.trim();
               if (displayName) {
                 newUserNames.set(user.id, displayName);
               }
+              // Store complete user info for config UI
+              newUserData.set(user.id, {
+                name: displayName || 'Unknown',
+                unifiGroupName: unifiGroupName,
+                logicalGroupName: groupLabel
+              });
             }
           }
 
@@ -320,8 +335,14 @@ class UniFiClient {
       // Swap caches atomically
       this.userGroupMap = newUserGroupMap;
       this.userNames = newUserNames;
+      this.userData = newUserData;
+      this.discoveredGroups = discoveredGroups;
 
-      logger.info(`User group sync complete: ${this.userGroupMap.size} users mapped across ${Object.keys(this.groupNameMap).length} groups`);
+      if (unmappedGroups.length > 0) {
+        logger.info(`Unmapped groups (add to resolver.unifi_group_to_group in config): ${unmappedGroups.join(', ')}`);
+      }
+
+      logger.info(`User group sync complete: ${this.userGroupMap.size} users mapped across ${groups.length} groups`);
     } catch (err) {
       logger.error(`User group sync failed: ${err.message}`);
       // Keep existing cache on failure
@@ -457,6 +478,23 @@ class UniFiClient {
       users_mapped: this.userGroupMap.size,
       websocket_connected: this.ws?.readyState === WebSocket.OPEN
     };
+  }
+
+  // Get all discovered group names (for config UI)
+  getDiscoveredGroups() {
+    return this.discoveredGroups;
+  }
+
+  // Get user list with both UniFi and logical group names (for config UI)
+  getDiscoveredUsers() {
+    const users = [];
+    for (const [userId, userInfo] of this.userData) {
+      users.push({
+        id: userId,
+        ...userInfo
+      });
+    }
+    return users;
   }
 
   // ---------------------------------------------------------------------------
