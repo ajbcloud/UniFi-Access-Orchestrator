@@ -581,6 +581,15 @@ The orchestrator exposes these HTTP endpoints on its configured port (default 30
 | GET | `/api/users` | All cached users with group mappings |
 | POST | `/api/sync` | Force re-sync of user groups from the UniFi API |
 
+### API Security
+
+For production deployments, configure these optional controls in `config.json`:
+
+- `server.admin_api_key`: Requires `x-api-key` header for all `/api/*`, `/test/*`, and `/reload` routes (query-string API keys are intentionally not accepted).
+- `event_source.api_webhook.secret`: Requires an `x-orchestrator-signature` header containing `sha256=<hmac>` of the raw webhook body, signed with your shared secret.
+
+If these values are blank, the routes remain unauthenticated for local/lab setups.
+
 ---
 
 ## Project Structure

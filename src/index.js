@@ -24,6 +24,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const logger = require('./logger');
 const UniFiClient = require('./unifi-client');
 const Resolver = require('./resolver');
@@ -106,7 +107,38 @@ rulesEngine.handleEvent = async function(rawPayload) {
 // ---------------------------------------------------------------------------
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({
+  limit: '1mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
+
+function timingSafeCompare(a, b) {
+  const aBuf = Buffer.from(a || '', 'utf8');
+  const bBuf = Buffer.from(b || '', 'utf8');
+
+  if (aBuf.length !== bBuf.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+function requireAdminApiKey(req, res, next) {
+  const expectedApiKey = config.server?.admin_api_key;
+  if (!expectedApiKey) {
+    return next();
+  }
+
+  const providedApiKey = req.get('x-api-key');
+  if (!timingSafeCompare(providedApiKey, expectedApiKey)) {
+    logger.warn(`Blocked unauthorized request: ${req.method} ${req.path}`);
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  next();
+}
 
 // Serve static GUI files
 app.use(express.static(path.resolve(__dirname, '../public')));
@@ -119,11 +151,25 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use('/api', requireAdminApiKey);
+app.use('/reload', requireAdminApiKey);
+app.use('/test', requireAdminApiKey);
+
 // ---------------------------------------------------------------------------
 // POST /webhook
 // ---------------------------------------------------------------------------
 
 app.post('/webhook', async (req, res) => {
+  const webhookSecret = config.event_source?.api_webhook?.secret;
+  if (webhookSecret) {
+    const signatureHeader = req.get('x-orchestrator-signature') || '';
+    const expectedSignature = `sha256=${crypto.createHmac('sha256', webhookSecret).update(req.rawBody || '').digest('hex')}`;
+    if (!timingSafeCompare(signatureHeader, expectedSignature)) {
+      logger.warn('Rejected webhook with invalid signature');
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+  }
+
   const payload = req.body;
   if (!payload || typeof payload !== 'object') {
     logger.warn('Webhook received empty or invalid payload');
