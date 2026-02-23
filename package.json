@@ -36,7 +36,9 @@
       }
     ],
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "assets/icon.png"
     },
     "nsis": {
@@ -48,21 +50,36 @@
       "uninstallDisplayName": "UniFi Access Orchestrator"
     },
     "linux": {
-      "target": ["deb", "AppImage"],
+      "target": [
+        "deb",
+        "AppImage"
+      ],
       "icon": "assets/icon.png",
-      "category": "Utility"
+      "category": "Utility",
+      "maintainer": "Atticus Brind <support@qitsolutions.dev>"
     },
     "mac": {
-      "target": ["dmg"],
-      "icon": "assets/icon.png",
+      "target": [
+        "dmg"
+      ],
+      "icon": "assets/icon-mac.png",
       "category": "public.app-category.utilities"
     }
   },
   "keywords": [
-    "unifi", "unifi-access", "ubiquiti", "access-control",
-    "door-unlock", "orchestrator", "electron", "raspberry-pi"
+    "unifi",
+    "unifi-access",
+    "ubiquiti",
+    "access-control",
+    "door-unlock",
+    "orchestrator",
+    "electron",
+    "raspberry-pi"
   ],
-  "author": "Atticus Brind",
+  "author": {
+    "name": "Atticus Brind",
+    "email": "support@qitsolutions.dev"
+  },
   "license": "SEE LICENSE",
   "repository": {
     "type": "git",

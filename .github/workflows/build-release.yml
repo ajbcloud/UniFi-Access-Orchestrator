@@ -82,6 +82,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate macOS app icon (1024x1024)
+        run: sips -z 1024 1024 assets/icon_256.png --out assets/icon-mac.png
+
       - name: Build macOS package
         run: npm run build:mac
         env:
