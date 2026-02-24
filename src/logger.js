@@ -12,7 +12,7 @@ require('winston-daily-rotate-file');
 const path = require('path');
 const fs = require('fs');
 
-const DEFAULT_LOG_DIR = process.env.LOG_DIR || '/var/log/unifi-access-orchestrator';
+const DEFAULT_LOG_DIR = process.env.LOG_DIR || path.join(process.cwd(), 'logs');
 const DEFAULT_LEVEL = 'info';
 
 // Ensure log directory exists
