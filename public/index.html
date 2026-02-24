@@ -1261,7 +1261,7 @@ function renderConfig() {
   const discoveredGroupNames = new Set();
   
   users.forEach(u => {
-    if (u.unifiGroupName) discoveredGroupNames.add(u.unifiGroupName);
+    if (u.group) discoveredGroupNames.add(u.group);
   });
 
   // Group Mappings Form (after rendering users)
@@ -1478,7 +1478,7 @@ function _getAllDoors() {
 function _getDiscoveredGroupNames() {
   const users = usersData?.users || [];
   const groups = new Set();
-  users.forEach(u => { if (u.unifiGroupName) groups.add(u.unifiGroupName); });
+  users.forEach(u => { if (u.group) groups.add(u.group); });
   return Array.from(groups).sort();
 }
 
