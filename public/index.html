@@ -1232,111 +1232,72 @@ function renderConfig() {
   // Append group mappings to users section
   document.getElementById('configUsers').innerHTML += groupMappingsHtml;
 
-  // NFC/Access Rules - Rule Builder UI
-  const nfcTrigger = configData?.unlock_rules?.trigger_location || '';
-  const nfcGroupActions = configData?.unlock_rules?.group_actions || {};
-  const nfcRulesExist = Object.keys(nfcGroupActions).some(g => nfcGroupActions[g]?.unlock?.length > 0);
+  // NFC/Access Rules - Rule Builder UI (array-based)
+  const accessRules = _getAccessRules();
 
   let nfcHtml = '';
 
-  // Trigger door selector
-  nfcHtml += `<div style="margin-bottom:16px;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text-secondary)">
-    <span>Trigger door:</span>
-    <select id="nfcTriggerDoor" style="width:auto;min-width:180px;font-size:12px;padding:6px 28px 6px 10px" onchange="saveNfcTriggerDoor()">
-      <option value="">-- Select door --</option>
-      ${allDoors.filter(d => !d.startsWith('_')).map(d => `<option value="${d}" ${nfcTrigger === d ? 'selected' : ''}>${d}</option>`).join('')}
-    </select>
-    <span style="font-size:11px;color:var(--text-muted)">(The door where staff badge in to trigger these rules)</span>
-  </div>`;
-
-  // Rule cards
-  if (!nfcRulesExist) {
+  if (accessRules.length === 0) {
     nfcHtml += `<div class="rule-empty">
       <div class="rule-empty-icon">&#x1F513;</div>
       <div>No access rules configured yet.</div>
-      <div style="margin-top:4px">Click <strong>Add Rule</strong> to define what happens when a group badges in.</div>
+      <div style="margin-top:4px">Click <strong>Add Rule</strong> to define what happens when a group badges in at a door.</div>
     </div>`;
   } else {
-    for (const [groupName, action] of Object.entries(nfcGroupActions).sort(([a],[b]) => a.localeCompare(b))) {
-      const doors = action?.unlock || [];
-      if (doors.length === 0) continue;
-      nfcHtml += `<div class="rule-card" id="nfc-rule-${groupName}">
+    accessRules.forEach((rule, idx) => {
+      nfcHtml += `<div class="rule-card">
         <div class="rule-actions">
-          <button onclick="editNfcRule('${groupName}')">Edit</button>
-          <button class="delete" onclick="deleteNfcRule('${groupName}')">Delete</button>
+          <button onclick="editNfcRule(${idx})">Edit</button>
+          <button class="delete" onclick="deleteNfcRule(${idx})">Delete</button>
         </div>
         <div class="rule-sentence">
-          When <strong>${groupName}</strong> uses NFC / PIN / Face / Mobile at <strong>${nfcTrigger || '(no trigger door)'}</strong>, unlock
-          <span class="rule-doors-list">${doors.join(', ')}</span>
+          When <strong>${rule.group}</strong> badges in at <strong>${rule.trigger || '(any door)'}</strong>, unlock
+          <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
         </div>
       </div>`;
-    }
+    });
   }
 
-  // Hidden form container for add/edit
   nfcHtml += `<div id="nfcRuleFormContainer"></div>`;
 
   document.getElementById('configNfcRules').innerHTML = nfcHtml;
 
-  // Doorbell / Visitor Rules - Rule Builder UI
-  const dbTrigger = configData?.doorbell_rules?.trigger_location || '';
-  const dbGroupActions = configData?.doorbell_rules?.group_actions || {};
+  // Doorbell / Visitor Rules - Rule Builder UI (array-based)
+  const visitorRules = _getVisitorRules();
   const viewerToGroup = configData?.doorbell_rules?.viewer_to_group || {};
-  const dbRulesExist = Object.keys(dbGroupActions).some(g => dbGroupActions[g]?.unlock?.length > 0);
 
   let dbHtml = '';
 
-  // Description
   dbHtml += `<div style="font-size:12px;color:var(--text-muted);margin-bottom:16px">
     When a visitor buzzes in and a staff member answers, unlock doors based on the answering staff member's group.
-    By default, visitors get the same doors as the staff group's access rules above.
+    Each rule specifies the doorbell location and which doors to unlock.
   </div>`;
 
-  // Trigger door selector
-  dbHtml += `<div style="margin-bottom:16px;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text-secondary)">
-    <span>Doorbell location:</span>
-    <select id="dbTriggerDoor" style="width:auto;min-width:180px;font-size:12px;padding:6px 28px 6px 10px" onchange="saveDbTriggerDoor()">
-      <option value="">-- Select door --</option>
-      ${allDoors.filter(d => !d.startsWith('_')).map(d => `<option value="${d}" ${dbTrigger === d ? 'selected' : ''}>${d}</option>`).join('')}
-    </select>
-    <span style="font-size:11px;color:var(--text-muted)">(The door with the intercom/doorbell)</span>
-  </div>`;
-
-  // Rule cards
-  const allNfcGroups = Object.keys(nfcGroupActions).filter(g => nfcGroupActions[g]?.unlock?.length > 0);
-  const allDbGroups = Object.keys(dbGroupActions).filter(g => dbGroupActions[g]?.unlock?.length > 0);
-  const allVisitorGroups = [...new Set([...allNfcGroups, ...allDbGroups])].sort();
-
-  if (allVisitorGroups.length === 0 && !dbRulesExist) {
+  if (visitorRules.length === 0) {
     dbHtml += `<div class="rule-empty">
       <div class="rule-empty-icon">&#x1F6CE;</div>
       <div>No visitor rules configured yet.</div>
-      <div style="margin-top:4px">Click <strong>Add Rule</strong> to define visitor door access, or set up Access Rules above first.</div>
+      <div style="margin-top:4px">Click <strong>Add Rule</strong> to define visitor door access, or set up Access Rules above first to auto-populate.</div>
     </div>`;
   } else {
-    for (const groupName of allVisitorGroups) {
-      const dbDoors = dbGroupActions[groupName]?.unlock || [];
-      const nfcDoors = nfcGroupActions[groupName]?.unlock || [];
-      const isLinked = dbDoors.length === 0 || (JSON.stringify([...dbDoors].sort()) === JSON.stringify([...nfcDoors].sort()));
-      const displayDoors = dbDoors.length > 0 ? dbDoors : nfcDoors;
+    visitorRules.forEach((rule, idx) => {
+      const matchingAccess = accessRules.find(r => r.group === rule.group && r.trigger === rule.trigger);
+      const isLinked = matchingAccess && JSON.stringify([...rule.unlock].sort()) === JSON.stringify([...(matchingAccess.unlock || [])].sort());
 
-      if (displayDoors.length === 0) continue;
-
-      dbHtml += `<div class="rule-card" id="db-rule-${groupName}">
+      dbHtml += `<div class="rule-card">
         <div class="rule-actions">
-          <button onclick="editDoorbellRule('${groupName}')">Edit</button>
-          <button class="delete" onclick="deleteDoorbellRule('${groupName}')">Delete</button>
+          <button onclick="editDoorbellRule(${idx})">Edit</button>
+          <button class="delete" onclick="deleteDoorbellRule(${idx})">Delete</button>
         </div>
         <div class="rule-sentence">
-          When a visitor for <strong>${groupName}</strong> is buzzed in at <strong>${dbTrigger || '(no door selected)'}</strong>, unlock
-          <span class="rule-doors-list">${displayDoors.join(', ')}</span>
-          ${isLinked && nfcDoors.length > 0 ? '<span style="font-size:11px;color:var(--text-muted);margin-left:6px">(same as access rules)</span>' : ''}
+          When a visitor for <strong>${rule.group}</strong> is buzzed in at <strong>${rule.trigger || '(any door)'}</strong>, unlock
+          <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
+          ${isLinked ? '<span style="font-size:11px;color:var(--text-muted);margin-left:6px">(same as access rule)</span>' : ''}
         </div>
       </div>`;
-    }
+    });
   }
 
-  // Hidden form container for add/edit
   dbHtml += `<div id="dbRuleFormContainer"></div>`;
 
   // Viewer device mappings section
@@ -1467,30 +1428,80 @@ function _buildDoorTags(allDoors, selectedDoors, prefix) {
   }).join('')}</div>`;
 }
 
-function showNfcRuleForm(editGroup, editDoors) {
+// Helper: get normalized access rules array from config (backward compat)
+function _getAccessRules() {
+  const ur = configData?.unlock_rules || {};
+  if (Array.isArray(ur.rules)) return ur.rules;
+  const rules = [];
+  const trigger = ur.trigger_location || '';
+  const ga = ur.group_actions || {};
+  for (const [group, action] of Object.entries(ga)) {
+    const doors = action?.unlock || [];
+    if (doors.length > 0) rules.push({ group, trigger, unlock: doors });
+  }
+  return rules;
+}
+
+// Helper: get normalized visitor rules array from config (backward compat)
+function _getVisitorRules() {
+  const dr = configData?.doorbell_rules || {};
+  if (Array.isArray(dr.rules)) return dr.rules;
+  const rules = [];
+  const trigger = dr.trigger_location || '';
+  const ga = dr.group_actions || {};
+  for (const [group, action] of Object.entries(ga)) {
+    const doors = action?.unlock || [];
+    if (doors.length > 0) rules.push({ group, trigger, unlock: doors });
+  }
+  return rules;
+}
+
+// Save access rules array to config
+async function _saveAccessRules(rules) {
+  const unlock_rules = {
+    rules,
+    default_action: configData?.unlock_rules?.default_action || { unlock: [] }
+  };
+  await api('PUT', '/api/config', { unlock_rules, doors: _getDoorsCfg() });
+}
+
+// Save visitor rules array to config
+async function _saveVisitorRules(rules) {
+  const doorbell_rules = {
+    rules,
+    trigger_reason_code: configData?.doorbell_rules?.trigger_reason_code || 107,
+    viewer_to_group: configData?.doorbell_rules?.viewer_to_group || {},
+    default_action: configData?.doorbell_rules?.default_action || { unlock: [] }
+  };
+  await api('PUT', '/api/config', { doorbell_rules, doors: _getDoorsCfg() });
+}
+
+let _editingNfcIndex = null;
+
+function showNfcRuleForm(editIndex) {
   const container = document.getElementById('nfcRuleFormContainer');
   const allDoors = _getAllDoors();
   const groups = _getDiscoveredGroupNames();
-  const existingActions = configData?.unlock_rules?.group_actions || {};
-  const availableGroups = editGroup ? groups : groups.filter(g => !(existingActions[g]?.unlock?.length > 0));
+  const isEdit = editIndex !== undefined && editIndex !== null;
+  const existingRule = isEdit ? _getAccessRules()[editIndex] : null;
 
-  if (!editGroup && availableGroups.length === 0) {
-    toast('All groups already have rules. Edit an existing rule instead.', 'info');
-    return;
-  }
+  const selectedGroup = existingRule?.group || '';
+  const selectedTrigger = existingRule?.trigger || '';
+  const selectedDoors = existingRule?.unlock || [];
 
-  const selectedDoors = editDoors || [];
-  const isEdit = !!editGroup;
+  _editingNfcIndex = isEdit ? editIndex : null;
 
   container.innerHTML = `<div class="rule-form">
     <div style="font-size:13px;font-weight:600;margin-bottom:14px">${isEdit ? 'Edit' : 'Add'} Access Rule</div>
     <div class="form-row">
       <span>When</span>
-      ${isEdit
-        ? `<strong style="color:var(--accent)">${editGroup}</strong><input type="hidden" id="nfcFormGroup" value="${editGroup}">`
-        : `<select id="nfcFormGroup">${availableGroups.map(g => `<option value="${g}">${g}</option>`).join('')}</select>`
-      }
-      <span>badges in at the trigger door, unlock:</span>
+      <select id="nfcFormGroup">${groups.map(g => `<option value="${g}" ${g === selectedGroup ? 'selected' : ''}>${g}</option>`).join('')}</select>
+      <span>badges in at</span>
+      <select id="nfcFormTrigger">
+        <option value="">-- Select trigger door --</option>
+        ${allDoors.filter(d => !d.startsWith('_')).map(d => `<option value="${d}" ${d === selectedTrigger ? 'selected' : ''}>${d}</option>`).join('')}
+      </select>
+      <span>, unlock:</span>
     </div>
     <div class="form-row" style="flex-direction:column;align-items:flex-start">
       ${_buildDoorTags(allDoors, selectedDoors, 'nfc-form')}
@@ -1502,23 +1513,19 @@ function showNfcRuleForm(editGroup, editDoors) {
   </div>`;
 }
 
-function editNfcRule(groupName) {
-  const doors = configData?.unlock_rules?.group_actions?.[groupName]?.unlock || [];
-  showNfcRuleForm(groupName, doors);
+function editNfcRule(idx) {
+  showNfcRuleForm(idx);
 }
 
-async function deleteNfcRule(groupName) {
-  if (!confirm(`Remove the access rule for "${groupName}"?`)) return;
+async function deleteNfcRule(idx) {
+  const rules = _getAccessRules();
+  const rule = rules[idx];
+  if (!rule) return;
+  if (!confirm(`Remove access rule for "${rule.group}" at "${rule.trigger}"?`)) return;
   try {
-    const currentActions = { ...(configData?.unlock_rules?.group_actions || {}) };
-    delete currentActions[groupName];
-    const unlock_rules = {
-      trigger_location: configData?.unlock_rules?.trigger_location || '',
-      group_actions: currentActions,
-      default_action: configData?.unlock_rules?.default_action || { unlock: [] }
-    };
-    await api('PUT', '/api/config', { unlock_rules, doors: _getDoorsCfg() });
-    toast(`Rule for "${groupName}" removed`, 'success');
+    rules.splice(idx, 1);
+    await _saveAccessRules(rules);
+    toast(`Access rule removed`, 'success');
     await loadConfig();
   } catch (e) {
     toast(`Failed to delete: ${e.message}`, 'error');
@@ -1527,7 +1534,9 @@ async function deleteNfcRule(groupName) {
 
 async function saveNfcRuleFromForm() {
   const group = document.getElementById('nfcFormGroup')?.value;
+  const trigger = document.getElementById('nfcFormTrigger')?.value;
   if (!group) { toast('Please select a group', 'error'); return; }
+  if (!trigger) { toast('Please select a trigger door', 'error'); return; }
 
   const selectedDoors = [];
   document.querySelectorAll('.nfc-form-door-tag:checked').forEach(cb => selectedDoors.push(cb.dataset.door));
@@ -1535,33 +1544,19 @@ async function saveNfcRuleFromForm() {
   if (selectedDoors.length === 0) { toast('Select at least one door to unlock', 'error'); return; }
 
   try {
-    const currentActions = { ...(configData?.unlock_rules?.group_actions || {}) };
-    currentActions[group] = { unlock: selectedDoors };
+    const rules = _getAccessRules();
+    const newRule = { group, trigger, unlock: selectedDoors };
 
-    const unlock_rules = {
-      trigger_location: configData?.unlock_rules?.trigger_location || '',
-      group_actions: currentActions,
-      default_action: configData?.unlock_rules?.default_action || { unlock: [] }
-    };
-    await api('PUT', '/api/config', { unlock_rules, doors: _getDoorsCfg() });
+    if (_editingNfcIndex !== null && _editingNfcIndex < rules.length) {
+      rules[_editingNfcIndex] = newRule;
+    } else {
+      rules.push(newRule);
+    }
+
+    await _saveAccessRules(rules);
+    _editingNfcIndex = null;
     toast(`Access rule for "${group}" saved!`, 'success');
     await loadConfig();
-  } catch (e) {
-    toast(`Failed to save: ${e.message}`, 'error');
-  }
-}
-
-async function saveNfcTriggerDoor() {
-  const triggerDoor = document.getElementById('nfcTriggerDoor')?.value || '';
-  try {
-    const unlock_rules = {
-      trigger_location: triggerDoor,
-      group_actions: configData?.unlock_rules?.group_actions || {},
-      default_action: configData?.unlock_rules?.default_action || { unlock: [] }
-    };
-    await api('PUT', '/api/config', { unlock_rules, doors: _getDoorsCfg() });
-    configData.unlock_rules = unlock_rules;
-    toast('Trigger door updated', 'success');
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
   }
@@ -1571,47 +1566,45 @@ async function saveNfcTriggerDoor() {
 // Doorbell/Visitor Rule Builder
 // ============================================================
 
-function showDoorbellRuleForm(editGroup, editDoors, useLinked) {
+let _editingDbIndex = null;
+
+function showDoorbellRuleForm(editIndex) {
   const container = document.getElementById('dbRuleFormContainer');
   const allDoors = _getAllDoors();
   const groups = _getDiscoveredGroupNames();
-  const existingActions = configData?.doorbell_rules?.group_actions || {};
-  const nfcActions = configData?.unlock_rules?.group_actions || {};
-  const availableGroups = editGroup ? groups : groups.filter(g => {
-    const hasDbRule = existingActions[g]?.unlock?.length > 0;
-    const hasNfcRule = nfcActions[g]?.unlock?.length > 0;
-    return !hasDbRule && !hasNfcRule;
-  });
+  const isEdit = editIndex !== undefined && editIndex !== null;
+  const existingRule = isEdit ? _getVisitorRules()[editIndex] : null;
+  const accessRules = _getAccessRules();
 
-  if (!editGroup && availableGroups.length === 0) {
-    toast('All groups already have rules. Edit an existing rule instead.', 'info');
-    return;
-  }
+  const selectedGroup = existingRule?.group || '';
+  const selectedTrigger = existingRule?.trigger || '';
+  const selectedDoors = existingRule?.unlock || [];
 
-  const isEdit = !!editGroup;
-  const selectedDoors = editDoors || [];
-  const isLinked = useLinked !== false;
-  const selectedGroup = editGroup || availableGroups[0] || '';
-  const nfcDoorsForGroup = nfcActions[selectedGroup]?.unlock || [];
+  _editingDbIndex = isEdit ? editIndex : null;
+
+  const matchingAccess = accessRules.find(r => r.group === selectedGroup && r.trigger === selectedTrigger);
+  const isLinked = !isEdit || (matchingAccess && JSON.stringify([...selectedDoors].sort()) === JSON.stringify([...(matchingAccess?.unlock || [])].sort()));
 
   container.innerHTML = `<div class="rule-form">
     <div style="font-size:13px;font-weight:600;margin-bottom:14px">${isEdit ? 'Edit' : 'Add'} Visitor Rule</div>
     <div class="form-row">
       <span>When a visitor for</span>
-      ${isEdit
-        ? `<strong style="color:var(--accent)">${editGroup}</strong><input type="hidden" id="dbFormGroup" value="${editGroup}">`
-        : `<select id="dbFormGroup" onchange="updateDbFormLinked()">${availableGroups.map(g => `<option value="${g}">${g}</option>`).join('')}</select>`
-      }
-      <span>is buzzed in, unlock:</span>
+      <select id="dbFormGroup" onchange="updateDbFormLinked()">${groups.map(g => `<option value="${g}" ${g === selectedGroup ? 'selected' : ''}>${g}</option>`).join('')}</select>
+      <span>is buzzed in at</span>
+      <select id="dbFormTrigger" onchange="updateDbFormLinked()">
+        <option value="">-- Select doorbell --</option>
+        ${allDoors.filter(d => !d.startsWith('_')).map(d => `<option value="${d}" ${d === selectedTrigger ? 'selected' : ''}>${d}</option>`).join('')}
+      </select>
+      <span>, unlock:</span>
     </div>
     <div class="form-row" style="flex-direction:column;align-items:flex-start;gap:8px">
       <label class="doorbell-link-toggle">
-        <input type="checkbox" id="dbFormLinked" ${isLinked && nfcDoorsForGroup.length > 0 ? 'checked' : ''} onchange="toggleDbFormDoors()">
-        <span>Same doors as this group's access rules</span>
-        ${nfcDoorsForGroup.length > 0 ? `<span style="font-size:11px;color:var(--text-muted)">(${nfcDoorsForGroup.join(', ')})</span>` : '<span style="font-size:11px;color:var(--yellow)">(no access rule set for this group)</span>'}
+        <input type="checkbox" id="dbFormLinked" ${isLinked && matchingAccess ? 'checked' : ''} onchange="toggleDbFormDoors()">
+        <span>Same doors as this group's access rule for this trigger</span>
+        ${matchingAccess ? `<span style="font-size:11px;color:var(--text-muted)">(${(matchingAccess.unlock || []).join(', ')})</span>` : '<span style="font-size:11px;color:var(--yellow)">(no matching access rule)</span>'}
       </label>
-      <div id="dbFormDoorsContainer" style="${isLinked && nfcDoorsForGroup.length > 0 ? 'display:none' : ''}">
-        ${_buildDoorTags(allDoors, isLinked ? nfcDoorsForGroup : selectedDoors, 'db-form')}
+      <div id="dbFormDoorsContainer" style="${isLinked && matchingAccess ? 'display:none' : ''}">
+        ${_buildDoorTags(allDoors, isLinked && matchingAccess ? matchingAccess.unlock : selectedDoors, 'db-form')}
       </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:8px">
@@ -1629,32 +1622,39 @@ function toggleDbFormDoors() {
 
 function updateDbFormLinked() {
   const group = document.getElementById('dbFormGroup')?.value;
+  const trigger = document.getElementById('dbFormTrigger')?.value;
   if (!group) return;
-  const nfcDoors = configData?.unlock_rules?.group_actions?.[group]?.unlock || [];
-  showDoorbellRuleForm(null, [], nfcDoors.length > 0);
+  const accessRules = _getAccessRules();
+  const match = accessRules.find(r => r.group === group && r.trigger === trigger);
+  const linkedCb = document.getElementById('dbFormLinked');
+  const hint = linkedCb?.parentElement;
+  if (hint) {
+    const spans = hint.querySelectorAll('span');
+    if (spans.length >= 2) {
+      if (match) {
+        spans[1].innerHTML = `(${(match.unlock || []).join(', ')})`;
+        spans[1].style.color = 'var(--text-muted)';
+      } else {
+        spans[1].innerHTML = '(no matching access rule)';
+        spans[1].style.color = 'var(--yellow)';
+      }
+    }
+  }
 }
 
-function editDoorbellRule(groupName) {
-  const dbDoors = configData?.doorbell_rules?.group_actions?.[groupName]?.unlock || [];
-  const nfcDoors = configData?.unlock_rules?.group_actions?.[groupName]?.unlock || [];
-  const isLinked = dbDoors.length === 0 || (JSON.stringify([...dbDoors].sort()) === JSON.stringify([...nfcDoors].sort()));
-  showDoorbellRuleForm(groupName, dbDoors, isLinked);
+function editDoorbellRule(idx) {
+  showDoorbellRuleForm(idx);
 }
 
-async function deleteDoorbellRule(groupName) {
-  if (!confirm(`Remove the visitor rule for "${groupName}"?`)) return;
+async function deleteDoorbellRule(idx) {
+  const rules = _getVisitorRules();
+  const rule = rules[idx];
+  if (!rule) return;
+  if (!confirm(`Remove visitor rule for "${rule.group}" at "${rule.trigger}"?`)) return;
   try {
-    const currentActions = { ...(configData?.doorbell_rules?.group_actions || {}) };
-    delete currentActions[groupName];
-    const doorbell_rules = {
-      trigger_location: configData?.doorbell_rules?.trigger_location || '',
-      trigger_reason_code: configData?.doorbell_rules?.trigger_reason_code || 107,
-      group_actions: currentActions,
-      viewer_to_group: configData?.doorbell_rules?.viewer_to_group || {},
-      default_action: configData?.doorbell_rules?.default_action || { unlock: [] }
-    };
-    await api('PUT', '/api/config', { doorbell_rules, doors: _getDoorsCfg() });
-    toast(`Visitor rule for "${groupName}" removed`, 'success');
+    rules.splice(idx, 1);
+    await _saveVisitorRules(rules);
+    toast(`Visitor rule removed`, 'success');
     await loadConfig();
   } catch (e) {
     toast(`Failed to delete: ${e.message}`, 'error');
@@ -1663,15 +1663,19 @@ async function deleteDoorbellRule(groupName) {
 
 async function saveDoorbellRuleFromForm() {
   const group = document.getElementById('dbFormGroup')?.value;
+  const trigger = document.getElementById('dbFormTrigger')?.value;
   if (!group) { toast('Please select a group', 'error'); return; }
+  if (!trigger) { toast('Please select a doorbell location', 'error'); return; }
 
   const linked = document.getElementById('dbFormLinked')?.checked;
   let selectedDoors;
 
   if (linked) {
-    selectedDoors = configData?.unlock_rules?.group_actions?.[group]?.unlock || [];
+    const accessRules = _getAccessRules();
+    const match = accessRules.find(r => r.group === group && r.trigger === trigger);
+    selectedDoors = match?.unlock || [];
     if (selectedDoors.length === 0) {
-      toast('This group has no access rules to link to. Set up access rules first or choose custom doors.', 'error');
+      toast('No matching access rule found. Set up an access rule first or choose custom doors.', 'error');
       return;
     }
   } else {
@@ -1681,37 +1685,19 @@ async function saveDoorbellRuleFromForm() {
   }
 
   try {
-    const currentActions = { ...(configData?.doorbell_rules?.group_actions || {}) };
-    currentActions[group] = { unlock: selectedDoors };
+    const rules = _getVisitorRules();
+    const newRule = { group, trigger, unlock: selectedDoors };
 
-    const doorbell_rules = {
-      trigger_location: configData?.doorbell_rules?.trigger_location || '',
-      trigger_reason_code: configData?.doorbell_rules?.trigger_reason_code || 107,
-      group_actions: currentActions,
-      viewer_to_group: configData?.doorbell_rules?.viewer_to_group || {},
-      default_action: configData?.doorbell_rules?.default_action || { unlock: [] }
-    };
-    await api('PUT', '/api/config', { doorbell_rules, doors: _getDoorsCfg() });
+    if (_editingDbIndex !== null && _editingDbIndex < rules.length) {
+      rules[_editingDbIndex] = newRule;
+    } else {
+      rules.push(newRule);
+    }
+
+    await _saveVisitorRules(rules);
+    _editingDbIndex = null;
     toast(`Visitor rule for "${group}" saved!`, 'success');
     await loadConfig();
-  } catch (e) {
-    toast(`Failed to save: ${e.message}`, 'error');
-  }
-}
-
-async function saveDbTriggerDoor() {
-  const triggerDoor = document.getElementById('dbTriggerDoor')?.value || '';
-  try {
-    const doorbell_rules = {
-      trigger_location: triggerDoor,
-      trigger_reason_code: configData?.doorbell_rules?.trigger_reason_code || 107,
-      group_actions: configData?.doorbell_rules?.group_actions || {},
-      viewer_to_group: configData?.doorbell_rules?.viewer_to_group || {},
-      default_action: configData?.doorbell_rules?.default_action || { unlock: [] }
-    };
-    await api('PUT', '/api/config', { doorbell_rules, doors: _getDoorsCfg() });
-    configData.doorbell_rules = doorbell_rules;
-    toast('Doorbell location updated', 'success');
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
   }
@@ -1744,9 +1730,8 @@ async function saveViewerMappings() {
     });
 
     const doorbell_rules = {
-      trigger_location: configData?.doorbell_rules?.trigger_location || '',
+      rules: configData?.doorbell_rules?.rules || _getVisitorRules(),
       trigger_reason_code: configData?.doorbell_rules?.trigger_reason_code || 107,
-      group_actions: configData?.doorbell_rules?.group_actions || {},
       viewer_to_group,
       default_action: configData?.doorbell_rules?.default_action || { unlock: [] }
     };

@@ -48,6 +48,23 @@ The app reads from `config/config.json` at startup. Key settings:
 - `unifi.token`: UniFi Access API token
 - `unifi.port`: Default `12445`
 
+### Rule Format (array-based, per-rule trigger doors)
+
+Both `unlock_rules` and `doorbell_rules` use an array-based `rules` format where each rule specifies its own trigger door. This supports multiple rules per group with different trigger locations:
+
+```json
+"unlock_rules": {
+  "rules": [
+    { "group": "GroupA", "trigger": "Front Door", "unlock": ["Lobby", "Elevator"] },
+    { "group": "GroupA", "trigger": "Side Door", "unlock": ["Stairwell"] },
+    { "group": "GroupB", "trigger": "Front Door", "unlock": ["Suite 200"] }
+  ],
+  "default_action": { "unlock": [] }
+}
+```
+
+Backward compatibility: the rules engine and frontend both handle the legacy format (`trigger_location` + `group_actions` object) by normalizing to the array format on read.
+
 ## Workflow
 
 - **Start application**: `node src/index.js` on port 5000 (webview)

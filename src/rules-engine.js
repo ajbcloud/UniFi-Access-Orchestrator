@@ -38,15 +38,16 @@ class RulesEngine {
     this.unifiClient = unifiClient;
     this.resolver = resolver;
 
-    // NFC/tap rules
+    // NFC/tap rules - normalize to array format
     this.unlockRules = config.unlock_rules || {};
     this.defaultAction = this.unlockRules.default_action || {};
+    this.accessRules = this._normalizeRules(this.unlockRules);
 
-    // Doorbell rules
+    // Doorbell rules - normalize to array format
     this.doorbellRules = config.doorbell_rules || {};
     this.viewerToGroup = this.doorbellRules.viewer_to_group || {};
-    this.doorbellGroupActions = this.doorbellRules.group_actions || {};
     this.doorbellDefault = this.doorbellRules.default_action || {};
+    this.visitorRules = this._normalizeRules(this.doorbellRules);
 
     // Self-trigger prevention
     this.selfTrigger = config.self_trigger_prevention || {};
@@ -258,14 +259,6 @@ class RulesEngine {
       return;
     }
 
-    // Check trigger location
-    const triggerLocation = this.unlockRules.trigger_location;
-    if (!this.locationMatches(event.locationName, triggerLocation)) {
-      logger.debug(`Ignoring unlock at "${event.locationName}" (trigger: "${triggerLocation}")`);
-      this.stats.events_skipped_location++;
-      return;
-    }
-
     // Resolve user group
     const { group, strategy, userName } = this.resolver.resolve(
       event.actorId,
@@ -274,23 +267,29 @@ class RulesEngine {
 
     const displayName = userName || event.actorName || event.actorId || 'unknown';
 
-    // Determine doors to unlock
-    let doorsToUnlock;
-    if (group && this.unlockRules.group_actions?.[group]) {
-      doorsToUnlock = this.unlockRules.group_actions[group].unlock || [];
+    // Find matching rules: match group AND trigger location
+    const matchingRules = this.accessRules.filter(rule =>
+      rule.group === group && this.locationMatches(event.locationName, rule.trigger)
+    );
+
+    // Collect all doors to unlock from matching rules
+    let doorsToUnlock = [];
+    if (matchingRules.length > 0) {
+      for (const rule of matchingRules) {
+        doorsToUnlock.push(...(rule.unlock || []));
+      }
+      doorsToUnlock = [...new Set(doorsToUnlock)];
     } else if (this.defaultAction.unlock?.length > 0) {
       doorsToUnlock = this.defaultAction.unlock;
-    } else {
-      doorsToUnlock = [];
     }
 
     if (doorsToUnlock.length === 0) {
-      logger.info(`User "${displayName}" (group: ${group || 'unknown'}) at Main Entrance. No additional unlocks needed.`);
+      logger.info(`User "${displayName}" (group: ${group || 'unknown'}) at "${event.locationName}". No matching rules.`);
       this.stats.events_skipped_no_action++;
       return;
     }
 
-    logger.info(`User "${displayName}" -> group "${group}" (via ${strategy}) -> unlocking: ${doorsToUnlock.join(', ')}`);
+    logger.info(`User "${displayName}" -> group "${group}" (via ${strategy}) at "${event.locationName}" -> unlocking: ${doorsToUnlock.join(', ')}`);
 
     const reason = `NFC/tap: ${displayName} (${group || 'default'}) at ${event.locationName}`;
     await this.executeUnlocks(doorsToUnlock, reason);
@@ -318,13 +317,6 @@ class RulesEngine {
       return;
     }
 
-    // Check location
-    const triggerLocation = this.doorbellRules.trigger_location;
-    if (triggerLocation && !this.locationMatches(event.locationName, triggerLocation)) {
-      logger.debug(`Ignoring doorbell at "${event.locationName}" (trigger: "${triggerLocation}")`);
-      return;
-    }
-
     // Strategy 1: Resolve from actor (the admin who answered)
     let group = null;
     let resolveMethod = null;
@@ -347,21 +339,26 @@ class RulesEngine {
 
     // Strategy 3: Check host_device_mac or other device identifiers
     if (!group && event.hostDeviceMac) {
-      // Could map MACs to groups in config, but device names are more maintainable
       logger.debug(`Doorbell answered by device MAC ${event.hostDeviceMac} but no mapping found`);
     }
 
-    // Determine doors to unlock based on resolved group
-    let doorsToUnlock;
-    if (group && this.doorbellGroupActions[group]) {
-      doorsToUnlock = this.doorbellGroupActions[group].unlock || [];
-      logger.info(`Doorbell answered -> group "${group}" (via ${resolveMethod}) -> unlocking: ${doorsToUnlock.join(', ')}`);
+    // Find matching rules: match group AND trigger location
+    const matchingRules = this.visitorRules.filter(rule =>
+      rule.group === group && this.locationMatches(event.locationName, rule.trigger)
+    );
+
+    let doorsToUnlock = [];
+    if (matchingRules.length > 0) {
+      for (const rule of matchingRules) {
+        doorsToUnlock.push(...(rule.unlock || []));
+      }
+      doorsToUnlock = [...new Set(doorsToUnlock)];
+      logger.info(`Doorbell answered -> group "${group}" (via ${resolveMethod}) at "${event.locationName}" -> unlocking: ${doorsToUnlock.join(', ')}`);
     } else if (this.doorbellDefault.unlock?.length > 0) {
       doorsToUnlock = this.doorbellDefault.unlock;
-      logger.info(`Doorbell answered -> could not determine group -> default -> unlocking: ${doorsToUnlock.join(', ')}`);
+      logger.info(`Doorbell answered -> could not determine matching rule -> default -> unlocking: ${doorsToUnlock.join(', ')}`);
     } else {
-      doorsToUnlock = [];
-      logger.warn('Doorbell answered but could not determine group and no default action configured');
+      logger.warn('Doorbell answered but no matching rule and no default action configured');
     }
 
     if (doorsToUnlock.length === 0) {
@@ -413,6 +410,22 @@ class RulesEngine {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  _normalizeRules(rulesConfig) {
+    if (Array.isArray(rulesConfig.rules)) {
+      return rulesConfig.rules;
+    }
+    const rules = [];
+    const trigger = rulesConfig.trigger_location || '';
+    const groupActions = rulesConfig.group_actions || {};
+    for (const [group, action] of Object.entries(groupActions)) {
+      const doors = action?.unlock || [];
+      if (doors.length > 0) {
+        rules.push({ group, trigger, unlock: doors });
+      }
+    }
+    return rules;
+  }
 
   locationMatches(eventLocation, configLocation) {
     if (!eventLocation || !configLocation) return false;

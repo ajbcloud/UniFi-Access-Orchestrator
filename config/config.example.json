@@ -37,16 +37,14 @@
   },
   "doors": {},
   "unlock_rules": {
-    "trigger_location": "",
-    "group_actions": {},
+    "rules": [],
     "default_action": {
       "unlock": []
     }
   },
   "doorbell_rules": {
-    "trigger_location": "",
+    "rules": [],
     "trigger_reason_code": 107,
-    "group_actions": {},
     "viewer_to_group": {},
     "default_action": {
       "unlock": []
