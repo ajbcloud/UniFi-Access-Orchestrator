@@ -1,0 +1,100 @@
+UniFi Access Orchestrator - Source Available License
+
+Copyright (c) 2026 Atticus Brind. All rights reserved.
+
+
+1. DEFINITIONS
+
+   "Software" means the UniFi Access Orchestrator source code, binaries,
+   documentation, and associated files in this repository.
+
+   "You" means the individual or entity exercising rights under this license.
+
+   "Personal Use" means use by an individual for non-commercial purposes.
+
+   "Internal Business Use" means use within your own organization to manage
+   your own infrastructure. This includes managed service providers (MSPs)
+   deploying the Software to manage access control for their own clients.
+
+   "Commercial Use" means selling, reselling, sublicensing, or distributing
+   the Software or derivative works as a paid product or service, or
+   incorporating the Software into a paid product or service offered to
+   third parties.
+
+
+2. GRANT OF RIGHTS
+
+   Subject to the terms of this license, you are granted a non-exclusive,
+   worldwide, royalty-free right to:
+
+   a) Use the Software for Personal Use or Internal Business Use.
+
+   b) Copy and distribute the Software in its original form, provided this
+      license and copyright notice are included with all copies.
+
+   c) Modify the Software and create derivative works for your own Personal
+      Use or Internal Business Use.
+
+   d) Contribute modifications back to the original repository.
+
+
+3. RESTRICTIONS
+
+   You may NOT, without explicit prior written permission from the copyright
+   holder:
+
+   a) Sell, resell, sublicense, or commercially distribute the Software or
+      any derivative works.
+
+   b) Offer the Software or derivative works as a hosted service, managed
+      service, or software-as-a-service (SaaS) product where the primary
+      value delivered to customers is the functionality of this Software.
+
+   c) Incorporate the Software into a commercial product offered for sale
+      or license to third parties.
+
+   d) Remove, alter, or obscure this license, copyright notices, or
+      attribution in any copy or derivative work.
+
+
+4. CONTRIBUTIONS
+
+   By submitting contributions (pull requests, patches, issues) to the
+   original repository, you grant the copyright holder a perpetual,
+   irrevocable, royalty-free license to use, modify, and distribute your
+   contributions under the terms of this license or any future license
+   chosen by the copyright holder.
+
+
+5. ATTRIBUTION
+
+   Any permitted distribution or public deployment of the Software must
+   include visible attribution to the original author and a link to the
+   original repository.
+
+
+6. COMMERCIAL LICENSING
+
+   For commercial use, resale, OEM licensing, or white-label agreements,
+   contact the copyright holder to obtain a commercial license:
+
+   Joe
+   ajosephfinch@gmail.com
+
+
+7. DISCLAIMER OF WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL
+   THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY,
+   WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF,
+   OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+
+8. TERMINATION
+
+   This license terminates automatically if you violate any of its terms.
+   Upon termination, you must cease all use and destroy all copies of the
+   Software in your possession.

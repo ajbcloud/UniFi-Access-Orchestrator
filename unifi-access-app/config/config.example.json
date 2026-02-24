@@ -1,0 +1,65 @@
+{
+  "server": {
+    "port": 3000,
+    "host": "0.0.0.0",
+    "admin_api_key": ""
+  },
+  "unifi": {
+    "host": "",
+    "port": 12445,
+    "token": "",
+    "verify_ssl": false,
+    "user_sync_interval_minutes": 5
+  },
+  "event_source": {
+    "mode": "alarm_manager",
+    "api_webhook": {
+      "endpoint_url": "",
+      "endpoint_name": "Access Orchestrator",
+      "events": [
+        "access.door.unlock",
+        "access.doorbell.incoming",
+        "access.doorbell.completed"
+      ],
+      "secret": ""
+    },
+    "websocket": {
+      "reconnect_interval_seconds": 5
+    }
+  },
+  "resolver": {
+    "strategy_order": [
+      "api_group",
+      "manual"
+    ],
+    "unifi_group_to_group": {},
+    "manual_overrides": {}
+  },
+  "doors": {},
+  "unlock_rules": {
+    "trigger_location": "",
+    "group_actions": {},
+    "default_action": {
+      "unlock": []
+    }
+  },
+  "doorbell_rules": {
+    "trigger_location": "",
+    "trigger_reason_code": 107,
+    "group_actions": {},
+    "viewer_to_group": {},
+    "default_action": {
+      "unlock": []
+    }
+  },
+  "self_trigger_prevention": {
+    "marker_key": "source",
+    "marker_value": "middleware"
+  },
+  "logging": {
+    "level": "info",
+    "file_path": "",
+    "max_files": "30d",
+    "max_size": "10m"
+  }
+}

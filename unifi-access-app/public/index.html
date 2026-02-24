@@ -1,0 +1,1790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UniFi Access Orchestrator</title>
+<style>
+:root {
+  --bg-primary: #111318;
+  --bg-secondary: #1a1d24;
+  --bg-card: #1e2129;
+  --bg-hover: #252830;
+  --bg-input: #14161b;
+  --border: #2a2d36;
+  --border-light: #353842;
+  --text-primary: #e4e6eb;
+  --text-secondary: #8b8f9a;
+  --text-muted: #5c5f6a;
+  --accent: #0070f3;
+  --accent-hover: #1a7fff;
+  --green: #22c55e;
+  --green-dim: rgba(34,197,94,0.15);
+  --yellow: #eab308;
+  --yellow-dim: rgba(234,179,8,0.15);
+  --red: #ef4444;
+  --red-dim: rgba(239,68,68,0.15);
+  --blue-dim: rgba(0,112,243,0.15);
+  --radius: 8px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* Header */
+.header {
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.header-left { display: flex; align-items: center; gap: 16px; }
+
+.logo {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.3px;
+}
+
+.logo span { color: var(--accent); }
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.status-pill.online { background: var(--green-dim); color: var(--green); }
+.status-pill.offline { background: var(--red-dim); color: var(--red); }
+
+.status-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 2s ease infinite;
+}
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 0;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+}
+
+.tab {
+  padding: 12px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+  user-select: none;
+}
+
+.tab:hover { color: var(--text-primary); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Main content */
+.main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+.page { display: none; }
+.page.active { display: block; }
+
+/* Cards */
+.grid { display: grid; gap: 16px; }
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.grid-3 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.grid-4 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.card-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.card-value {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  color: var(--text-primary);
+}
+
+.card-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* Stat cards with icon */
+.stat-icon {
+  width: 36px; height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  margin-bottom: 12px;
+}
+
+.stat-icon.blue { background: var(--blue-dim); }
+.stat-icon.green { background: var(--green-dim); }
+.stat-icon.yellow { background: var(--yellow-dim); }
+.stat-icon.red { background: var(--red-dim); }
+
+/* Event table */
+.event-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.event-table th {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg-card);
+}
+
+.event-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.event-table tr:hover td { background: var(--bg-hover); }
+
+.event-table .time { font-family: var(--mono); font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.badge.success { background: var(--green-dim); color: var(--green); }
+.badge.warning { background: var(--yellow-dim); color: var(--yellow); }
+.badge.error { background: var(--red-dim); color: var(--red); }
+.badge.info { background: var(--blue-dim); color: var(--accent); }
+
+/* Event log container */
+.event-log {
+  max-height: 600px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.event-log::-webkit-scrollbar { width: 6px; }
+.event-log::-webkit-scrollbar-track { background: transparent; }
+.event-log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Forms */
+.form-group { margin-bottom: 16px; }
+
+.form-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+select, input[type="text"], input[type="number"] {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+select:focus, input:focus { border-color: var(--accent); }
+
+select { cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238b8f9a'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 18px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s;
+}
+
+.btn-primary { background: var(--accent); color: white; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-secondary { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border); }
+.btn-secondary:hover { background: var(--border); }
+.btn-danger { background: var(--red); color: white; }
+.btn-danger:hover { background: #dc2626; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Config section */
+.config-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+}
+
+.config-header {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.config-body { padding: 20px; }
+
+.rule-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.rule-row:last-child { border-bottom: none; }
+.rule-group { font-weight: 600; color: var(--accent); min-width: 180px; }
+.rule-arrow { color: var(--text-muted); }
+.rule-doors { color: var(--text-primary); }
+
+/* Toast */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast {
+  padding: 12px 18px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  animation: slideIn 0.2s ease;
+  max-width: 360px;
+}
+
+.toast.success { background: var(--green); color: white; }
+.toast.error { background: var(--red); color: white; }
+.toast.info { background: var(--accent); color: white; }
+
+@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+/* Door grid for test tools */
+.door-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+
+.door-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.door-card:hover { border-color: var(--accent); background: var(--bg-hover); }
+.door-card.unlocking { border-color: var(--green); background: var(--green-dim); }
+
+.door-name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.door-id { font-family: var(--mono); font-size: 11px; color: var(--text-muted); word-break: break-all; }
+.door-status { font-size: 12px; margin-top: 8px; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .main { padding: 16px; }
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  .tabs { overflow-x: auto; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="logo"><span>UniFi Access</span> Orchestrator</div>
+    <div id="statusPill" class="status-pill offline">
+      <div class="status-dot"></div>
+      <span>Connecting...</span>
+    </div>
+  </div>
+  <div style="font-size:12px;color:var(--text-muted)" id="uptimeDisplay"></div>
+</div>
+
+<div class="tabs" id="tabBar">
+  <div class="tab active" data-page="dashboard">Dashboard</div>
+  <div class="tab" data-page="events">Live Events</div>
+  <div class="tab" data-page="config">Configuration</div>
+  <div class="tab" data-page="settings">Settings</div>
+  <div class="tab" data-page="tools">Test Tools</div>
+</div>
+
+<div class="main">
+
+  <!-- SETUP WIZARD (shown on first run when config is empty) -->
+  <div id="setup" class="page" style="display:none">
+    <div style="max-width:600px;margin:40px auto">
+      <div style="text-align:center;margin-bottom:32px">
+        <div style="font-size:40px;margin-bottom:12px">&#x1F513;</div>
+        <div style="font-size:22px;font-weight:700;margin-bottom:8px">Welcome to UniFi Access Orchestrator</div>
+        <div style="color:var(--text-secondary)">Let's find your controller and get connected.</div>
+      </div>
+
+      <!-- Step 1: Discovery -->
+      <div class="card" id="setupStep1">
+        <div class="card-title">Step 1: Find Your Controller</div>
+        <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+          We'll scan your local network for UniFi controllers.
+        </div>
+
+        <div id="discoveryStatus" style="margin-bottom:16px">
+          <button class="btn btn-primary" onclick="runDiscovery()" id="discoverBtn">
+            Scan Network
+          </button>
+        </div>
+
+        <div id="discoveryResults" style="display:none">
+          <div id="discoveryList"></div>
+        </div>
+
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Or enter the IP address manually:</div>
+          <input type="text" id="setupHost" placeholder="e.g. 192.168.1.1 or 10.1.10.1">
+        </div>
+      </div>
+
+      <!-- Step 2: API Token -->
+      <div class="card" style="margin-top:16px" id="setupStep2">
+        <div class="card-title">Step 2: API Token</div>
+        <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+          Generate a token in the UniFi Access portal at:<br>
+          <strong>Access > Settings > General > Advanced > API Token</strong>
+        </div>
+
+        <div class="form-group" style="margin-bottom:0">
+          <input type="text" id="setupToken" placeholder="Paste your API token here">
+        </div>
+      </div>
+
+      <!-- Step 3: Connect -->
+      <div class="card" style="margin-top:16px">
+        <div class="card-title">Step 3: Connect</div>
+
+        <div style="margin-bottom:16px">
+          <div style="font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none" onclick="document.getElementById('advancedSettings').style.display = document.getElementById('advancedSettings').style.display === 'none' ? 'block' : 'none'">
+            &#9654; Advanced Settings
+          </div>
+          <div id="advancedSettings" style="display:none;margin-top:12px;padding:12px;background:var(--bg-input);border-radius:var(--radius)">
+            <div class="form-group">
+              <label class="form-label">API Port</label>
+              <input type="number" id="setupPort" value="12445">
+              <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Default 12445. Only change if your controller uses a non-standard port.</div>
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <label class="form-label">Service Port</label>
+              <input type="number" id="setupServerPort" value="3000">
+              <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Port for the webhook listener and this dashboard. Default 3000.</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:12px">
+          <button class="btn btn-secondary" onclick="testConnection()" id="setupTestBtn">Test Connection</button>
+          <button class="btn btn-primary" onclick="saveSetup()" id="setupSaveBtn" disabled>Save &amp; Connect</button>
+        </div>
+
+        <div id="setupStatus" style="margin-top:16px;font-size:13px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DOCUMENTATION (shown from Help > Documentation) -->
+  <div id="docs" class="page" style="display:none">
+    <div style="max-width:860px;margin:0 auto;padding:24px 0">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
+        <h2 style="margin:0;font-size:18px;font-weight:700">Documentation</h2>
+        <button class="btn btn-sm btn-secondary" onclick="hideDocs()">Back to Dashboard</button>
+      </div>
+      <div class="card">
+        <div id="docsContent" style="font-size:14px;line-height:1.8;color:var(--text-secondary)">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DASHBOARD -->
+  <div id="dashboard" class="page active">
+    <div class="grid grid-4" style="margin-bottom:16px">
+      <div class="card">
+        <div class="stat-icon blue">&#x1F6AA;</div>
+        <div class="card-title">Doors Discovered</div>
+        <div class="card-value" id="statDoors">-</div>
+        <div class="card-sub" id="statDoorsOnline"></div>
+      </div>
+      <div class="card">
+        <div class="stat-icon green">&#x1F465;</div>
+        <div class="card-title">Users Mapped</div>
+        <div class="card-value" id="statUsers">-</div>
+        <div class="card-sub" id="statUsersGroups"></div>
+      </div>
+      <div class="card">
+        <div class="stat-icon yellow">&#x26A1;</div>
+        <div class="card-title">Events Received</div>
+        <div class="card-value" id="statEvents">-</div>
+        <div class="card-sub" id="statEventsProcessed"></div>
+      </div>
+      <div class="card">
+        <div class="stat-icon green">&#x1F513;</div>
+        <div class="card-title">Unlocks Triggered</div>
+        <div class="card-value" id="statUnlocks">-</div>
+        <div class="card-sub" id="statUnlocksFailed"></div>
+      </div>
+    </div>
+
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="card-title">Last Event</div>
+        <div id="lastEvent" style="font-size:13px;color:var(--text-secondary)">No events yet</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Last Unlock</div>
+        <div id="lastUnlock" style="font-size:13px;color:var(--text-secondary)">No unlocks yet</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">System Info</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px">
+        <div><span style="color:var(--text-muted)">Event Source:</span> <span id="infoEventSource">-</span></div>
+        <div><span style="color:var(--text-muted)">Memory:</span> <span id="infoMemory">-</span></div>
+        <div><span style="color:var(--text-muted)">Uptime:</span> <span id="infoUptime">-</span></div>
+        <div><span style="color:var(--text-muted)">Access Gateway:</span> <span id="infoHost">-</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LIVE EVENTS -->
+  <div id="events" class="page">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-size:15px;font-weight:600">Live Event Feed</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-sm btn-secondary" onclick="toggleAutoscroll()" id="autoscrollBtn">Autoscroll: ON</button>
+        <button class="btn btn-sm btn-secondary" onclick="clearEvents()">Clear</button>
+      </div>
+    </div>
+    <div class="card" style="padding:0">
+      <div class="event-log" id="eventLog">
+        <table class="event-table">
+          <thead>
+            <tr>
+              <th style="width:140px">Time</th>
+              <th>Type</th>
+              <th>Actor</th>
+              <th>Location</th>
+              <th>Action</th>
+              <th style="width:80px">Status</th>
+            </tr>
+          </thead>
+          <tbody id="eventTableBody">
+            <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-muted)">Waiting for events...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONFIGURATION -->
+  <div id="config" class="page">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-size:15px;font-weight:600">Configuration</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-sm btn-secondary" onclick="loadConfig()">Refresh</button>
+        <button class="btn btn-sm btn-primary" onclick="reloadService()">Reload Service</button>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-header">
+        Door Mappings
+        <button class="btn btn-sm btn-secondary" onclick="syncDoors()">Rediscover Doors</button>
+      </div>
+      <div class="config-body" id="configDoors">Loading...</div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-header">User Groups</div>
+      <div class="config-body" id="configUsers">Loading...</div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-header">NFC Tap Rules</div>
+      <div class="config-body" id="configNfcRules">Loading...</div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-header">Doorbell Visitor Rules</div>
+      <div class="config-body" id="configDoorbellRules">Loading...</div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-header">Event Source</div>
+      <div class="config-body" id="configEventSource">Loading...</div>
+    </div>
+  </div>
+
+    <!-- SETTINGS -->
+    <div id="settings" class="page">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div style="font-size:15px;font-weight:600">Settings</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sm btn-secondary" onclick="loadSettings()">Refresh</button>
+          <button class="btn btn-sm btn-primary" id="saveSettingsBtn" onclick="saveSettings()">Save</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Server</div>
+        <div class="form-group">
+          <label class="form-label">App Port</label>
+          <input type="number" id="settingServerPort" placeholder="3000">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Host</label>
+          <input type="text" id="settingServerHost" placeholder="0.0.0.0">
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-title">UniFi Controller</div>
+        <div class="form-group">
+          <label class="form-label">Controller Host / IP</label>
+          <input type="text" id="settingUnifiHost" placeholder="192.168.1.1">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Controller Port</label>
+          <input type="number" id="settingUnifiPort" placeholder="12445">
+        </div>
+        <div class="form-group">
+          <label class="form-label">API Token (masked)</label>
+          <input type="text" id="settingUnifiToken" placeholder="********" autocomplete="new-password">
+          <div style="font-size:12px;color:var(--text-muted);margin-top:8px">For security, the token is masked. Re-enter to change.</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-title">Logging</div>
+        <div class="form-group">
+          <label class="form-label">Log Level</label>
+          <select id="settingLogLevel">
+            <option value="error">error</option>
+            <option value="warn">warn</option>
+            <option value="info">info</option>
+            <option value="debug">debug</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+  <!-- TEST TOOLS -->
+  <div id="tools" class="page">
+    <div style="font-size:15px;font-weight:600;margin-bottom:16px">Test Tools</div>
+
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="card-title">Test Door Unlock</div>
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Click a door to send a remote unlock command via the API.</p>
+        <div class="door-grid" id="doorGrid">Loading doors...</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Simulate Event</div>
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Send a synthetic event through the rules engine.</p>
+
+        <div class="form-group">
+          <label class="form-label">Event Type</label>
+          <select id="simEventType" onchange="updateSimForm()">
+            <option value="access.door.unlock">Door Unlock (NFC / PIN / Face / Mobile)</option>
+            <option value="access.doorbell.completed">Doorbell Answered</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Location</label>
+          <select id="simLocation"></select>
+        </div>
+
+        <div id="simActorFields">
+          <div class="form-group">
+            <label class="form-label">User</label>
+            <select id="simUser">
+              <option value="">-- Select user --</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="simDoorbellFields" style="display:none">
+          <div class="form-group">
+            <label class="form-label">Reason Code</label>
+            <select id="simReasonCode">
+              <option value="107">107 - Admin unlocked door</option>
+              <option value="105">105 - Timed out</option>
+              <option value="106">106 - Declined</option>
+              <option value="108">108 - Visitor canceled</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Answering Device (for fallback routing)</label>
+            <select id="simDevice">
+              <option value="">-- None --</option>
+            </select>
+          </div>
+        </div>
+
+        <button class="btn btn-primary" onclick="simulateEvent()">Simulate Event</button>
+        <div id="simResult" style="margin-top:12px;font-size:13px"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">Quick Actions</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-secondary" onclick="forceSync()">Force User Sync</button>
+        <button class="btn btn-secondary" onclick="reloadService()">Reload Config</button>
+        <button class="btn btn-secondary" onclick="fetchHealth()">Refresh Health</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">Connectivity Test</div>
+      <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+        Test the connection to your Access Gateway without leaving the app.
+      </div>
+      <button class="btn btn-primary" onclick="runConnectivityTest()" id="connTestBtn">Test Connection</button>
+      <div id="connTestResults" style="margin-top:16px"></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+// ============================================================
+// State
+// ============================================================
+let healthData = null;
+let configData = null;
+let doorsData = null;
+let usersData = null;
+let autoscroll = true;
+let eventSource = null;
+let eventsReceived = false;
+
+// ============================================================
+// Tab navigation
+// ============================================================
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.page).classList.add('active');
+    // Load settings when user opens the Settings tab
+    if (tab.dataset.page === 'settings') {
+      loadSettings();
+    }
+  });
+});
+
+// ============================================================
+// Toast notifications
+// ============================================================
+function toast(message, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = message;
+  document.getElementById('toastContainer').appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// ============================================================
+// API helpers
+// ============================================================
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
+  return res.json();
+}
+
+// ============================================================
+// Health polling
+// ============================================================
+async function fetchHealth() {
+  try {
+    healthData = await api('GET', '/health');
+    updateDashboard();
+    updateStatus(true);
+  } catch (e) {
+    updateStatus(false);
+  }
+}
+
+function updateStatus(online) {
+  const pill = document.getElementById('statusPill');
+  pill.className = `status-pill ${online ? 'online' : 'offline'}`;
+  pill.querySelector('span').textContent = online ? 'Online' : 'Offline';
+}
+
+function formatUptime(seconds) {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m ${seconds % 60}s`;
+}
+
+function updateDashboard() {
+  if (!healthData) return;
+  const h = healthData;
+  const e = h.engine || {};
+  const u = h.unifi || {};
+
+  document.getElementById('statDoors').textContent = u.doors_discovered || 0;
+  document.getElementById('statDoorsOnline').textContent = `${Object.keys(u.doors || {}).length} configured`;
+  document.getElementById('statUsers').textContent = u.users_mapped || 0;
+  document.getElementById('statEvents').textContent = e.events_received || 0;
+  document.getElementById('statEventsProcessed').textContent = `${e.events_processed || 0} processed`;
+  document.getElementById('statUnlocks').textContent = e.unlocks_triggered || 0;
+  document.getElementById('statUnlocksFailed').textContent = e.unlocks_failed > 0 ? `${e.unlocks_failed} failed` : 'No failures';
+
+  if (e.last_event) {
+    const le = e.last_event;
+    document.getElementById('lastEvent').innerHTML = `
+      <div><strong>${le.type}</strong></div>
+      <div>Actor: ${le.actor || 'none'} &middot; Location: ${le.location || '-'}</div>
+      <div style="color:var(--text-muted);font-size:12px">${le.time ? new Date(le.time).toLocaleString() : ''}</div>
+    `;
+  }
+
+  if (e.last_unlock) {
+    const lu = e.last_unlock;
+    document.getElementById('lastUnlock').innerHTML = `
+      <div><strong>${lu.door}</strong></div>
+      <div>${lu.reason || ''}</div>
+      <div style="color:var(--text-muted);font-size:12px">${lu.time ? new Date(lu.time).toLocaleString() : ''}</div>
+    `;
+  }
+
+  document.getElementById('infoEventSource').textContent = h.event_source || '-';
+  document.getElementById('infoMemory').textContent = `${h.memory_mb || '-'} MB`;
+  document.getElementById('infoUptime').textContent = formatUptime(h.uptime_seconds || 0);
+  document.getElementById('uptimeDisplay').textContent = `Uptime: ${formatUptime(h.uptime_seconds || 0)}`;
+  document.getElementById('infoHost').textContent = u.host ? `${u.host}:${u.port}` : '-';
+}
+
+// ============================================================
+// SSE live event stream
+// ============================================================
+function connectSSE() {
+  if (eventSource) eventSource.close();
+  eventSource = new EventSource('/api/events/stream');
+
+  eventSource.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.type === 'connected') return;
+    addEventRow(data);
+  };
+
+  eventSource.onerror = () => {
+    setTimeout(connectSSE, 3000);
+  };
+}
+
+function addEventRow(evt) {
+  const tbody = document.getElementById('eventTableBody');
+  if (!eventsReceived) {
+    tbody.innerHTML = '';
+    eventsReceived = true;
+  }
+
+  const tr = document.createElement('tr');
+  const time = new Date(evt.timestamp).toLocaleTimeString();
+  const typeBadge = evt.type?.includes('doorbell') ? 'info'
+    : evt.type?.includes('unlock') ? 'success'
+    : evt.type?.includes('system') ? 'warning' : 'info';
+
+  const statusBadge = evt.success === false ? 'error'
+    : evt.action?.includes('Skipped') || evt.action?.includes('No action') ? 'warning'
+    : 'success';
+
+  const statusText = evt.success === false ? 'Failed'
+    : evt.action?.includes('Skipped') || evt.action?.includes('No action') ? 'Skipped'
+    : 'OK';
+
+  tr.innerHTML = `
+    <td class="time">${time}</td>
+    <td><span class="badge ${typeBadge}">${(evt.type || '').replace('access.', '').replace('test.', 'test:')}</span></td>
+    <td style="color:var(--text-primary)">${evt.actor || '-'}</td>
+    <td>${evt.location || '-'}</td>
+    <td>${evt.action || '-'}</td>
+    <td><span class="badge ${statusBadge}">${statusText}</span></td>
+  `;
+
+  tbody.insertBefore(tr, tbody.firstChild);
+
+  // Limit to 200 rows
+  while (tbody.children.length > 200) tbody.removeChild(tbody.lastChild);
+
+  if (autoscroll) {
+    document.getElementById('eventLog').scrollTop = 0;
+  }
+}
+
+function toggleAutoscroll() {
+  autoscroll = !autoscroll;
+  document.getElementById('autoscrollBtn').textContent = `Autoscroll: ${autoscroll ? 'ON' : 'OFF'}`;
+}
+
+function clearEvents() {
+  document.getElementById('eventTableBody').innerHTML =
+    '<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-muted)">Waiting for events...</td></tr>';
+  eventsReceived = false;
+}
+
+// ============================================================
+// Configuration page
+// ============================================================
+async function loadConfig() {
+  try {
+    [configData, doorsData, usersData] = await Promise.all([
+      api('GET', '/api/config'),
+      api('GET', '/api/doors'),
+      api('GET', '/api/users')
+    ]);
+    renderConfig();
+    populateSimForm();
+  } catch (e) {
+    toast('Failed to load config', 'error');
+  }
+}
+
+// ============================================================
+// Settings page
+// ============================================================
+async function loadSettings() {
+  try {
+    const cfg = await api('GET', '/api/config');
+    document.getElementById('settingServerPort').value = cfg.server?.port || 3000;
+    document.getElementById('settingServerHost').value = cfg.server?.host || '0.0.0.0';
+    document.getElementById('settingUnifiHost').value = cfg.unifi?.host || '';
+    document.getElementById('settingUnifiPort').value = cfg.unifi?.port || 12445;
+    // Do not pre-fill token for security; show placeholder
+    document.getElementById('settingUnifiToken').value = '';
+    document.getElementById('settingLogLevel').value = cfg.logging?.level || 'info';
+  } catch (e) {
+    toast('Failed to load settings', 'error');
+  }
+}
+
+async function saveSettings() {
+  const btn = document.getElementById('saveSettingsBtn');
+  btn.disabled = true;
+  try {
+    const server = { port: parseInt(document.getElementById('settingServerPort').value) || 3000, host: document.getElementById('settingServerHost').value || '0.0.0.0' };
+    const unifi = { host: document.getElementById('settingUnifiHost').value || '', port: parseInt(document.getElementById('settingUnifiPort').value) || 12445 };
+    const tokenVal = document.getElementById('settingUnifiToken').value.trim();
+    if (tokenVal !== '') unifi.token = tokenVal; // only send token when user provided one
+    const logging = { level: document.getElementById('settingLogLevel').value || 'info' };
+
+    await api('PUT', '/api/config', { server, unifi, logging });
+    toast('Settings saved. Reloading service...', 'success');
+    await api('POST', '/reload');
+    // Refresh local state
+    await loadConfig();
+    await loadSettings();
+  } catch (e) {
+    toast('Failed to save settings: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderConfig() {
+  // Doors
+  const discovered = doorsData?.discovered || {};
+  const configured = doorsData?.configured || {};
+  const allDoors = Object.keys({ ...discovered, ...configured }).filter(d => !d.startsWith('_'));
+  const hasDoors = allDoors.length > 0;
+
+  if (hasDoors) {
+    let doorsHtml = '<table class="event-table"><thead><tr><th>Door Name</th><th>Door ID</th><th>Status</th></tr></thead><tbody>';
+    for (const [name, id] of Object.entries(discovered)) {
+      doorsHtml += `<tr><td style="color:var(--text-primary);font-weight:600">${name}</td><td style="font-family:var(--mono);font-size:12px">${id}</td><td><span class="badge success">Discovered</span></td></tr>`;
+    }
+    for (const [name, id] of Object.entries(configured)) {
+      if (name.startsWith('_')) continue;
+      if (!discovered[name]) {
+        doorsHtml += `<tr><td style="color:var(--text-primary)">${name}</td><td style="font-family:var(--mono);font-size:12px">${id || '<em>No ID</em>'}</td><td><span class="badge ${id ? 'warning' : 'error'}">${id ? 'Not discovered' : 'Needs ID'}</span></td></tr>`;
+      }
+    }
+    doorsHtml += '</tbody></table>';
+    document.getElementById('configDoors').innerHTML = doorsHtml;
+  } else {
+    document.getElementById('configDoors').innerHTML = '<div style="color:var(--text-muted)">No doors discovered. Connect to your controller and click Rediscover Doors.</div>';
+  }
+
+  // Users & Groups
+  const users = usersData?.users || [];
+  if (users.length === 0) {
+    document.getElementById('configUsers').innerHTML = '<div style="color:var(--text-muted)">No users synced yet. Go to Test Tools and click Force User Sync.</div>';
+    document.getElementById('configNfcRules').innerHTML = '<div style="color:var(--text-muted)">Sync users first (Test Tools > Force User Sync).</div>';
+    document.getElementById('configDoorbellRules').innerHTML = '<div style="color:var(--text-muted)">Sync users first (Test Tools > Force User Sync).</div>';
+    return;
+  }
+
+  // Build group list from synced users
+  const groupNames = new Set();
+  const groupMembers = {};
+  users.forEach(u => {
+    const gn = u.unifiGroupName || u.group;
+    groupNames.add(gn);
+    if (!groupMembers[gn]) groupMembers[gn] = [];
+    groupMembers[gn].push(u.name);
+  });
+
+  const sortedGroups = Array.from(groupNames).sort();
+
+  // Show groups with member counts
+  let usersHtml = '';
+  for (const group of sortedGroups) {
+    const members = groupMembers[group] || [];
+    usersHtml += `<div style="margin-bottom:12px"><div style="font-weight:600;color:var(--accent);margin-bottom:4px">${group} (${members.length})</div><div style="font-size:13px;color:var(--text-secondary)">${members.sort().join(', ')}</div></div>`;
+  }
+  document.getElementById('configUsers').innerHTML = usersHtml;
+
+  // ---- NFC TAP RULES ----
+  const nfcTrigger = configData?.unlock_rules?.trigger_location || '';
+
+  let nfcHtml = `
+    <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+      When a member of a group badges in (NFC, PIN, face, or mobile) at the trigger door, automatically unlock additional doors based on their group.
+    </div>
+    <div style="margin-bottom:16px">
+      <label class="form-label">Trigger Door</label>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">The door where employees badge in (usually the main entrance).</div>
+      <select id="nfcTriggerDoor" style="font-size:13px;padding:8px" onchange="updateNfcDoorCheckboxes()">
+        <option value="">-- Select door --</option>
+        ${allDoors.map(d => `<option value="${d}" ${nfcTrigger === d ? 'selected' : ''}>${d}</option>`).join('')}
+      </select>
+    </div>
+    <div id="nfcRulesTable">
+  `;
+
+  if (sortedGroups.length > 0 && allDoors.length > 0) {
+    nfcHtml += buildRulesTable('nfc', sortedGroups, allDoors, nfcTrigger, configData?.unlock_rules?.group_actions || {});
+  }
+
+  nfcHtml += `
+    </div>
+    <button class="btn btn-primary" onclick="saveNfcRules()" style="margin-top:16px">Save NFC Rules</button>
+  `;
+  document.getElementById('configNfcRules').innerHTML = nfcHtml;
+
+  // ---- DOORBELL VISITOR RULES ----
+  const dbTrigger = configData?.doorbell_rules?.trigger_location || '';
+
+  let dbHtml = `
+    <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+      When a visitor rings the doorbell and a staff member answers, automatically unlock doors based on which group the staff member belongs to.
+    </div>
+    <div style="margin-bottom:16px">
+      <label class="form-label">Trigger Door</label>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">The door with the intercom where visitors ring the doorbell.</div>
+      <select id="dbTriggerDoor" style="font-size:13px;padding:8px" onchange="updateDbDoorCheckboxes()">
+        <option value="">-- Select door --</option>
+        ${allDoors.map(d => `<option value="${d}" ${dbTrigger === d ? 'selected' : ''}>${d}</option>`).join('')}
+      </select>
+    </div>
+    <div id="dbRulesTable">
+  `;
+
+  if (sortedGroups.length > 0 && allDoors.length > 0) {
+    dbHtml += buildRulesTable('db', sortedGroups, allDoors, dbTrigger, configData?.doorbell_rules?.group_actions || {});
+  }
+
+  dbHtml += `
+    </div>
+    <button class="btn btn-primary" onclick="saveDoorbellRules()" style="margin-top:16px">Save Doorbell Rules</button>
+  `;
+  document.getElementById('configDoorbellRules').innerHTML = dbHtml;
+
+  // ---- EVENT SOURCE ----
+  const es = configData?.event_source || {};
+  const eventSourceHtml = `
+    <div style="margin-bottom:12px">
+      <label class="form-label">Event Source Mode</label>
+      <select id="eventSourceMode" style="font-size:13px;padding:8px" onchange="toggleEventSourceFields()">
+        <option value="alarm_manager" ${es.mode === 'alarm_manager' ? 'selected' : ''}>Alarm Manager (internal event capture)</option>
+        <option value="api_webhook" ${es.mode === 'api_webhook' ? 'selected' : ''}>API Webhook (external POST to /webhook)</option>
+        <option value="websocket" ${es.mode === 'websocket' ? 'selected' : ''}>WebSocket (real-time notifications)</option>
+      </select>
+    </div>
+    <div id="webhookFields" style="display:${es.mode === 'api_webhook' ? 'block' : 'none'};margin-bottom:12px">
+      <div style="padding:12px;background:var(--bg-input);border-radius:var(--radius);border:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--text-secondary)">
+        Send POST requests with JSON body to: <strong style="color:var(--text-primary)">http://your-server:3000/webhook</strong>
+      </div>
+    </div>
+    <div id="websocketFields" style="display:${es.mode === 'websocket' ? 'block' : 'none'};margin-bottom:12px">
+      <label class="form-label">Reconnect Interval (seconds)</label>
+      <input type="number" id="wsReconnectInterval" value="${es.websocket?.reconnect_interval_seconds || 5}" min="1" max="60" style="font-size:13px;padding:8px" placeholder="5">
+    </div>
+    <button class="btn btn-primary" onclick="saveEventSource()" style="margin-top:12px">Save Event Source</button>
+  `;
+  document.getElementById('configEventSource').innerHTML = eventSourceHtml;
+}
+
+// Build a rules table with group rows and door checkboxes
+function buildRulesTable(prefix, groups, allDoors, triggerDoor, currentActions) {
+  const otherDoors = allDoors.filter(d => d !== triggerDoor);
+
+  if (otherDoors.length === 0) {
+    return '<div style="color:var(--text-muted);font-size:13px">Select a trigger door above to see available doors.</div>';
+  }
+
+  let html = `
+    <div style="overflow-x:auto">
+      <table class="event-table" style="min-width:600px">
+        <thead>
+          <tr>
+            <th style="width:200px">Group</th>
+            <th>Also Unlock These Doors</th>
+          </tr>
+        </thead>
+        <tbody>
+  `;
+
+  for (const groupName of groups) {
+    const currentUnlocks = currentActions[groupName]?.unlock || [];
+    html += `<tr>
+      <td style="color:var(--accent);font-weight:600;padding:12px;vertical-align:top">${groupName}</td>
+      <td style="padding:12px">
+        <div style="display:flex;flex-wrap:wrap;gap:10px 20px">`;
+
+    for (const door of otherDoors) {
+      const checked = currentUnlocks.includes(door);
+      const id = `${prefix}-${groupName}-${door}`.replace(/[^a-zA-Z0-9-]/g, '_');
+      html += `
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;min-width:150px">
+          <input type="checkbox" class="${prefix}-door-check" data-group="${groupName}" data-door="${door}" ${checked ? 'checked' : ''} id="${id}">
+          <span style="font-size:13px">${door}</span>
+        </label>`;
+    }
+
+    html += `</div></td></tr>`;
+  }
+
+  // Default action row
+  const defaultUnlocks = currentActions['_default']?.unlock || [];
+  html += `<tr style="border-top:2px solid var(--border)">
+    <td style="color:var(--text-muted);font-weight:600;padding:12px;vertical-align:top;font-style:italic">Default (other groups)</td>
+    <td style="padding:12px">
+      <div style="display:flex;flex-wrap:wrap;gap:10px 20px">`;
+  for (const door of otherDoors) {
+    const checked = defaultUnlocks.includes(door);
+    html += `
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;min-width:150px">
+        <input type="checkbox" class="${prefix}-door-check" data-group="_default" data-door="${door}" ${checked ? 'checked' : ''}>
+        <span style="font-size:13px">${door}</span>
+      </label>`;
+  }
+  html += `</div></td></tr>`;
+
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// Rebuild NFC checkboxes when trigger door changes
+function updateNfcDoorCheckboxes() {
+  const trigger = document.getElementById('nfcTriggerDoor')?.value || '';
+  const users = usersData?.users || [];
+  const groupNames = [...new Set(users.map(u => u.unifiGroupName || u.group))].sort();
+  const allDoors = Object.keys({ ...(doorsData?.discovered || {}), ...(doorsData?.configured || {}) }).filter(d => !d.startsWith('_'));
+  document.getElementById('nfcRulesTable').innerHTML = buildRulesTable('nfc', groupNames, allDoors, trigger, configData?.unlock_rules?.group_actions || {});
+}
+
+// Rebuild doorbell checkboxes when trigger door changes
+function updateDbDoorCheckboxes() {
+  const trigger = document.getElementById('dbTriggerDoor')?.value || '';
+  const users = usersData?.users || [];
+  const groupNames = [...new Set(users.map(u => u.unifiGroupName || u.group))].sort();
+  const allDoors = Object.keys({ ...(doorsData?.discovered || {}), ...(doorsData?.configured || {}) }).filter(d => !d.startsWith('_'));
+  document.getElementById('dbRulesTable').innerHTML = buildRulesTable('db', groupNames, allDoors, trigger, configData?.doorbell_rules?.group_actions || {});
+}
+
+function toggleEventSourceFields() {
+  const mode = document.getElementById('eventSourceMode')?.value || 'alarm_manager';
+  document.getElementById('webhookFields').style.display = mode === 'api_webhook' ? 'block' : 'none';
+  document.getElementById('websocketFields').style.display = mode === 'websocket' ? 'block' : 'none';
+}
+
+async function saveNfcRules() {
+  try {
+    const triggerDoor = document.getElementById('nfcTriggerDoor')?.value || '';
+    if (!triggerDoor) { toast('Please select a trigger door', 'error'); return; }
+
+    const groupActions = {};
+    document.querySelectorAll('.nfc-door-check').forEach(checkbox => {
+      const group = checkbox.dataset.group;
+      const door = checkbox.dataset.door;
+      if (!groupActions[group]) groupActions[group] = { unlock: [] };
+      if (checkbox.checked) groupActions[group].unlock.push(door);
+    });
+
+    // Move _default to default_action
+    const defaultAction = groupActions['_default'] || { unlock: [] };
+    delete groupActions['_default'];
+
+    const unlock_rules = { trigger_location: triggerDoor, group_actions: groupActions, default_action: defaultAction };
+    const doors = { ...(doorsData?.configured || {}), ...(doorsData?.discovered || {}) };
+
+    // Also save the group mapping (use group names directly)
+    const resolver = { unifi_group_to_group: {} };
+
+    await api('PUT', '/api/config', { unlock_rules, doors, resolver });
+    toast('NFC rules saved!', 'success');
+    await api('POST', '/reload');
+    await loadConfig();
+  } catch (e) {
+    toast(`Failed to save: ${e.message}`, 'error');
+  }
+}
+
+async function saveDoorbellRules() {
+  try {
+    const triggerDoor = document.getElementById('dbTriggerDoor')?.value || '';
+    if (!triggerDoor) { toast('Please select a trigger door', 'error'); return; }
+
+    const groupActions = {};
+    document.querySelectorAll('.db-door-check').forEach(checkbox => {
+      const group = checkbox.dataset.group;
+      const door = checkbox.dataset.door;
+      if (!groupActions[group]) groupActions[group] = { unlock: [] };
+      if (checkbox.checked) groupActions[group].unlock.push(door);
+    });
+
+    const defaultAction = groupActions['_default'] || { unlock: [] };
+    delete groupActions['_default'];
+
+    const doorbell_rules = {
+      trigger_location: triggerDoor,
+      trigger_reason_code: 107,
+      group_actions: groupActions,
+      default_action: defaultAction,
+      viewer_to_group: configData?.doorbell_rules?.viewer_to_group || {}
+    };
+    const doors = { ...(doorsData?.configured || {}), ...(doorsData?.discovered || {}) };
+    await api('PUT', '/api/config', { doorbell_rules, doors });
+    toast('Doorbell rules saved!', 'success');
+    await api('POST', '/reload');
+    await loadConfig();
+  } catch (e) {
+    toast(`Failed to save: ${e.message}`, 'error');
+  }
+}
+
+async function saveEventSource() {
+  try {
+    const mode = document.getElementById('eventSourceMode')?.value || 'alarm_manager';
+    const event_source = { mode };
+
+    if (mode === 'websocket') {
+      const reconnectSeconds = parseInt(document.getElementById('wsReconnectInterval')?.value || '5');
+      event_source.websocket = { reconnect_interval_seconds: reconnectSeconds };
+    }
+
+    await api('PUT', '/api/config', { event_source });
+    toast('Event source saved!', 'success');
+    await loadConfig();
+  } catch (e) {
+    toast(`Failed to save: ${e.message}`, 'error');
+  }
+}
+
+// ============================================================
+// Test Tools
+// ============================================================
+function populateSimForm() {
+  // Locations
+  const locSelect = document.getElementById('simLocation');
+  locSelect.innerHTML = '';
+  const doors = doorsData?.discovered || doorsData?.configured || {};
+  for (const name of Object.keys(doors)) {
+    if (name.startsWith('_')) continue;
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    locSelect.appendChild(opt);
+  }
+
+  // Users
+  const userSelect = document.getElementById('simUser');
+  userSelect.innerHTML = '<option value="">-- No user (null actor) --</option>';
+  (usersData?.users || []).forEach(u => {
+    const opt = document.createElement('option');
+    opt.value = u.id; opt.textContent = `${u.name} (${u.group})`;
+    userSelect.appendChild(opt);
+  });
+
+  // Door grid
+  renderDoorGrid();
+
+  // Viewer devices (from doorbell_rules.viewer_to_group config)
+  const deviceSelect = document.getElementById('simDevice');
+  deviceSelect.innerHTML = '<option value="">-- None --</option>';
+  const viewers = configData?.doorbell_rules?.viewer_to_group || {};
+  for (const [viewerName] of Object.entries(viewers).filter(([k]) => !k.startsWith('_'))) {
+    const opt = document.createElement('option');
+    opt.value = viewerName;
+    opt.textContent = viewerName;
+    deviceSelect.appendChild(opt);
+  }
+}
+
+function renderDoorGrid() {
+  const grid = document.getElementById('doorGrid');
+  const discovered = doorsData?.discovered || {};
+  const configured = doorsData?.configured || {};
+  const allDoors = { ...configured, ...discovered };
+
+  // Filter out internal keys
+  const doorEntries = Object.entries(allDoors).filter(([name]) => !name.startsWith('_'));
+
+  if (doorEntries.length === 0) {
+    grid.innerHTML = '<div style="color:var(--text-muted)">No doors discovered. Connect to your controller first.</div>';
+    return;
+  }
+
+  let html = '';
+  for (const [name, id] of doorEntries) {
+    html += `<div class="door-card" id="door-${name.replace(/\s/g, '-')}" onclick="testUnlock('${name}')">
+      <div class="door-name">${name}</div>
+      <div class="door-id">${id ? id.substring(0, 12) + '...' : 'No ID'}</div>
+      <div class="door-status">${id ? '<span class="badge success">Ready</span>' : '<span class="badge error">No ID</span>'}</div>
+    </div>`;
+  }
+  grid.innerHTML = html;
+}
+
+async function testUnlock(doorName) {
+  const card = document.getElementById(`door-${doorName.replace(/\s/g, '-')}`);
+  if (card) card.classList.add('unlocking');
+
+  try {
+    const result = await api('POST', `/test/unlock/${encodeURIComponent(doorName)}`);
+    if (result.success) {
+      toast(`Unlocked: ${doorName}`, 'success');
+    } else {
+      toast(`Failed: ${result.error || 'Unknown error'}`, 'error');
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+
+  setTimeout(() => { if (card) card.classList.remove('unlocking'); }, 2000);
+}
+
+function updateSimForm() {
+  const type = document.getElementById('simEventType').value;
+  document.getElementById('simActorFields').style.display = type === 'access.door.unlock' ? '' : '';
+  document.getElementById('simDoorbellFields').style.display = type === 'access.doorbell.completed' ? '' : 'none';
+}
+
+async function simulateEvent() {
+  const type = document.getElementById('simEventType').value;
+  const location = document.getElementById('simLocation').value;
+  const userSelect = document.getElementById('simUser');
+  const userId = userSelect.value;
+  const userName = userSelect.selectedOptions[0]?.textContent?.split(' (')[0] || '';
+
+  const body = { event_type: type, location };
+  if (userId) { body.user_id = userId; body.user_name = userName; }
+  if (type === 'access.doorbell.completed') {
+    body.reason_code = document.getElementById('simReasonCode').value;
+    body.device_name = document.getElementById('simDevice').value;
+  }
+
+  try {
+    const result = await api('POST', '/test/event', body);
+    document.getElementById('simResult').innerHTML = `<span class="badge success">Event simulated</span>`;
+    toast('Event simulated', 'success');
+  } catch (e) {
+    document.getElementById('simResult').innerHTML = `<span class="badge error">Failed</span>`;
+    toast(`Simulation failed: ${e.message}`, 'error');
+  }
+}
+
+// ============================================================
+// Quick actions
+// ============================================================
+async function runConnectivityTest() {
+  const btn = document.getElementById('connTestBtn');
+  const resultsEl = document.getElementById('connTestResults');
+
+  btn.disabled = true;
+  btn.textContent = 'Testing...';
+  resultsEl.innerHTML = '<div style="color:var(--text-muted)">Running connectivity tests...</div>';
+
+  try {
+    const result = await api('GET', '/api/test-connection');
+    const steps = result.steps || [];
+
+    let html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Target: <strong>${result.host || 'Not configured'}:${result.port || 12445}</strong></div>`;
+    html += '<div style="display:flex;flex-direction:column;gap:8px">';
+
+    for (const step of steps) {
+      const icon = step.status === 'ok' ? '&#10003;' : step.status === 'warn' ? '&#9888;' : '&#10007;';
+      const color = step.status === 'ok' ? 'var(--green)' : step.status === 'warn' ? 'var(--yellow)' : 'var(--red)';
+
+      html += `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 12px;background:var(--bg-input);border-radius:var(--radius)">
+          <span style="color:${color};font-size:16px;line-height:1;min-width:18px">${icon}</span>
+          <div>
+            <div style="font-weight:600;font-size:13px;color:var(--text-primary)">${step.name}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">${step.detail}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    html += '</div>';
+
+    const allOk = steps.every(s => s.status === 'ok');
+    if (allOk && steps.length > 2) {
+      html += '<div style="margin-top:12px;font-size:13px;color:var(--green);font-weight:600">All checks passed. Your Access Gateway is connected and responding.</div>';
+    }
+
+    resultsEl.innerHTML = html;
+  } catch (e) {
+    resultsEl.innerHTML = `<div style="color:var(--red)">Test failed: ${e.message}</div>`;
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Test Connection';
+}
+
+async function forceSync() {
+  try {
+    const result = await api('POST', '/api/sync');
+    toast(`Synced ${result.users_mapped} users`, 'success');
+    loadConfig();
+  } catch (e) { toast('Sync failed', 'error'); }
+}
+
+async function reloadService() {
+  try {
+    await api('POST', '/reload');
+    toast('Service reloaded', 'success');
+    fetchHealth();
+    loadConfig();
+  } catch (e) { toast('Reload failed', 'error'); }
+}
+
+async function syncDoors() {
+  toast('Rediscovering doors...', 'info');
+  await reloadService();
+}
+
+// ============================================================
+// Documentation viewer
+// ============================================================
+async function showDocs() {
+  const docsPage = document.getElementById('docs');
+  const content = document.getElementById('docsContent');
+
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  docsPage.style.display = 'block';
+  docsPage.classList.add('active');
+  document.getElementById('tabBar').style.display = 'flex';
+
+  content.innerHTML = '<div style="color:var(--text-muted)">Loading documentation...</div>';
+
+  try {
+    const result = await api('GET', '/api/docs');
+    content.innerHTML = renderMarkdown(result.content || '');
+  } catch (e) {
+    content.innerHTML = '<div style="color:var(--red)">Failed to load documentation.</div>';
+  }
+}
+
+function hideDocs() {
+  document.getElementById('docs').style.display = 'none';
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('dashboard').classList.add('active');
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab')[0].classList.add('active');
+}
+
+function renderMarkdown(md) {
+  // Lightweight markdown to HTML (no external dependencies)
+  let html = md
+    // Code blocks (``` ... ```)
+    .replace(/```(\w*)\n([\s\S]*?)```/g, (m, lang, code) => {
+      return `<pre style="background:var(--bg-primary);padding:16px;border-radius:var(--radius);overflow-x:auto;font-size:13px;line-height:1.5;border:1px solid var(--border)"><code>${code.replace(/</g,'&lt;').replace(/>/g,'&gt;').trim()}</code></pre>`;
+    })
+    // Inline code
+    .replace(/`([^`]+)`/g, '<code style="background:var(--bg-primary);padding:2px 6px;border-radius:4px;font-size:13px">$1</code>')
+    // Tables
+    .replace(/\n\|(.+)\|\n\|[-| :]+\|\n((?:\|.+\|\n?)*)/g, (m, header, body) => {
+      const ths = header.split('|').map(h => h.trim()).filter(Boolean).map(h => `<th style="text-align:left;padding:8px 12px;border-bottom:2px solid var(--border);font-size:12px;color:var(--text-muted)">${h}</th>`).join('');
+      const rows = body.trim().split('\n').map(row => {
+        const tds = row.split('|').map(c => c.trim()).filter(Boolean).map(c => `<td style="padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px">${c}</td>`).join('');
+        return `<tr>${tds}</tr>`;
+      }).join('');
+      return `<table style="width:100%;border-collapse:collapse;margin:16px 0"><thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table>`;
+    })
+    // Headers
+    .replace(/^### (.+)$/gm, '<h4 style="font-size:15px;font-weight:700;color:var(--text-primary);margin:24px 0 8px">$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3 style="font-size:17px;font-weight:700;color:var(--text-primary);margin:32px 0 12px;padding-top:16px;border-top:1px solid var(--border)">$1</h3>')
+    .replace(/^# (.+)$/gm, '<h2 style="font-size:22px;font-weight:700;color:var(--text-primary);margin:0 0 8px">$1</h2>')
+    // Horizontal rules
+    .replace(/^---$/gm, '<hr style="border:none;border-top:1px solid var(--border);margin:24px 0">')
+    // Bold
+    .replace(/\*\*(.+?)\*\*/g, '<strong style="color:var(--text-primary)">$1</strong>')
+    // Links
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" style="color:var(--accent)" target="_blank">$1</a>')
+    // Line breaks into paragraphs (two newlines)
+    .replace(/\n\n/g, '</p><p style="margin:12px 0">')
+    // Single newlines in non-code context
+    .replace(/\n/g, '<br>');
+
+  return `<div style="color:var(--text-secondary)">${html}</div>`;
+}
+
+// ============================================================
+// Setup Wizard (first run)
+// ============================================================
+async function checkFirstRun() {
+  try {
+    const config = await api('GET', '/api/config');
+    if (!config.unifi?.host || config.unifi.host === '' || config.unifi.host === '192.168.1.1') {
+      showSetupWizard();
+      return true;
+    }
+  } catch (e) {
+    // Server might not be up yet
+  }
+  return false;
+}
+
+function showSetupWizard() {
+  const setup = document.getElementById('setup');
+  const tabBar = document.getElementById('tabBar');
+
+  // Hide other pages
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  setup.style.display = 'block';
+  setup.classList.add('active');
+
+  // If config already has a host, pre-fill the fields and show a back button
+  if (configData && configData.unifi?.host && configData.unifi.host !== '') {
+    document.getElementById('setupHost').value = configData.unifi.host;
+    document.getElementById('setupPort').value = configData.unifi.port || 12445;
+    // Don't pre-fill token for security
+    document.getElementById('setupServerPort').value = configData.server?.port || 3000;
+    tabBar.style.display = 'flex';
+
+    // Add back button if not already there
+    if (!document.getElementById('setupBackBtn')) {
+      const backBtn = document.createElement('button');
+      backBtn.id = 'setupBackBtn';
+      backBtn.className = 'btn btn-sm btn-secondary';
+      backBtn.textContent = 'Back to Dashboard';
+      backBtn.style.marginBottom = '16px';
+      backBtn.onclick = () => {
+        hideSetupWizard();
+        fetchHealth();
+        loadConfig();
+      };
+      setup.querySelector('div').insertBefore(backBtn, setup.querySelector('div').firstChild);
+    }
+  } else {
+    tabBar.style.display = 'none';
+  }
+}
+
+function hideSetupWizard() {
+  document.getElementById('setup').style.display = 'none';
+  document.getElementById('tabBar').style.display = 'flex';
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('dashboard').classList.add('active');
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab')[0].classList.add('active');
+  // Remove back button if present
+  const backBtn = document.getElementById('setupBackBtn');
+  if (backBtn) backBtn.remove();
+}
+
+// ============================================================
+// Auto-Discovery
+// ============================================================
+async function runDiscovery() {
+  const btn = document.getElementById('discoverBtn');
+  const statusEl = document.getElementById('discoveryStatus');
+  const resultsEl = document.getElementById('discoveryResults');
+  const listEl = document.getElementById('discoveryList');
+
+  btn.disabled = true;
+  btn.textContent = 'Scanning...';
+  statusEl.innerHTML = `
+    <button class="btn btn-secondary" disabled id="discoverBtn">
+      <span class="status-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);margin-right:6px;animation:pulse 1s infinite"></span>
+      Scanning your network...
+    </button>
+    <div style="font-size:12px;color:var(--text-muted);margin-top:8px">This may take 15-30 seconds. Checking all devices on your local subnet(s).</div>
+  `;
+
+  try {
+    const result = await api('GET', '/api/discover');
+    const controllers = (result.controllers || []).filter(c => c.confirmed);
+
+    if (controllers.length > 0) {
+      resultsEl.style.display = 'block';
+      listEl.innerHTML = controllers.map(c => `
+        <div class="door-card" style="text-align:left;cursor:pointer;margin-bottom:8px" onclick="selectController('${c.ip}', ${c.port})">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <div class="door-name">${c.ip}</div>
+              <div style="font-size:12px;color:var(--text-secondary)">${c.type}</div>
+            </div>
+            <span class="badge success">Found</span>
+          </div>
+        </div>
+      `).join('');
+
+      statusEl.innerHTML = `
+        <div style="font-size:13px;color:var(--green);margin-bottom:8px">
+          Found ${controllers.length} controller${controllers.length > 1 ? 's' : ''}! Click one to select it.
+        </div>
+        <button class="btn btn-sm btn-secondary" onclick="runDiscovery()">Scan Again</button>
+      `;
+
+      // Auto-select if only one found
+      if (controllers.length === 1) {
+        selectController(controllers[0].ip, controllers[0].port);
+      }
+    } else {
+      // Check if we found anything at all on 12445 (unconfirmed)
+      const unconfirmed = (result.controllers || []).filter(c => !c.confirmed);
+
+      resultsEl.style.display = unconfirmed.length > 0;
+      if (unconfirmed.length > 0) {
+        listEl.innerHTML = unconfirmed.map(c => `
+          <div class="door-card" style="text-align:left;cursor:pointer;margin-bottom:8px" onclick="selectController('${c.ip}', ${c.port})">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <div>
+                <div class="door-name">${c.ip}</div>
+                <div style="font-size:12px;color:var(--text-secondary)">${c.type}</div>
+              </div>
+              <span class="badge warning">Maybe</span>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      statusEl.innerHTML = `
+        <div style="font-size:13px;color:var(--yellow);margin-bottom:8px">
+          No confirmed UniFi Access controllers found on ${(result.subnets_scanned || []).join(', ')}.
+          ${unconfirmed.length > 0 ? 'We found some devices that might be controllers (see above).' : ''}
+        </div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+          Make sure the controller is powered on and connected to the same network.
+          If it's on a different VLAN, enter the IP manually below.
+        </div>
+        <button class="btn btn-sm btn-secondary" onclick="runDiscovery()">Scan Again</button>
+      `;
+    }
+  } catch (e) {
+    statusEl.innerHTML = `
+      <div style="font-size:13px;color:var(--red);margin-bottom:8px">Scan failed: ${e.message}</div>
+      <button class="btn btn-sm btn-secondary" onclick="runDiscovery()">Try Again</button>
+    `;
+  }
+}
+
+function selectController(ip, port) {
+  document.getElementById('setupHost').value = ip;
+  document.getElementById('setupPort').value = port || 12445;
+
+  // Highlight the selected card
+  document.querySelectorAll('#discoveryList .door-card').forEach(card => {
+    card.style.borderColor = card.querySelector('.door-name').textContent === ip
+      ? 'var(--accent)' : 'var(--border)';
+  });
+
+  // Focus the token field
+  document.getElementById('setupToken').focus();
+  toast(`Selected controller: ${ip}`, 'info');
+}
+
+async function testConnection() {
+  const host = document.getElementById('setupHost').value.trim();
+  const port = document.getElementById('setupPort').value.trim();
+  const token = document.getElementById('setupToken').value.trim();
+  const statusEl = document.getElementById('setupStatus');
+
+  if (!host || !token) {
+    statusEl.innerHTML = '<span style="color:var(--red)">Please enter both the IP address and API token.</span>';
+    return;
+  }
+
+  statusEl.innerHTML = '<span style="color:var(--text-secondary)">Testing connection...</span>';
+  document.getElementById('setupTestBtn').disabled = true;
+
+  try {
+    // Save config first so the orchestrator can use it
+    const result = await api('PUT', '/api/config', {
+      unifi: { host, port: parseInt(port) || 12445, token, verify_ssl: false, user_sync_interval_minutes: 5 }
+    });
+
+    // Reload the orchestrator with new config
+    await api('POST', '/reload');
+
+    // Wait for it to initialize
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Check health
+    const health = await api('GET', '/health');
+    const doorsCount = health.unifi?.doors_discovered || 0;
+    const usersCount = health.unifi?.users_mapped || 0;
+
+    if (doorsCount > 0 || usersCount > 0) {
+      statusEl.innerHTML = `<span style="color:var(--green)">Connected! Found ${doorsCount} doors and ${usersCount} users.</span>`;
+      document.getElementById('setupSaveBtn').disabled = false;
+    } else {
+      statusEl.innerHTML = `<span style="color:var(--yellow)">Connected but no doors/users found. Check that the Access Gateway IP and token are correct, and that you can reach port ${port} from this machine.</span>`;
+      document.getElementById('setupSaveBtn').disabled = false;
+    }
+  } catch (e) {
+    statusEl.innerHTML = `<span style="color:var(--red)">Connection failed: ${e.message}. Verify the IP, port, and that this device can reach the controller.</span>`;
+  }
+
+  document.getElementById('setupTestBtn').disabled = false;
+}
+
+async function saveSetup() {
+  const host = document.getElementById('setupHost').value.trim();
+  const port = document.getElementById('setupPort').value.trim();
+  const token = document.getElementById('setupToken').value.trim();
+  const serverPort = document.getElementById('setupServerPort').value.trim();
+
+  try {
+    await api('PUT', '/api/config', {
+      server: { port: parseInt(serverPort) || 3000, host: '0.0.0.0' },
+      unifi: { host, port: parseInt(port) || 12445, token, verify_ssl: false, user_sync_interval_minutes: 5 }
+    });
+
+    await api('POST', '/reload');
+    toast('Configuration saved! Loading dashboard...', 'success');
+
+    setTimeout(() => {
+      hideSetupWizard();
+      fetchHealth();
+      loadConfig();
+    }, 1500);
+  } catch (e) {
+    toast('Failed to save: ' + e.message, 'error');
+  }
+}
+
+// ============================================================
+// Init
+// ============================================================
+(async () => {
+  const isFirstRun = await checkFirstRun();
+  if (!isFirstRun) {
+    fetchHealth();
+    loadConfig();
+    connectSSE();
+    // Load event history
+    try {
+      const history = await api('GET', '/api/events/history?limit=50');
+      if (Array.isArray(history) && history.length > 0) {
+        history.reverse().forEach(addEventRow);
+      }
+    } catch (e) {}
+  } else {
+    // Still connect SSE and poll health for when setup completes
+    connectSSE();
+  }
+})();
+
+setInterval(fetchHealth, 10000);
+</script>
+</body>
+</html>

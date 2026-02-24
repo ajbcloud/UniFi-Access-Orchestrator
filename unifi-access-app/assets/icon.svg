@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#111318"/>
+  <rect x="40" y="40" width="432" height="432" rx="64" fill="#1e2129" stroke="#2a2d36" stroke-width="4"/>
+  <!-- Door shape -->
+  <rect x="176" y="120" width="160" height="272" rx="12" fill="#2a2d36" stroke="#0070f3" stroke-width="3"/>
+  <!-- Door handle -->
+  <circle cx="304" cy="256" r="12" fill="#0070f3"/>
+  <!-- Signal waves (unlock) -->
+  <path d="M340 200 Q380 220 380 256 Q380 292 340 312" fill="none" stroke="#22c55e" stroke-width="6" stroke-linecap="round" opacity="0.9"/>
+  <path d="M360 180 Q410 210 410 256 Q410 302 360 332" fill="none" stroke="#22c55e" stroke-width="5" stroke-linecap="round" opacity="0.6"/>
+  <path d="M380 160 Q440 200 440 256 Q440 312 380 352" fill="none" stroke="#22c55e" stroke-width="4" stroke-linecap="round" opacity="0.3"/>
+  <!-- Lock icon (unlocked) -->
+  <rect x="100" y="360" width="56" height="44" rx="6" fill="#0070f3"/>
+  <path d="M112 360 L112 340 Q112 316 128 316 Q144 316 144 340 L144 348" fill="none" stroke="#0070f3" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="128" cy="382" r="6" fill="#111318"/>
+</svg>
