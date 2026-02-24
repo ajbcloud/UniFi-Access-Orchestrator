@@ -1372,21 +1372,23 @@ function renderConfig() {
 
   dbHtml += `<div id="dbRuleFormContainer"></div>`;
 
-  // Viewer device mappings section
+  // Identification Device Mappings section (formerly Viewer Device Mappings)
   dbHtml += `<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
-    <div style="font-size:13px;font-weight:600;margin-bottom:8px">Viewer Device Mappings</div>
+    <div style="font-size:13px;font-weight:600;margin-bottom:4px">Device / Actor Mappings</div>
     <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
-      Map intercom viewer devices to groups. When a viewer answers a doorbell call, the system uses this mapping to determine which group's rules to apply.
+      Map specific devices or fallback names to groups. Useful when the answering admin isn't automatically identified (e.g. physical Intercom Viewers or mobile app users without a clear ID).
     </div>
     <div id="viewerMappings">`;
 
-  const viewerEntries = Object.entries(viewerToGroup);
+  const viewers = configData?.doorbell_rules?.viewer_to_group || {};
+  const viewerEntries = Object.entries(viewers).filter(([k]) => !k.startsWith('_'));
+
   if (viewerEntries.length === 0) {
-    dbHtml += `<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No viewer mappings configured. Add one if your intercom viewers need to be mapped to groups.</div>`;
+    dbHtml += `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">No device mappings configured. Add one if your doorbell answers need specific group routing.</div>`;
   } else {
     for (const [viewer, group] of viewerEntries) {
       dbHtml += `<div class="viewer-mapping-row">
-        <input type="text" class="viewer-name-input" value="${viewer}" placeholder="Viewer device name" style="flex:1;font-size:12px;padding:6px 8px">
+        <input type="text" class="viewer-name-input" value="${viewer}" placeholder="Device name" style="flex:1;font-size:12px;padding:6px 8px">
         <span style="color:var(--text-muted);font-size:12px">&#8594;</span>
         <select class="viewer-group-select" style="width:auto;min-width:150px;font-size:12px;padding:6px 28px 6px 10px">
           ${Array.from(discoveredGroupNames).sort().map(g => `<option value="${g}" ${g === group ? 'selected' : ''}>${g}</option>`).join('')}
@@ -1398,8 +1400,11 @@ function renderConfig() {
 
   dbHtml += `</div>
     <div style="display:flex;gap:8px;margin-top:12px">
-      <button class="btn btn-sm btn-secondary" onclick="addViewerMapping()">Add Viewer Mapping</button>
+      <button class="btn btn-sm btn-secondary" onclick="addViewerMapping()">Add Mapping</button>
       <button class="btn btn-sm btn-primary" onclick="saveViewerMappings()">Save Mappings</button>
+    </div>
+    <div style="margin-top:12px;font-size:11px;color:var(--text-muted)">
+      <strong>Pro tip:</strong> Check the <em>Live Events</em> tab when answering a call to see the exact <strong>Device Name</strong> reported by the controller.
     </div>
   </div>`;
 
