@@ -102,6 +102,9 @@ rulesEngine.handleEvent = async function(rawPayload) {
   });
 };
 
+// Allow rules engine to push delayed events back to GUI
+rulesEngine.setBroadcaster(broadcastEvent);
+
 // ---------------------------------------------------------------------------
 // Express app
 // ---------------------------------------------------------------------------

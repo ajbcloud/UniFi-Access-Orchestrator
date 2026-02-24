@@ -274,9 +274,12 @@ class RulesEngine {
 
     // Collect all doors to unlock from matching rules
     let doorsToUnlock = [];
+    let ruleWithDelay = null;
+    
     if (matchingRules.length > 0) {
       for (const rule of matchingRules) {
         doorsToUnlock.push(...(rule.unlock || []));
+        if (rule.delay > 0) ruleWithDelay = rule;
       }
       doorsToUnlock = [...new Set(doorsToUnlock)];
     } else if (this.defaultAction.unlock?.length > 0) {
@@ -293,12 +296,21 @@ class RulesEngine {
 
     const reason = `NFC/tap: ${displayName} (${group || 'default'}) at ${event.locationName}`;
     
-    // Apply delay if specified in the rule
-    const delay = matchingRules[0]?.delay || 0;
+    // Apply delay if specified in any matching rule
+    const delay = ruleWithDelay ? ruleWithDelay.delay : 0;
     if (delay > 0) {
       logger.info(`Delaying unlock by ${delay}s for "${displayName}"`);
       setTimeout(async () => {
-        await this.executeUnlocks(doorsToUnlock, reason);
+        const unlocked = await this.executeUnlocks(doorsToUnlock, reason);
+        if (this.broadcaster) {
+          this.broadcaster({
+            type: event.type,
+            actor: displayName,
+            location: event.locationName,
+            action: `Unlocked: ${unlocked.join(', ')}`,
+            success: true
+          });
+        }
       }, delay * 1000);
     } else {
       await this.executeUnlocks(doorsToUnlock, reason);
@@ -358,9 +370,12 @@ class RulesEngine {
     );
 
     let doorsToUnlock = [];
+    let ruleWithDelay = null;
+
     if (matchingRules.length > 0) {
       for (const rule of matchingRules) {
         doorsToUnlock.push(...(rule.unlock || []));
+        if (rule.delay > 0) ruleWithDelay = rule;
       }
       doorsToUnlock = [...new Set(doorsToUnlock)];
       logger.info(`Doorbell answered -> group "${group}" (via ${resolveMethod}) at "${event.locationName}" -> unlocking: ${doorsToUnlock.join(', ')}`);
@@ -379,11 +394,20 @@ class RulesEngine {
     const reason = `Doorbell: answered by ${resolveMethod || 'unknown'} at ${event.locationName}`;
     
     // Apply delay if specified in the rule
-    const delay = matchingRules[0]?.delay || 0;
+    const delay = ruleWithDelay ? ruleWithDelay.delay : 0;
     if (delay > 0) {
       logger.info(`Delaying doorbell unlock by ${delay}s`);
       setTimeout(async () => {
-        await this.executeUnlocks(doorsToUnlock, reason);
+        const unlocked = await this.executeUnlocks(doorsToUnlock, reason);
+        if (this.broadcaster) {
+          this.broadcaster({
+            type: event.type,
+            actor: resolveMethod || 'unknown',
+            location: event.locationName,
+            action: `Unlocked: ${unlocked.join(', ')}`,
+            success: true
+          });
+        }
       }, delay * 1000);
     } else {
       await this.executeUnlocks(doorsToUnlock, reason);
@@ -400,11 +424,15 @@ class RulesEngine {
       doorNames.map(name => this.unifiClient.unlockDoorByName(name, reason))
     );
 
+    const successfulDoors = [];
+
     for (const result of results) {
       if (result.status === 'fulfilled' && result.value.success) {
         this.stats.unlocks_triggered++;
+        successfulDoors.push(result.value.door);
         this.stats.last_unlock = {
           door: result.value.door,
+          doors: successfulDoors,
           reason,
           time: new Date().toISOString()
         };
@@ -414,6 +442,17 @@ class RulesEngine {
         logger.error(`Unlock failed: ${err}`);
       }
     }
+
+    // Update the single door string for backward compatibility with simple reporters
+    if (successfulDoors.length > 1 && this.stats.last_unlock) {
+      this.stats.last_unlock.door = successfulDoors.join(', ');
+    }
+
+    return successfulDoors;
+  }
+
+  setBroadcaster(fn) {
+    this.broadcaster = fn;
   }
 
   // ---------------------------------------------------------------------------
