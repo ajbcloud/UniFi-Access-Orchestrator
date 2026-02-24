@@ -1197,7 +1197,11 @@ async function saveGroupMappings() {
     }
 
     const resolver = { unifi_group_to_group };
-    await api('PUT', '/api/config', { resolver });
+    // Include current doors map so rules saves remain consistent
+    const discovered = doorsData?.discovered || {};
+    const configured = doorsData?.configured || {};
+    const doors = { ...configured, ...discovered };
+    await api('PUT', '/api/config', { resolver, doors });
     toast('Group mappings saved!', 'success');
     await loadConfig();
   } catch (e) {
@@ -1228,7 +1232,10 @@ async function saveNfcRules() {
     });
 
     const unlock_rules = { trigger_location: triggerDoor, group_actions: groupActions };
-    await api('PUT', '/api/config', { unlock_rules });
+    const discovered = doorsData?.discovered || {};
+    const configured = doorsData?.configured || {};
+    const doors = { ...configured, ...discovered };
+    await api('PUT', '/api/config', { unlock_rules, doors });
     toast('NFC rules saved!', 'success');
     await loadConfig();
   } catch (e) {
@@ -1259,7 +1266,10 @@ async function saveDoorbellRules() {
     });
 
     const doorbell_rules = { trigger_location: triggerDoor, group_actions: groupActions, trigger_reason_code: 107, viewer_to_group: {} };
-    await api('PUT', '/api/config', { doorbell_rules });
+    const discovered = doorsData?.discovered || {};
+    const configured = doorsData?.configured || {};
+    const doors = { ...configured, ...discovered };
+    await api('PUT', '/api/config', { doorbell_rules, doors });
     toast('Doorbell rules saved!', 'success');
     await loadConfig();
   } catch (e) {

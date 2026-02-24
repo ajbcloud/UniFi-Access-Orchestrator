@@ -352,9 +352,30 @@ app.put('/api/config', async (req, res) => {
 
     // Deep merge updates (only allow specific safe keys)
     const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors'];
+
+    // recursive merge for plain objects: source values override primitives/arrays
+    function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
+    function deepMerge(target, source) {
+      if (!isPlainObject(source)) return source;
+      if (!isPlainObject(target)) target = {};
+      for (const k of Object.keys(source)) {
+        const sv = source[k];
+        if (isPlainObject(sv)) {
+          target[k] = deepMerge(target[k], sv);
+        } else {
+          target[k] = sv;
+        }
+      }
+      return target;
+    }
+
     for (const key of safeKeys) {
       if (updates[key] !== undefined) {
-        current[key] = updates[key];
+        if (isPlainObject(updates[key]) && isPlainObject(current[key])) {
+          current[key] = deepMerge(current[key], updates[key]);
+        } else {
+          current[key] = updates[key];
+        }
       }
     }
 
