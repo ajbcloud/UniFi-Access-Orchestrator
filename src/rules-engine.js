@@ -292,7 +292,17 @@ class RulesEngine {
     logger.info(`User "${displayName}" -> group "${group}" (via ${strategy}) at "${event.locationName}" -> unlocking: ${doorsToUnlock.join(', ')}`);
 
     const reason = `NFC/tap: ${displayName} (${group || 'default'}) at ${event.locationName}`;
-    await this.executeUnlocks(doorsToUnlock, reason);
+    
+    // Apply delay if specified in the rule
+    const delay = matchingRules[0]?.delay || 0;
+    if (delay > 0) {
+      logger.info(`Delaying unlock by ${delay}s for "${displayName}"`);
+      setTimeout(async () => {
+        await this.executeUnlocks(doorsToUnlock, reason);
+      }, delay * 1000);
+    } else {
+      await this.executeUnlocks(doorsToUnlock, reason);
+    }
     this.stats.events_processed++;
   }
 
@@ -367,7 +377,17 @@ class RulesEngine {
     }
 
     const reason = `Doorbell: answered by ${resolveMethod || 'unknown'} at ${event.locationName}`;
-    await this.executeUnlocks(doorsToUnlock, reason);
+    
+    // Apply delay if specified in the rule
+    const delay = matchingRules[0]?.delay || 0;
+    if (delay > 0) {
+      logger.info(`Delaying doorbell unlock by ${delay}s`);
+      setTimeout(async () => {
+        await this.executeUnlocks(doorsToUnlock, reason);
+      }, delay * 1000);
+    } else {
+      await this.executeUnlocks(doorsToUnlock, reason);
+    }
     this.stats.events_processed++;
   }
 

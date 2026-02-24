@@ -1321,7 +1321,8 @@ function renderConfig() {
           <button class="delete" onclick="deleteNfcRule(${idx})">Delete</button>
         </div>
         <div class="rule-sentence">
-          When <strong>${rule.group}</strong> badges in at <strong>${rule.trigger || '(any door)'}</strong>, unlock
+          When <strong>${rule.group}</strong> badges in at <strong>${rule.trigger || '(any door)'}</strong>, 
+          ${rule.delay > 0 ? `wait <strong>${rule.delay}s</strong>, ` : ''}unlock
           <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
         </div>
       </div>`;
@@ -1360,7 +1361,8 @@ function renderConfig() {
           <button class="delete" onclick="deleteDoorbellRule(${idx})">Delete</button>
         </div>
         <div class="rule-sentence">
-          When a visitor for <strong>${rule.group}</strong> is buzzed in at <strong>${rule.trigger || '(any door)'}</strong>, unlock
+          When a visitor for <strong>${rule.group}</strong> is buzzed in at <strong>${rule.trigger || '(any door)'}</strong>, 
+          ${rule.delay > 0 ? `wait <strong>${rule.delay}s</strong>, ` : ''}unlock
           <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
           ${isLinked ? '<span style="font-size:11px;color:var(--text-muted);margin-left:6px">(same as access rule)</span>' : ''}
         </div>
@@ -1571,7 +1573,9 @@ function showNfcRuleForm(editIndex) {
         <option value="">-- Select trigger door --</option>
         ${allDoors.filter(d => !d.startsWith('_')).map(d => `<option value="${d}" ${d === selectedTrigger ? 'selected' : ''}>${d}</option>`).join('')}
       </select>
-      <span>, unlock:</span>
+      <span>, wait</span>
+      <input type="number" id="nfcFormDelay" value="${existingRule?.delay || 0}" min="0" style="width:60px;padding:4px 8px">
+      <span>seconds, then unlock:</span>
     </div>
     <div class="form-row" style="flex-direction:column;align-items:flex-start">
       ${_buildDoorTags(allDoors, selectedDoors, 'nfc-form')}
@@ -1605,6 +1609,7 @@ async function deleteNfcRule(idx) {
 async function saveNfcRuleFromForm() {
   const group = document.getElementById('nfcFormGroup')?.value;
   const trigger = document.getElementById('nfcFormTrigger')?.value;
+  const delay = parseInt(document.getElementById('nfcFormDelay')?.value || '0');
   if (!group) { toast('Please select a group', 'error'); return; }
   if (!trigger) { toast('Please select a trigger door', 'error'); return; }
 
@@ -1615,7 +1620,7 @@ async function saveNfcRuleFromForm() {
 
   try {
     const rules = _getAccessRules();
-    const newRule = { group, trigger, unlock: selectedDoors };
+    const newRule = { group, trigger, unlock: selectedDoors, delay };
 
     if (_editingNfcIndex !== null && _editingNfcIndex < rules.length) {
       rules[_editingNfcIndex] = newRule;
@@ -1665,7 +1670,9 @@ function showDoorbellRuleForm(editIndex) {
         <option value="">-- Select doorbell --</option>
         ${allDoors.filter(d => !d.startsWith('_')).map(d => `<option value="${d}" ${d === selectedTrigger ? 'selected' : ''}>${d}</option>`).join('')}
       </select>
-      <span>, unlock:</span>
+      <span>, wait</span>
+      <input type="number" id="dbFormDelay" value="${existingRule?.delay || 0}" min="0" style="width:60px;padding:4px 8px">
+      <span>seconds, then unlock:</span>
     </div>
     <div class="form-row" style="flex-direction:column;align-items:flex-start;gap:8px">
       <label class="doorbell-link-toggle">
@@ -1734,6 +1741,7 @@ async function deleteDoorbellRule(idx) {
 async function saveDoorbellRuleFromForm() {
   const group = document.getElementById('dbFormGroup')?.value;
   const trigger = document.getElementById('dbFormTrigger')?.value;
+  const delay = parseInt(document.getElementById('dbFormDelay')?.value || '0');
   if (!group) { toast('Please select a group', 'error'); return; }
   if (!trigger) { toast('Please select a doorbell location', 'error'); return; }
 
@@ -1756,7 +1764,7 @@ async function saveDoorbellRuleFromForm() {
 
   try {
     const rules = _getVisitorRules();
-    const newRule = { group, trigger, unlock: selectedDoors };
+    const newRule = { group, trigger, unlock: selectedDoors, delay };
 
     if (_editingDbIndex !== null && _editingDbIndex < rules.length) {
       rules[_editingDbIndex] = newRule;
@@ -1864,7 +1872,8 @@ function renderTestRules() {
       html += `<div class="test-rule-card" id="test-access-${idx}">
         <div class="test-rule-desc">
           <span class="test-rule-type-badge access">ACCESS</span>
-          When <strong>${rule.group}</strong> badges in at <strong>${rule.trigger}</strong>, unlock <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
+          When <strong>${rule.group}</strong> badges in at <strong>${rule.trigger}</strong>, 
+          ${rule.delay > 0 ? `wait <strong>${rule.delay}s</strong>, ` : ''}unlock <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
         </div>
         <div class="test-rule-actions">
           <select id="testAccessUser-${idx}" class="test-rule-user-select">
@@ -1900,7 +1909,8 @@ function renderTestRules() {
       html += `<div class="test-rule-card" id="test-visitor-${idx}">
         <div class="test-rule-desc">
           <span class="test-rule-type-badge visitor">VISITOR</span>
-          When a visitor for <strong>${rule.group}</strong> is buzzed in at <strong>${rule.trigger}</strong>, unlock <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
+          When a visitor for <strong>${rule.group}</strong> is buzzed in at <strong>${rule.trigger}</strong>, 
+          ${rule.delay > 0 ? `wait <strong>${rule.delay}s</strong>, ` : ''}unlock <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
         </div>
         <div class="test-rule-actions">
           <select id="testVisitorActor-${idx}" class="test-rule-user-select">
