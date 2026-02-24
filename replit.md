@@ -12,19 +12,32 @@ This is a headless Node.js/Express service that integrates with Ubiquiti UniFi A
 - **Framework**: Express 4
 - **Real-time**: Server-Sent Events (SSE) for live dashboard updates
 - **Dashboard**: Single-page HTML (`public/index.html`) served statically
-- **Logging**: Winston with daily rotation
+- **Logging**: Winston with daily rotation to `./logs/`
 
 ## Key Files
 
-- `src/index.js` — Express server, all API routes, SSE event broadcasting
+- `src/index.js` — Express server, all API routes, SSE event broadcasting. Server starts listening before UniFi client initialization so the dashboard is available immediately.
 - `src/unifi-client.js` — UniFi Access API client (doors, users, webhooks, WebSocket)
 - `src/resolver.js` — Resolves user IDs to group names
 - `src/rules-engine.js` — Processes access events and decides which doors to unlock
-- `src/logger.js` — Winston logger with daily file rotation
+- `src/logger.js` — Winston logger with daily file rotation (logs to `./logs/` directory)
 - `src/validate.js` — CLI connectivity validation tool
-- `public/index.html` — Admin dashboard UI (no build step needed)
+- `public/index.html` — Admin dashboard UI (single-file SPA, no build step). Contains all CSS, HTML, and JS for: setup wizard, dashboard, live events, configuration (rule builder), settings, and test tools.
 - `config/config.json` — Runtime configuration (not committed)
 - `config/config.example.json` — Configuration template
+
+## Dashboard Tabs
+
+- **Dashboard** — Stats overview (doors, users, events, unlocks)
+- **Live Events** — Real-time SSE event feed
+- **Configuration** — Rule builder UI with:
+  - Door Mappings (auto-discovered from controller)
+  - User Groups (with logical name mapping)
+  - Access Rules (NFC/PIN/Face/Mobile) — natural language rule cards with add/edit/delete
+  - Visitor Rules (Doorbell/Buzz-in) — can link to access rules or use custom doors, plus viewer device mappings
+  - Event Source configuration
+- **Settings** — Server port, controller connection, logging level
+- **Test Tools** — Door unlock testing, event simulation, connectivity test
 
 ## Configuration
 
@@ -34,8 +47,6 @@ The app reads from `config/config.json` at startup. Key settings:
 - `unifi.host`: IP of the UniFi Access controller (local network)
 - `unifi.token`: UniFi Access API token
 - `unifi.port`: Default `12445`
-
-Logs are written to `./logs/` (relative to project root).
 
 ## Workflow
 
@@ -48,5 +59,6 @@ Run command: `node src/index.js`
 
 ## Notes
 
-- The "Initialization failed: Invalid URL" error on startup is expected when no UniFi host is configured. The dashboard still loads and the user can configure connection settings from the UI.
+- The setup wizard shows on first run when no controller is configured. Users can skip it and configure later from the Settings tab.
+- The server starts listening immediately; UniFi client initialization happens in the background so the dashboard is always accessible.
 - The `unifi-access-app/` subdirectory and `unifi-access-orchestrator-app.tar.gz` are source archives bundled with the repo.

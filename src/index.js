@@ -721,6 +721,16 @@ async function start() {
   logger.info('=== UniFi Access Orchestrator Starting ===');
   logger.info(`Event source mode: ${config.event_source?.mode || 'alarm_manager'}`);
 
+  const port = config.server?.port || 3000;
+  const host = config.server?.host || '0.0.0.0';
+
+  app.listen(port, host, () => {
+    logger.info(`Server listening on ${host}:${port}`);
+    logger.info(`Dashboard: http://${host}:${port}`);
+    logger.info(`Webhook: http://${host}:${port}/webhook`);
+    logger.info('=== Orchestrator Ready ===');
+  });
+
   const initialized = await unifiClient.initialize();
   if (!initialized) {
     logger.error('UniFi client initialization failed. Server will start but unlocks will fail until connectivity is restored.');
@@ -740,16 +750,6 @@ async function start() {
       rulesEngine.handleEvent(event).catch(err => logger.error(`WebSocket event error: ${err.message}`));
     }, reconnectSec);
   }
-
-  const port = config.server?.port || 3000;
-  const host = config.server?.host || '0.0.0.0';
-
-  app.listen(port, host, () => {
-    logger.info(`Server listening on ${host}:${port}`);
-    logger.info(`Dashboard: http://${host}:${port}`);
-    logger.info(`Webhook: http://${host}:${port}/webhook`);
-    logger.info('=== Orchestrator Ready ===');
-  });
 }
 
 // ---------------------------------------------------------------------------
