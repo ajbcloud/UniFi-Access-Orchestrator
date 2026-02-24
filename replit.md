@@ -37,7 +37,7 @@ This is a headless Node.js/Express service that integrates with Ubiquiti UniFi A
   - Visitor Rules (Doorbell/Buzz-in) — can link to access rules or use custom doors, plus viewer device mappings
   - Event Source configuration
 - **Settings** — Server port, controller connection, logging level
-- **Test Tools** — Door unlock testing, event simulation, connectivity test
+- **Test Tools** — Test Configured Rules (simulate access/visitor rules with one click), door unlock testing, custom event simulation, connectivity test
 
 ## Configuration
 

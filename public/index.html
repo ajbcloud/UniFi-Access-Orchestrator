@@ -411,6 +411,69 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .rule-actions button:hover { color: var(--text-primary); border-color: var(--border-light); }
 .rule-actions button.delete:hover { color: var(--red); border-color: var(--red); }
 
+.test-rule-card {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  margin-bottom: 10px;
+  transition: border-color 0.2s, background 0.2s;
+}
+.test-rule-card:hover { border-color: var(--border-light); }
+.test-rule-card.simulating { border-color: var(--green); background: var(--green-dim); }
+
+.test-rule-desc {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+.test-rule-desc strong { color: var(--accent); font-weight: 600; }
+
+.test-rule-type-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+.test-rule-type-badge.access { background: rgba(59,130,246,0.15); color: var(--accent); }
+.test-rule-type-badge.visitor { background: rgba(168,85,247,0.15); color: #a855f7; }
+
+.test-rule-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.test-rule-user-select {
+  flex: 1;
+  min-width: 180px;
+  max-width: 320px;
+  font-size: 12px;
+  padding: 6px 28px 6px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-family: var(--font);
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M3 4.5L6 8l3-3.5H3z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
+.test-rule-result {
+  margin-top: 8px;
+  font-size: 12px;
+  min-height: 0;
+}
+
 .rule-form {
   background: var(--bg-primary);
   border: 1px solid var(--accent);
@@ -818,7 +881,13 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <div id="tools" class="page">
     <div style="font-size:15px;font-weight:600;margin-bottom:16px">Test Tools</div>
 
-    <div class="grid grid-2">
+    <div class="card">
+      <div class="card-title">Test Configured Rules</div>
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Simulate your configured access and visitor rules. Pick a rule to trigger it through the rules engine with a matching user.</p>
+      <div id="testRulesContainer">Loading rules...</div>
+    </div>
+
+    <div class="grid grid-2" style="margin-top:16px">
       <div class="card">
         <div class="card-title">Test Door Unlock</div>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Click a door to send a remote unlock command via the API.</p>
@@ -826,8 +895,8 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       </div>
 
       <div class="card">
-        <div class="card-title">Simulate Event</div>
-        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Send a synthetic event through the rules engine.</p>
+        <div class="card-title">Custom Event Simulation</div>
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Manually build and send a synthetic event through the rules engine.</p>
 
         <div class="form-group">
           <label class="form-label">Event Type</label>
@@ -1094,6 +1163,7 @@ async function loadConfig() {
     ]);
     renderConfig();
     populateSimForm();
+    renderTestRules();
   } catch (e) {
     toast('Failed to load config', 'error');
   }
@@ -1764,6 +1834,137 @@ async function saveEventSource() {
 // ============================================================
 // Test Tools
 // ============================================================
+
+function renderTestRules() {
+  const container = document.getElementById('testRulesContainer');
+  if (!container) return;
+
+  const accessRules = _getAccessRules();
+  const visitorRules = _getVisitorRules();
+  const users = usersData?.users || [];
+  const hasRules = accessRules.length > 0 || visitorRules.length > 0;
+
+  if (!hasRules) {
+    container.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:12px 0">
+      No rules configured yet. Go to the <strong>Configuration</strong> tab to create access or visitor rules, then come back here to test them.
+    </div>`;
+    return;
+  }
+
+  let html = '';
+
+  if (accessRules.length > 0) {
+    html += `<div style="font-size:12px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Access Rules (NFC / PIN / Face / Mobile)</div>`;
+    accessRules.forEach((rule, idx) => {
+      const groupUsers = users.filter(u => u.group === rule.group);
+      const userOptions = groupUsers.length > 0
+        ? groupUsers.map(u => `<option value="${u.id}" data-name="${u.name}">${u.name}</option>`).join('')
+        : `<option value="">No users in this group</option>`;
+
+      html += `<div class="test-rule-card" id="test-access-${idx}">
+        <div class="test-rule-desc">
+          <span class="test-rule-type-badge access">ACCESS</span>
+          When <strong>${rule.group}</strong> badges in at <strong>${rule.trigger}</strong>, unlock <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
+        </div>
+        <div class="test-rule-actions">
+          <select id="testAccessUser-${idx}" class="test-rule-user-select">
+            ${userOptions}
+          </select>
+          <button class="btn btn-sm btn-primary" onclick="simulateRule('access', ${idx})" id="testAccessBtn-${idx}">Simulate</button>
+        </div>
+        <div class="test-rule-result" id="testAccessResult-${idx}"></div>
+      </div>`;
+    });
+  }
+
+  if (visitorRules.length > 0) {
+    if (accessRules.length > 0) html += `<div style="margin-top:16px"></div>`;
+    html += `<div style="font-size:12px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Visitor Rules (Doorbell / Buzz-in)</div>`;
+    const viewers = configData?.doorbell_rules?.viewer_to_group || {};
+
+    visitorRules.forEach((rule, idx) => {
+      const groupUsers = users.filter(u => u.group === rule.group);
+      const matchingViewers = Object.entries(viewers).filter(([, g]) => g === rule.group);
+
+      let actorOptions = '';
+      if (groupUsers.length > 0) {
+        actorOptions += groupUsers.map(u => `<option value="user:${u.id}" data-name="${u.name}">User: ${u.name}</option>`).join('');
+      }
+      if (matchingViewers.length > 0) {
+        actorOptions += matchingViewers.map(([v]) => `<option value="device:${v}">Viewer: ${v}</option>`).join('');
+      }
+      if (!actorOptions) {
+        actorOptions = `<option value="">No users or viewers for this group</option>`;
+      }
+
+      html += `<div class="test-rule-card" id="test-visitor-${idx}">
+        <div class="test-rule-desc">
+          <span class="test-rule-type-badge visitor">VISITOR</span>
+          When a visitor for <strong>${rule.group}</strong> is buzzed in at <strong>${rule.trigger}</strong>, unlock <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
+        </div>
+        <div class="test-rule-actions">
+          <select id="testVisitorActor-${idx}" class="test-rule-user-select">
+            ${actorOptions}
+          </select>
+          <button class="btn btn-sm btn-primary" onclick="simulateRule('visitor', ${idx})" id="testVisitorBtn-${idx}">Simulate</button>
+        </div>
+        <div class="test-rule-result" id="testVisitorResult-${idx}"></div>
+      </div>`;
+    });
+  }
+
+  container.innerHTML = html;
+}
+
+async function simulateRule(type, idx) {
+  const rules = type === 'access' ? _getAccessRules() : _getVisitorRules();
+  const rule = rules[idx];
+  if (!rule) { toast('Rule not found', 'error'); return; }
+
+  const btnId = type === 'access' ? `testAccessBtn-${idx}` : `testVisitorBtn-${idx}`;
+  const resultId = type === 'access' ? `testAccessResult-${idx}` : `testVisitorResult-${idx}`;
+  const cardId = type === 'access' ? `test-access-${idx}` : `test-visitor-${idx}`;
+  const btn = document.getElementById(btnId);
+  const resultEl = document.getElementById(resultId);
+  const card = document.getElementById(cardId);
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Simulating...'; }
+  if (card) card.classList.add('simulating');
+
+  const body = { location: rule.trigger };
+
+  if (type === 'access') {
+    body.event_type = 'access.door.unlock';
+    const userSelect = document.getElementById(`testAccessUser-${idx}`);
+    const userId = userSelect?.value;
+    const userName = userSelect?.selectedOptions?.[0]?.dataset?.name || '';
+    if (userId) { body.user_id = userId; body.user_name = userName; }
+  } else {
+    body.event_type = 'access.doorbell.completed';
+    body.reason_code = '107';
+    const actorSelect = document.getElementById(`testVisitorActor-${idx}`);
+    const actorVal = actorSelect?.value || '';
+    if (actorVal.startsWith('user:')) {
+      body.user_id = actorVal.replace('user:', '');
+      body.user_name = actorSelect?.selectedOptions?.[0]?.textContent?.replace('User: ', '') || '';
+    } else if (actorVal.startsWith('device:')) {
+      body.device_name = actorVal.replace('device:', '');
+    }
+  }
+
+  try {
+    await api('POST', '/test/event', body);
+    if (resultEl) resultEl.innerHTML = `<span class="badge success">Simulated successfully</span> <span style="font-size:11px;color:var(--text-muted)">Expected unlocks: ${(rule.unlock || []).join(', ')}</span>`;
+    toast(`Rule simulated: ${rule.group} at ${rule.trigger}`, 'success');
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<span class="badge error">Failed: ${e.message}</span>`;
+    toast(`Simulation failed: ${e.message}`, 'error');
+  }
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Simulate'; }
+  setTimeout(() => { if (card) card.classList.remove('simulating'); }, 2000);
+}
+
 function populateSimForm() {
   // Locations
   const locSelect = document.getElementById('simLocation');
