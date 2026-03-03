@@ -121,6 +121,12 @@ class RulesEngine {
   // ---------------------------------------------------------------------------
 
   normalizeEvent(raw) {
+    const rawType = raw.event || raw.type || raw.event_type || '';
+    if (rawType.startsWith('data.') || rawType.startsWith('data.v2.')) {
+      logger.debug(`Ignoring device telemetry event: ${rawType}`);
+      return null;
+    }
+
     // API webhook / direct format (section 11.7)
     if (raw.event && raw.data) {
       return {

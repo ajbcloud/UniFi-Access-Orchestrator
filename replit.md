@@ -79,6 +79,7 @@ Run command: `node src/index.js`
 - **Processing diagnostics**: `stats.last_processing` tracks detailed info after each event (action, actorId, resolvedGroup, resolveStrategy, doors attempted/unlocked, etc.). SSE broadcasts include descriptive action text showing exactly what happened at each processing step.
 - **Raw payload viewer**: Last 30 incoming payloads (webhook + WebSocket) stored in a ring buffer, accessible via `GET /api/debug/payloads` and viewable in the Test Tools tab.
 - **WebSocket status**: Dashboard System Info section shows a live connected/disconnected indicator when event source mode is `websocket`.
+- **WebSocket event filtering**: Only access-relevant event types are passed through (`access.logs.add`, `access.door.unlock`, `access.doorbell.*`, etc.). Device telemetry (`data.device.update`, `data.v2.device.update`, heartbeats) is silently dropped at the WebSocket handler level. A safety filter in `normalizeEvent()` also rejects any `data.*` types as a second layer. Filter stats (passed/filtered counts) are shown in the dashboard System Info section and in the `/health` endpoint under `unifi.ws_events_passed`, `unifi.ws_events_filtered`, `unifi.ws_last_filtered_type`. Stats persist across WebSocket reconnects.
 - **`patchEngineForBroadcast(engine)`** helper in `src/index.js` consolidates the event handler monkey-patching for SSE broadcast. Called on initial setup and after reload/config-save re-instantiation.
 
 ## Config Backup System

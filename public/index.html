@@ -745,6 +745,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         <div><span style="color:var(--text-muted)">Memory:</span> <span id="infoMemory">-</span></div>
         <div><span style="color:var(--text-muted)">Uptime:</span> <span id="infoUptime">-</span></div>
         <div><span style="color:var(--text-muted)">Access Gateway:</span> <span id="infoHost">-</span></div>
+        <div id="infoWsFilter" style="display:none"><span style="color:var(--text-muted)">WS Events:</span> <span id="infoWsFilterStats">-</span></div>
       </div>
     </div>
   </div>
@@ -1113,6 +1114,14 @@ function updateDashboard() {
     }
   } else {
     wsStatusEl.innerHTML = '';
+  }
+
+  const wsFilterEl = document.getElementById('infoWsFilter');
+  if (h.event_source === 'websocket' && (u.ws_events_passed > 0 || u.ws_events_filtered > 0)) {
+    wsFilterEl.style.display = '';
+    document.getElementById('infoWsFilterStats').textContent = `${u.ws_events_passed || 0} processed / ${u.ws_events_filtered || 0} filtered`;
+  } else {
+    wsFilterEl.style.display = 'none';
   }
 
   document.getElementById('infoMemory').textContent = `${h.memory_mb || '-'} MB`;
