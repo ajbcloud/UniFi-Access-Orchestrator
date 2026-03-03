@@ -64,6 +64,7 @@ class RulesEngine {
       doorbell_events: 0,
       last_event: null,
       last_unlock: null,
+      last_processing: null,
       started_at: new Date().toISOString()
     };
   }
@@ -209,20 +210,29 @@ class RulesEngine {
 
   async handleWebSocketLog(event) {
     const source = event._source;
-    if (!source) return;
+    if (!source) {
+      logger.debug('WebSocket access.logs.add event has no _source, skipping');
+      return;
+    }
 
     const innerType = source.event?.type;
-    if (!innerType) return;
+    if (!innerType) {
+      logger.debug('WebSocket _source has no event.type, skipping');
+      return;
+    }
 
     // Re-normalize the inner event into our standard format
     const normalized = {
       type: innerType,
       locationName: null,
       deviceName: null,
-      actorId: null,
-      actorName: source.actor?.display_name || null,
+      deviceId: null,
+      actorId: source.actor?.id || source.actor?.user_id || null,
+      actorName: source.actor?.display_name || source.actor?.name || null,
+      actorType: source.actor?.type || null,
       result: source.event?.result,
-      extra: null,
+      reasonCode: source.event?.reason_code,
+      extra: source.extra || null,
       raw: event.raw
     };
 
@@ -230,11 +240,26 @@ class RulesEngine {
     if (source.target && Array.isArray(source.target)) {
       const doorTarget = source.target.find(t => t.type === 'door');
       if (doorTarget) {
-        normalized.locationName = doorTarget.display_name;
+        normalized.locationName = doorTarget.display_name || doorTarget.name;
+        normalized.locationId = doorTarget.id;
+      }
+      const deviceTarget = source.target.find(t => t.type === 'device');
+      if (deviceTarget) {
+        normalized.deviceName = deviceTarget.display_name || deviceTarget.name;
+        normalized.deviceId = deviceTarget.id;
       }
     }
 
-    logger.debug(`WebSocket log unwrapped: ${innerType} at "${normalized.locationName}"`);
+    logger.info(`WebSocket log unwrapped: ${innerType} at "${normalized.locationName}", actor="${normalized.actorName || normalized.actorId || 'none'}" (actorId=${normalized.actorId || 'null'})`);
+
+    // Update last_event so SSE broadcast picks up correct info
+    this.stats.last_event = {
+      type: innerType,
+      location: normalized.locationName,
+      actor: normalized.actorName || normalized.actorId || 'unknown',
+      device: normalized.deviceName,
+      time: new Date().toISOString()
+    };
 
     // Route the unwrapped event
     switch (innerType) {
@@ -244,6 +269,8 @@ class RulesEngine {
       case 'access.doorbell.completed':
         await this.handleDoorbellCompleted(normalized);
         break;
+      default:
+        logger.debug(`WebSocket unwrapped unhandled type: ${innerType}`);
     }
   }
 
@@ -256,6 +283,7 @@ class RulesEngine {
     if (this.isSelfTriggered(event)) {
       logger.debug(`Skipping self-triggered unlock at "${event.locationName}"`);
       this.stats.events_skipped_self++;
+      this.stats.last_processing = { action: 'skipped_self', actorName: event.actorName, location: event.locationName };
       return;
     }
 
@@ -266,6 +294,19 @@ class RulesEngine {
     );
 
     const displayName = userName || event.actorName || event.actorId || 'unknown';
+
+    if (!group) {
+      logger.info(`User "${displayName}" (actorId: ${event.actorId || 'null'}) at "${event.locationName}": no group resolved`);
+      this.stats.events_skipped_no_action++;
+      this.stats.last_processing = {
+        action: 'no_group',
+        actorId: event.actorId,
+        actorName: displayName,
+        location: event.locationName,
+        detail: `No group resolved for ${displayName}` + (event.actorId ? '' : ' (no actor ID in event)')
+      };
+      return;
+    }
 
     // Find matching rules: match group AND trigger location
     const matchingRules = this.accessRules.filter(rule =>
@@ -287,8 +328,16 @@ class RulesEngine {
     }
 
     if (doorsToUnlock.length === 0) {
-      logger.info(`User "${displayName}" (group: ${group || 'unknown'}) at "${event.locationName}". No matching rules.`);
+      logger.info(`User "${displayName}" (group: ${group}) at "${event.locationName}". No matching rules.`);
       this.stats.events_skipped_no_action++;
+      this.stats.last_processing = {
+        action: 'no_rules',
+        actorName: displayName,
+        resolvedGroup: group,
+        resolveStrategy: strategy,
+        location: event.locationName,
+        detail: `No rules for group "${group}" at "${event.locationName}"`
+      };
       return;
     }
 
@@ -300,6 +349,16 @@ class RulesEngine {
     const delay = ruleWithDelay ? ruleWithDelay.delay : 0;
     if (delay > 0) {
       logger.info(`Delaying unlock by ${delay}s for "${displayName}"`);
+      this.stats.last_processing = {
+        action: 'delayed',
+        actorName: displayName,
+        resolvedGroup: group,
+        resolveStrategy: strategy,
+        location: event.locationName,
+        doorsAttempted: doorsToUnlock,
+        delay,
+        detail: `Unlocking in ${delay}s: ${doorsToUnlock.join(', ')}`
+      };
       setTimeout(async () => {
         const unlocked = await this.executeUnlocks(doorsToUnlock, reason);
         if (this.broadcaster) {
@@ -307,13 +366,23 @@ class RulesEngine {
             type: event.type,
             actor: displayName,
             location: event.locationName,
-            action: `Unlocked: ${unlocked.join(', ')}`,
-            success: true
+            action: unlocked.length > 0 ? `Unlocked: ${unlocked.join(', ')}` : `Unlock failed: ${doorsToUnlock.join(', ')}`,
+            success: unlocked.length > 0
           });
         }
       }, delay * 1000);
     } else {
-      await this.executeUnlocks(doorsToUnlock, reason);
+      const unlocked = await this.executeUnlocks(doorsToUnlock, reason);
+      this.stats.last_processing = {
+        action: unlocked.length > 0 ? 'unlocked' : 'unlock_failed',
+        actorName: displayName,
+        resolvedGroup: group,
+        resolveStrategy: strategy,
+        location: event.locationName,
+        doorsAttempted: doorsToUnlock,
+        doorsUnlocked: unlocked,
+        detail: unlocked.length > 0 ? `Unlocked: ${unlocked.join(', ')}` : `Unlock failed for: ${doorsToUnlock.join(', ')}`
+      };
     }
     this.stats.events_processed++;
   }
@@ -336,6 +405,11 @@ class RulesEngine {
     if (event.reasonCode !== triggerCode) {
       const desc = this.describeReasonCode(event.reasonCode);
       logger.info(`Doorbell completed at "${event.locationName}": ${desc} (no action)`);
+      this.stats.last_processing = {
+        action: 'doorbell_wrong_reason',
+        location: event.locationName,
+        detail: `Doorbell: ${desc} (not an admin unlock)`
+      };
       return;
     }
 
@@ -364,6 +438,20 @@ class RulesEngine {
       logger.debug(`Doorbell answered by device MAC ${event.hostDeviceMac} but no mapping found`);
     }
 
+    if (!group) {
+      logger.info(`Doorbell answered at "${event.locationName}" but no group resolved (actorId=${event.actorId || 'null'}, device=${event.deviceName || 'null'})`);
+      this.stats.events_skipped_no_action++;
+      this.stats.last_processing = {
+        action: 'no_group',
+        actorId: event.actorId,
+        actorName: event.actorName,
+        deviceName: event.deviceName,
+        location: event.locationName,
+        detail: `Doorbell: no group resolved` + (event.actorId ? '' : ' (no actor ID)') + (event.deviceName ? `, device "${event.deviceName}" not mapped` : '')
+      };
+      return;
+    }
+
     // Find matching rules: match group AND trigger location
     const matchingRules = this.visitorRules.filter(rule =>
       rule.group === group && this.locationMatches(event.locationName, rule.trigger)
@@ -388,6 +476,13 @@ class RulesEngine {
 
     if (doorsToUnlock.length === 0) {
       this.stats.events_skipped_no_action++;
+      this.stats.last_processing = {
+        action: 'no_rules',
+        actorName: resolveMethod,
+        resolvedGroup: group,
+        location: event.locationName,
+        detail: `Doorbell: no rules for group "${group}" at "${event.locationName}"`
+      };
       return;
     }
 
@@ -397,6 +492,15 @@ class RulesEngine {
     const delay = ruleWithDelay ? ruleWithDelay.delay : 0;
     if (delay > 0) {
       logger.info(`Delaying doorbell unlock by ${delay}s`);
+      this.stats.last_processing = {
+        action: 'delayed',
+        actorName: resolveMethod,
+        resolvedGroup: group,
+        location: event.locationName,
+        doorsAttempted: doorsToUnlock,
+        delay,
+        detail: `Doorbell: unlocking in ${delay}s: ${doorsToUnlock.join(', ')}`
+      };
       setTimeout(async () => {
         const unlocked = await this.executeUnlocks(doorsToUnlock, reason);
         if (this.broadcaster) {
@@ -404,13 +508,22 @@ class RulesEngine {
             type: event.type,
             actor: resolveMethod || 'unknown',
             location: event.locationName,
-            action: `Unlocked: ${unlocked.join(', ')}`,
-            success: true
+            action: unlocked.length > 0 ? `Unlocked: ${unlocked.join(', ')}` : `Unlock failed: ${doorsToUnlock.join(', ')}`,
+            success: unlocked.length > 0
           });
         }
       }, delay * 1000);
     } else {
-      await this.executeUnlocks(doorsToUnlock, reason);
+      const unlocked = await this.executeUnlocks(doorsToUnlock, reason);
+      this.stats.last_processing = {
+        action: unlocked.length > 0 ? 'unlocked' : 'unlock_failed',
+        actorName: resolveMethod,
+        resolvedGroup: group,
+        location: event.locationName,
+        doorsAttempted: doorsToUnlock,
+        doorsUnlocked: unlocked,
+        detail: unlocked.length > 0 ? `Unlocked: ${unlocked.join(', ')}` : `Unlock failed for: ${doorsToUnlock.join(', ')}`
+      };
     }
     this.stats.events_processed++;
   }

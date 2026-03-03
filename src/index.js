@@ -74,36 +74,88 @@ function broadcastEvent(eventData) {
   }
 }
 
-// Patch the rules engine to broadcast events to the GUI
-const origHandleEvent = rulesEngine.handleEvent.bind(rulesEngine);
-rulesEngine.handleEvent = async function(rawPayload) {
-  const beforeStats = { ...this.getStats() };
-  await origHandleEvent(rawPayload);
-  const afterStats = this.getStats();
+// Raw payload ring buffer for debugging
+const RAW_PAYLOAD_MAX = 30;
+const rawPayloads = [];
 
-  // Broadcast to GUI
-  broadcastEvent({
+function storeRawPayload(source, payload) {
+  rawPayloads.unshift({
+    source,
+    timestamp: new Date().toISOString(),
+    payload: typeof payload === 'object' ? JSON.parse(JSON.stringify(payload)) : payload
+  });
+  if (rawPayloads.length > RAW_PAYLOAD_MAX) rawPayloads.length = RAW_PAYLOAD_MAX;
+}
+
+function buildBroadcastAction(beforeStats, afterStats) {
+  const proc = afterStats.last_processing;
+  let action;
+  let success = true;
+
+  if (proc) {
+    switch (proc.action) {
+      case 'unlocked':
+        action = `Unlocked: ${proc.doorsUnlocked?.join(', ') || afterStats.last_unlock?.door || 'unknown'}`;
+        break;
+      case 'unlock_failed':
+        action = `Unlock failed: ${proc.doorsAttempted?.join(', ') || 'unknown'}`;
+        success = false;
+        break;
+      case 'delayed':
+        action = proc.detail || `Unlocking in ${proc.delay}s...`;
+        break;
+      case 'no_group':
+        action = proc.detail || `No group resolved for ${proc.actorName || 'unknown'}`;
+        break;
+      case 'no_rules':
+        action = proc.detail || `No rules matched`;
+        break;
+      case 'skipped_self':
+        action = 'Skipped (self-triggered)';
+        break;
+      case 'doorbell_wrong_reason':
+        action = proc.detail || 'Doorbell: not an admin unlock';
+        break;
+      default:
+        action = proc.detail || 'Processed';
+    }
+  } else {
+    action = afterStats.unlocks_triggered > beforeStats.unlocks_triggered
+      ? `Unlocked: ${afterStats.last_unlock?.door || 'unknown'}`
+      : afterStats.events_skipped_self > beforeStats.events_skipped_self
+        ? 'Skipped (self-triggered)'
+        : afterStats.events_skipped_no_action > beforeStats.events_skipped_no_action
+          ? 'No action needed'
+          : 'Processed';
+    success = afterStats.unlocks_failed <= beforeStats.unlocks_failed;
+  }
+
+  return {
     type: afterStats.last_event?.type || 'unknown',
     actor: afterStats.last_event?.actor || 'unknown',
     location: afterStats.last_event?.location || 'unknown',
     device: afterStats.last_event?.device || null,
-    action: afterStats.unlocks_triggered > beforeStats.unlocks_triggered
-      ? `Unlocked: ${afterStats.last_unlock?.door || 'unknown'}`
-      : afterStats.events_skipped_self > beforeStats.events_skipped_self
-        ? 'Skipped (self-triggered)'
-        : afterStats.events_skipped_location > beforeStats.events_skipped_location
-          ? 'Skipped (wrong location)'
-          : afterStats.events_skipped_no_action > beforeStats.events_skipped_no_action
-            ? 'No action needed'
-            : 'Processed',
-    success: afterStats.unlocks_failed <= beforeStats.unlocks_failed,
+    action,
+    success,
     unlock_door: afterStats.last_unlock?.door || null,
-    unlock_reason: afterStats.last_unlock?.reason || null
-  });
-};
+    unlock_reason: afterStats.last_unlock?.reason || null,
+    processing: proc || null
+  };
+}
 
-// Allow rules engine to push delayed events back to GUI
-rulesEngine.setBroadcaster(broadcastEvent);
+function patchEngineForBroadcast(engine) {
+  const origHandler = engine.handleEvent.bind(engine);
+  engine.handleEvent = async function(rawPayload) {
+    const before = { ...this.getStats() };
+    await origHandler(rawPayload);
+    const after = this.getStats();
+    broadcastEvent(buildBroadcastAction(before, after));
+  };
+  engine.setBroadcaster(broadcastEvent);
+}
+
+// Patch the rules engine to broadcast events to the GUI
+patchEngineForBroadcast(rulesEngine);
 
 // ---------------------------------------------------------------------------
 // Express app
@@ -182,6 +234,7 @@ app.post('/webhook', async (req, res) => {
   const eventType = payload.event || payload.type || payload.event_type || 'unknown';
   logger.info(`Webhook received: ${eventType}`);
   logger.debug(`Webhook payload: ${JSON.stringify(payload).substring(0, 500)}`);
+  storeRawPayload('webhook', payload);
 
   try {
     await rulesEngine.handleEvent(payload);
@@ -205,6 +258,14 @@ app.get('/health', (req, res) => {
     engine: rulesEngine.getStats(),
     memory_mb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 10) / 10
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/debug/payloads - Raw event payload viewer
+// ---------------------------------------------------------------------------
+
+app.get('/api/debug/payloads', (req, res) => {
+  res.json({ payloads: rawPayloads, count: rawPayloads.length });
 });
 
 // ---------------------------------------------------------------------------
@@ -300,22 +361,7 @@ app.post('/reload', async (req, res) => {
     unifiClient = new UniFiClient(newConfig);
     resolver = new Resolver(newConfig, unifiClient);
     rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
-
-    // Re-patch the event handler for SSE broadcasting
-    const newOrigHandler = rulesEngine.handleEvent.bind(rulesEngine);
-    rulesEngine.handleEvent = async function(rawPayload) {
-      const before = { ...this.getStats() };
-      await newOrigHandler(rawPayload);
-      const after = this.getStats();
-      broadcastEvent({
-        type: after.last_event?.type || 'unknown',
-        actor: after.last_event?.actor || 'unknown',
-        location: after.last_event?.location || 'unknown',
-        action: after.unlocks_triggered > before.unlocks_triggered
-          ? `Unlocked: ${after.last_unlock?.door}` : 'Processed',
-        success: after.unlocks_failed <= before.unlocks_failed
-      });
-    };
+    patchEngineForBroadcast(rulesEngine);
 
     await unifiClient.initialize();
     config = newConfig;
@@ -392,22 +438,7 @@ app.put('/api/config', async (req, res) => {
       unifiClient = new UniFiClient(newConfig);
       resolver = new Resolver(newConfig, unifiClient);
       rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
-
-      // Re-patch the event handler for SSE broadcasting
-      const newOrigHandler = rulesEngine.handleEvent.bind(rulesEngine);
-      rulesEngine.handleEvent = async function(rawPayload) {
-        const before = { ...this.getStats() };
-        await newOrigHandler(rawPayload);
-        const after = this.getStats();
-        broadcastEvent({
-          type: after.last_event?.type || 'unknown',
-          actor: after.last_event?.actor || 'unknown',
-          location: after.last_event?.location || 'unknown',
-          action: after.unlocks_triggered > before.unlocks_triggered
-            ? `Unlocked: ${after.last_unlock?.door}` : 'Processed',
-          success: after.unlocks_failed <= before.unlocks_failed
-        });
-      };
+      patchEngineForBroadcast(rulesEngine);
 
       await unifiClient.initialize();
       config = newConfig;
@@ -750,6 +781,7 @@ async function start() {
   } else if (mode === 'websocket') {
     const reconnectSec = config.event_source.websocket?.reconnect_interval_seconds || 5;
     unifiClient.connectWebSocket((event) => {
+      storeRawPayload('websocket', event);
       rulesEngine.handleEvent(event).catch(err => logger.error(`WebSocket event error: ${err.message}`));
     }, reconnectSec);
   }

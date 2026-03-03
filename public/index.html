@@ -741,7 +741,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <div class="card" style="margin-top:16px">
       <div class="card-title">System Info</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px">
-        <div><span style="color:var(--text-muted)">Event Source:</span> <span id="infoEventSource">-</span></div>
+        <div><span style="color:var(--text-muted)">Event Source:</span> <span id="infoEventSource">-</span> <span id="infoWsStatus"></span></div>
         <div><span style="color:var(--text-muted)">Memory:</span> <span id="infoMemory">-</span></div>
         <div><span style="color:var(--text-muted)">Uptime:</span> <span id="infoUptime">-</span></div>
         <div><span style="color:var(--text-muted)">Access Gateway:</span> <span id="infoHost">-</span></div>
@@ -960,6 +960,19 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <button class="btn btn-primary" onclick="runConnectivityTest()" id="connTestBtn">Test Connection</button>
       <div id="connTestResults" style="margin-top:16px"></div>
     </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-title" style="cursor:pointer;display:flex;align-items:center;gap:8px" onclick="toggleRawPayloads()">
+        Recent Raw Events <span id="rawPayloadToggle" style="font-size:10px;color:var(--text-muted)">&#9654;</span>
+      </div>
+      <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+        Inspect the raw JSON payloads received from UniFi (webhook or WebSocket). Useful for verifying event format and troubleshooting field mapping.
+      </div>
+      <button class="btn btn-secondary" onclick="loadRawPayloads()">Refresh Payloads</button>
+      <div id="rawPayloadsContainer" style="display:none;margin-top:12px">
+        <div id="rawPayloadsList" style="font-family:var(--mono);font-size:12px;max-height:500px;overflow-y:auto"></div>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -1076,6 +1089,18 @@ function updateDashboard() {
   }
 
   document.getElementById('infoEventSource').textContent = h.event_source || '-';
+
+  const wsStatusEl = document.getElementById('infoWsStatus');
+  if (h.event_source === 'websocket') {
+    if (u.websocket_connected) {
+      wsStatusEl.innerHTML = '<span class="status-pill online" style="font-size:11px;padding:2px 8px"><span class="status-dot"></span>connected</span>';
+    } else {
+      wsStatusEl.innerHTML = '<span class="status-pill offline" style="font-size:11px;padding:2px 8px"><span class="status-dot"></span>disconnected</span>';
+    }
+  } else {
+    wsStatusEl.innerHTML = '';
+  }
+
   document.getElementById('infoMemory').textContent = `${h.memory_mb || '-'} MB`;
   document.getElementById('infoUptime').textContent = formatUptime(h.uptime_seconds || 0);
   document.getElementById('uptimeDisplay').textContent = `Uptime: ${formatUptime(h.uptime_seconds || 0)}`;
@@ -1113,12 +1138,13 @@ function addEventRow(evt) {
     : evt.type?.includes('unlock') ? 'success'
     : evt.type?.includes('system') ? 'warning' : 'info';
 
+  const isWarning = evt.action?.includes('Skipped') || evt.action?.includes('No action') || evt.action?.includes('No group') || evt.action?.includes('No rules') || evt.action?.includes('not an admin');
   const statusBadge = evt.success === false ? 'error'
-    : evt.action?.includes('Skipped') || evt.action?.includes('No action') ? 'warning'
+    : isWarning ? 'warning'
     : 'success';
 
   const statusText = evt.success === false ? 'Failed'
-    : evt.action?.includes('Skipped') || evt.action?.includes('No action') ? 'Skipped'
+    : isWarning ? 'Skipped'
     : 'OK';
 
   tr.innerHTML = `
@@ -2136,6 +2162,53 @@ async function runConnectivityTest() {
 
   btn.disabled = false;
   btn.textContent = 'Test Connection';
+}
+
+function toggleRawPayloads() {
+  const container = document.getElementById('rawPayloadsContainer');
+  const toggle = document.getElementById('rawPayloadToggle');
+  if (container.style.display === 'none') {
+    container.style.display = 'block';
+    toggle.innerHTML = '&#9660;';
+    loadRawPayloads();
+  } else {
+    container.style.display = 'none';
+    toggle.innerHTML = '&#9654;';
+  }
+}
+
+async function loadRawPayloads() {
+  const list = document.getElementById('rawPayloadsList');
+  list.innerHTML = '<div style="color:var(--text-muted)">Loading...</div>';
+  try {
+    const result = await api('GET', '/api/debug/payloads');
+    const payloads = result.payloads || [];
+    if (payloads.length === 0) {
+      list.innerHTML = '<div style="color:var(--text-muted)">No raw events captured yet. Events will appear here as they arrive via webhook or WebSocket.</div>';
+      return;
+    }
+    let html = '';
+    payloads.forEach((entry, i) => {
+      const time = new Date(entry.timestamp).toLocaleTimeString();
+      const sourceBadge = entry.source === 'websocket' ? 'info' : 'success';
+      const jsonStr = JSON.stringify(entry.payload, null, 2);
+      const preview = jsonStr.length > 120 ? jsonStr.substring(0, 120) + '...' : jsonStr;
+      html += `<div style="margin-bottom:8px;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
+        <div style="padding:8px 12px;background:var(--bg-hover);display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+          <span><span class="badge ${sourceBadge}">${entry.source}</span> <span style="color:var(--text-muted);font-size:11px">${time}</span></span>
+          <span style="color:var(--text-muted);font-size:11px">${jsonStr.length} chars</span>
+        </div>
+        <pre style="display:none;padding:12px;margin:0;background:var(--bg-input);overflow-x:auto;white-space:pre-wrap;word-break:break-all;font-size:11px;line-height:1.4;color:var(--text-secondary)">${escapeHtml(jsonStr)}</pre>
+      </div>`;
+    });
+    list.innerHTML = html;
+  } catch (e) {
+    list.innerHTML = `<div style="color:var(--red)">Failed to load: ${e.message}</div>`;
+  }
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 async function forceSync() {
