@@ -37,7 +37,7 @@ This is a headless Node.js/Express service that integrates with Ubiquiti UniFi A
   - Visitor Rules (Doorbell/Buzz-in) — can link to access rules or use custom doors, plus viewer device mappings
   - Event Source configuration
 - **Settings** — Server port, controller connection, logging level
-- **Test Tools** — Test Configured Rules (simulate access/visitor rules with one click), door unlock testing, custom event simulation, connectivity test
+- **Test Tools** — Test Configured Rules (simulate access/visitor rules with one click), door unlock testing, custom event simulation, connectivity test, raw event payload viewer
 
 ## Configuration
 
@@ -73,6 +73,13 @@ Backward compatibility: the rules engine and frontend both handle the legacy for
 
 Configured as a **VM** deployment target (uses in-memory state + SSE/WebSocket connections).
 Run command: `node src/index.js`
+
+## Diagnostics & Debugging
+
+- **Processing diagnostics**: `stats.last_processing` tracks detailed info after each event (action, actorId, resolvedGroup, resolveStrategy, doors attempted/unlocked, etc.). SSE broadcasts include descriptive action text showing exactly what happened at each processing step.
+- **Raw payload viewer**: Last 30 incoming payloads (webhook + WebSocket) stored in a ring buffer, accessible via `GET /api/debug/payloads` and viewable in the Test Tools tab.
+- **WebSocket status**: Dashboard System Info section shows a live connected/disconnected indicator when event source mode is `websocket`.
+- **`patchEngineForBroadcast(engine)`** helper in `src/index.js` consolidates the event handler monkey-patching for SSE broadcast. Called on initial setup and after reload/config-save re-instantiation.
 
 ## Notes
 
