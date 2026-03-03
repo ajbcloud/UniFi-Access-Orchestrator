@@ -81,6 +81,18 @@ Run command: `node src/index.js`
 - **WebSocket status**: Dashboard System Info section shows a live connected/disconnected indicator when event source mode is `websocket`.
 - **`patchEngineForBroadcast(engine)`** helper in `src/index.js` consolidates the event handler monkey-patching for SSE broadcast. Called on initial setup and after reload/config-save re-instantiation.
 
+## Config Backup System
+
+- **Module**: `src/backup.js` — `createBackup()`, `listBackups()`, `restoreBackup()`, `pruneBackups()`
+- **Auto-backup on save**: Every `PUT /api/config` creates a backup before applying changes
+- **Scheduled backup**: Daily check, creates backup if last one is older than `backup.interval_days` (default 30)
+- **Pre-restore safety**: Restoring always creates a backup of the current config first
+- **Config keys**: `backup.interval_days` (default 30), `backup.max_backups` (default 12)
+- **Backup directory**: `BACKUP_DIR` env var, or `backups/` subdirectory next to `config.json`
+- **API endpoints**: `GET /api/backups`, `POST /api/backups`, `POST /api/backups/restore`, `GET /api/backups/:filename`
+- **UI**: "Backup & Restore" card in Settings tab with create/restore/download actions
+- **Electron**: `electron/main.js` sets `BACKUP_DIR` to `userData/backups/`, creates directory on startup, adds "Backup Config Now" and "Open Backups Folder" menu items
+
 ## Notes
 
 - The setup wizard shows on first run when no controller is configured. Users can skip it and configure later from the Settings tab.

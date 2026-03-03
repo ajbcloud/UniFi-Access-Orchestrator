@@ -875,6 +875,19 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
           </select>
         </div>
       </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-title">Backup &amp; Restore</div>
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+          Your configuration is automatically backed up every time you save changes. You can also create manual backups, download them, or restore from a previous backup.
+        </p>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
+          <button class="btn btn-primary" onclick="createManualBackup()">Create Backup Now</button>
+          <button class="btn btn-secondary" onclick="loadBackups()">Refresh</button>
+        </div>
+        <div id="backupInfo" style="font-size:12px;color:var(--text-muted);margin-bottom:12px"></div>
+        <div id="backupsList"></div>
+      </div>
     </div>
 
   <!-- TEST TOOLS -->
@@ -1003,6 +1016,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     // Load settings when user opens the Settings tab
     if (tab.dataset.page === 'settings') {
       loadSettings();
+      loadBackups();
     }
   });
 });
@@ -1233,6 +1247,74 @@ async function saveSettings() {
     toast('Failed to save settings: ' + e.message, 'error');
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function loadBackups() {
+  const listEl = document.getElementById('backupsList');
+  const infoEl = document.getElementById('backupInfo');
+  listEl.innerHTML = '<div style="color:var(--text-muted)">Loading backups...</div>';
+
+  try {
+    const data = await api('GET', '/api/backups');
+    const backups = data.backups || [];
+    const settings = data.settings || {};
+
+    infoEl.textContent = `Schedule: every ${settings.interval_days || 30} days, keeping last ${settings.max_backups || 12} backups. Also backs up on every config save.`;
+
+    if (backups.length === 0) {
+      listEl.innerHTML = '<div style="color:var(--text-muted);padding:12px;background:var(--bg-input);border-radius:var(--radius)">No backups yet. Click "Create Backup Now" or save any configuration change to create one.</div>';
+      return;
+    }
+
+    let html = '<table style="width:100%;font-size:13px;border-collapse:collapse">';
+    html += '<thead><tr style="text-align:left;border-bottom:1px solid var(--border)">';
+    html += '<th style="padding:8px 12px;color:var(--text-secondary);font-weight:500">Date</th>';
+    html += '<th style="padding:8px 12px;color:var(--text-secondary);font-weight:500">Size</th>';
+    html += '<th style="padding:8px 12px;color:var(--text-secondary);font-weight:500;text-align:right">Actions</th>';
+    html += '</tr></thead><tbody>';
+
+    backups.forEach((b) => {
+      const date = new Date(b.timestamp).toLocaleString();
+      html += `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:8px 12px">${date}</td>
+        <td style="padding:8px 12px;color:var(--text-muted)">${b.sizeFormatted}</td>
+        <td style="padding:8px 12px;text-align:right">
+          <button class="btn btn-sm btn-secondary" onclick="restoreFromBackup('${b.filename}')" style="margin-right:4px">Restore</button>
+          <a href="/api/backups/${b.filename}" class="btn btn-sm btn-secondary" style="text-decoration:none;display:inline-block" download>Download</a>
+        </td>
+      </tr>`;
+    });
+
+    html += '</tbody></table>';
+    listEl.innerHTML = html;
+  } catch (e) {
+    listEl.innerHTML = `<div style="color:var(--red)">Failed to load backups: ${e.message}</div>`;
+  }
+}
+
+async function createManualBackup() {
+  try {
+    const result = await api('POST', '/api/backups');
+    toast(`Backup created: ${result.backup?.filename}`, 'success');
+    loadBackups();
+  } catch (e) {
+    toast('Backup failed: ' + e.message, 'error');
+  }
+}
+
+async function restoreFromBackup(filename) {
+  const confirmed = confirm(`Restore configuration from backup?\n\n${filename}\n\nYour current config will be backed up first, then replaced with this backup. The service will reload automatically.`);
+  if (!confirmed) return;
+
+  try {
+    await api('POST', '/api/backups/restore', { filename });
+    toast('Configuration restored successfully. Reloading...', 'success');
+    await loadBackups();
+    await loadConfig();
+    await loadSettings();
+  } catch (e) {
+    toast('Restore failed: ' + e.message, 'error');
   }
 }
 

@@ -29,12 +29,14 @@ const logger = require('./logger');
 const UniFiClient = require('./unifi-client');
 const Resolver = require('./resolver');
 const RulesEngine = require('./rules-engine');
+const { createBackup, listBackups, restoreBackup, pruneBackups } = require('./backup');
 
 // ---------------------------------------------------------------------------
 // Load config
 // ---------------------------------------------------------------------------
 
 const CONFIG_PATH = process.env.MIDDLEWARE_CONFIG_PATH || process.env.CONFIG_PATH || path.resolve(__dirname, '../config/config.json');
+const BACKUP_DIR = process.env.BACKUP_DIR || path.join(path.dirname(CONFIG_PATH), 'backups');
 
 function loadConfig() {
   const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
@@ -400,7 +402,7 @@ app.put('/api/config', async (req, res) => {
     const current = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
 
     // Deep merge updates (only allow specific safe keys)
-    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors'];
+    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup'];
 
     // recursive merge for plain objects: source values override primitives/arrays
     function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
@@ -431,6 +433,15 @@ app.put('/api/config', async (req, res) => {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(current, null, 2));
     logger.info('Config saved to disk');
 
+    try {
+      const backupResult = createBackup(CONFIG_PATH, BACKUP_DIR);
+      const maxBackups = current.backup?.max_backups || 12;
+      pruneBackups(BACKUP_DIR, maxBackups);
+      logger.info(`Config backup created: ${backupResult.filename}`);
+    } catch (backupErr) {
+      logger.warn(`Config backup failed: ${backupErr.message}`);
+    }
+
     // Auto-reload the service to apply changes immediately
     try {
       const newConfig = loadConfig();
@@ -454,6 +465,82 @@ app.put('/api/config', async (req, res) => {
     logger.error(`Config save failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Backup API endpoints
+// ---------------------------------------------------------------------------
+
+app.get('/api/backups', (req, res) => {
+  try {
+    const backups = listBackups(BACKUP_DIR);
+    const intervalDays = config.backup?.interval_days || 30;
+    const maxBackups = config.backup?.max_backups || 12;
+    res.json({ backups, settings: { interval_days: intervalDays, max_backups: maxBackups }, backup_dir: BACKUP_DIR });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/backups', (req, res) => {
+  try {
+    const result = createBackup(CONFIG_PATH, BACKUP_DIR);
+    const maxBackups = config.backup?.max_backups || 12;
+    pruneBackups(BACKUP_DIR, maxBackups);
+    logger.info(`Manual backup created: ${result.filename}`);
+    res.json({ status: 'ok', backup: result });
+  } catch (err) {
+    logger.error(`Manual backup failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/backups/restore', async (req, res) => {
+  const { filename } = req.body || {};
+  if (!filename) {
+    return res.status(400).json({ error: 'Missing filename' });
+  }
+
+  try {
+    const result = restoreBackup(filename, BACKUP_DIR, CONFIG_PATH);
+    logger.info(`Config restored from backup: ${filename}`);
+
+    try {
+      const newConfig = loadConfig();
+      unifiClient.shutdown();
+      unifiClient = new UniFiClient(newConfig);
+      resolver = new Resolver(newConfig, unifiClient);
+      rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
+      patchEngineForBroadcast(rulesEngine);
+      await unifiClient.initialize();
+      config = newConfig;
+      broadcastEvent({ type: 'system.config_restore', actor: 'Admin', location: '-', action: `Restored from ${filename}`, success: true });
+      logger.info('Config reloaded after restore');
+    } catch (reloadErr) {
+      logger.warn(`Auto-reload after restore failed: ${reloadErr.message}`);
+    }
+
+    res.json({ status: 'restored', ...result });
+  } catch (err) {
+    logger.error(`Restore failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/backups/:filename', (req, res) => {
+  const { filename } = req.params;
+  if (!/^config_\d{4}-\d{2}-\d{2}_\d{6}\.json$/.test(filename)) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+
+  const filePath = path.join(BACKUP_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Backup not found' });
+  }
+
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Type', 'application/json');
+  res.sendFile(filePath);
 });
 
 // ---------------------------------------------------------------------------
@@ -769,6 +856,28 @@ async function start() {
   if (!initialized) {
     logger.error('UniFi client initialization failed. Server will start but unlocks will fail until connectivity is restored.');
   }
+
+  // Start periodic config backup — check daily, create if overdue
+  const backupIntervalDays = config.backup?.interval_days || 30;
+  const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // check once per day
+  setInterval(() => {
+    try {
+      const existing = listBackups(BACKUP_DIR);
+      const now = Date.now();
+      const lastBackupTime = existing.length > 0 ? new Date(existing[0].timestamp).getTime() : 0;
+      const daysSinceLast = (now - lastBackupTime) / (24 * 60 * 60 * 1000);
+
+      if (daysSinceLast >= backupIntervalDays) {
+        const result = createBackup(CONFIG_PATH, BACKUP_DIR);
+        const maxBackups = config.backup?.max_backups || 12;
+        pruneBackups(BACKUP_DIR, maxBackups);
+        logger.info(`Scheduled backup created: ${result.filename} (${Math.floor(daysSinceLast)} days since last)`);
+      }
+    } catch (err) {
+      logger.warn(`Scheduled backup check failed: ${err.message}`);
+    }
+  }, CHECK_INTERVAL_MS);
+  logger.info(`Config backup schedule: every ${backupIntervalDays} days (checked daily)`);
 
   const mode = config.event_source?.mode || 'alarm_manager';
   if (mode === 'api_webhook') {

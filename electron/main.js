@@ -25,13 +25,20 @@ function getLogDir() {
   return path.join(getConfigDir(), 'logs');
 }
 
+function getBackupDir() {
+  return path.join(getConfigDir(), 'backups');
+}
+
 function ensureConfig() {
   const configDir = getConfigDir();
   const configPath = getConfigPath();
   const logDir = getLogDir();
 
+  const backupDir = getBackupDir();
+
   fs.mkdirSync(configDir, { recursive: true });
   fs.mkdirSync(logDir, { recursive: true });
+  fs.mkdirSync(backupDir, { recursive: true });
 
   if (!fs.existsSync(configPath)) {
     const candidates = [
@@ -73,6 +80,7 @@ function ensureConfig() {
 function patchConfigPath() {
   process.env.MIDDLEWARE_CONFIG_PATH = getConfigPath();
   process.env.LOG_DIR = getLogDir();
+  process.env.BACKUP_DIR = getBackupDir();
 }
 
 // Safe HTTP call for menu actions - catches all errors gracefully
@@ -250,6 +258,19 @@ function createAppMenu() {
         {
           label: 'Open Log Folder',
           click: () => { shell.openPath(getLogDir()); }
+        },
+        {
+          label: 'Open Backups Folder',
+          click: () => { shell.openPath(getBackupDir()); }
+        },
+        { type: 'separator' },
+        {
+          label: 'Backup Config Now',
+          click: () => {
+            menuApiCall('/api/backups', 'POST', () => {
+              dialog.showMessageBox(mainWindow, { type: 'info', title: 'Backup', message: 'Configuration backup created successfully.', detail: `Backups are saved in:\n${getBackupDir()}` });
+            });
+          }
         },
         { type: 'separator' },
         {
