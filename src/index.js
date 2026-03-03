@@ -149,7 +149,10 @@ function patchEngineForBroadcast(engine) {
   const origHandler = engine.handleEvent.bind(engine);
   engine.handleEvent = async function(rawPayload) {
     const before = { ...this.getStats() };
-    await origHandler(rawPayload);
+    const result = await origHandler(rawPayload);
+    if (result === false) {
+      return;
+    }
     const after = this.getStats();
     broadcastEvent(buildBroadcastAction(before, after));
   };

@@ -1117,9 +1117,12 @@ function updateDashboard() {
   }
 
   const wsFilterEl = document.getElementById('infoWsFilter');
-  if (h.event_source === 'websocket' && (u.ws_events_passed > 0 || u.ws_events_filtered > 0)) {
+  const engineFiltered = h.engine?.events_filtered || 0;
+  const wsFiltered = u.ws_events_filtered || 0;
+  const totalFiltered = engineFiltered + wsFiltered;
+  if (totalFiltered > 0) {
     wsFilterEl.style.display = '';
-    document.getElementById('infoWsFilterStats').textContent = `${u.ws_events_passed || 0} processed / ${u.ws_events_filtered || 0} filtered`;
+    document.getElementById('infoWsFilterStats').textContent = `${totalFiltered} noise events filtered`;
   } else {
     wsFilterEl.style.display = 'none';
   }
