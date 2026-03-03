@@ -79,7 +79,20 @@ Run command: `node src/index.js`
 - **Processing diagnostics**: `stats.last_processing` tracks detailed info after each event (action, actorId, resolvedGroup, resolveStrategy, doors attempted/unlocked, etc.). SSE broadcasts include descriptive action text showing exactly what happened at each processing step.
 - **Raw payload viewer**: Last 30 incoming payloads (webhook + WebSocket) stored in a ring buffer, accessible via `GET /api/debug/payloads` and viewable in the Test Tools tab.
 - **WebSocket status**: Dashboard System Info section shows a live connected/disconnected indicator when event source mode is `websocket`.
-- **`patchEngineForBroadcast(engine)`** helper in `src/index.js` consolidates the event handler monkey-patching for SSE broadcast. Called on initial setup and after reload/config-save re-instantiation.
+- **Event noise filtering** (two layers): (1) WebSocket whitelist in `unifi-client.js` only passes access-relevant types (`access.logs.add`, `access.door.unlock`, `access.doorbell.*`, etc.) and drops device telemetry. (2) `normalizeEvent()` in `rules-engine.js` rejects any `data.*` / `data.v2.*` types and returns `false`, which causes `handleEvent` to return `false`. The broadcast wrapper (`patchEngineForBroadcast`) checks this return value and skips SSE broadcast entirely for filtered events — preventing stale data from appearing in the Live Events feed. Filter stats: `engine.events_filtered` in `/health`, plus `unifi.ws_events_passed/ws_events_filtered` for WebSocket-specific counts. Dashboard System Info shows combined filter count.
+- **`patchEngineForBroadcast(engine)`** helper in `src/index.js` consolidates the event handler monkey-patching for SSE broadcast. Skips broadcast when `handleEvent` returns `false` (filtered event). Called on initial setup and after reload/config-save re-instantiation.
+
+## Config Backup System
+
+- **Module**: `src/backup.js` — `createBackup()`, `listBackups()`, `restoreBackup()`, `pruneBackups()`
+- **Auto-backup on save**: Every `PUT /api/config` creates a backup before applying changes
+- **Scheduled backup**: Daily check, creates backup if last one is older than `backup.interval_days` (default 30)
+- **Pre-restore safety**: Restoring always creates a backup of the current config first
+- **Config keys**: `backup.interval_days` (default 30), `backup.max_backups` (default 12)
+- **Backup directory**: `BACKUP_DIR` env var, or `backups/` subdirectory next to `config.json`
+- **API endpoints**: `GET /api/backups`, `POST /api/backups`, `POST /api/backups/restore`, `GET /api/backups/:filename`
+- **UI**: "Backup & Restore" card in Settings tab with create/restore/download actions
+- **Electron**: `electron/main.js` sets `BACKUP_DIR` to `userData/backups/`, creates directory on startup, adds "Backup Config Now" and "Open Backups Folder" menu items
 
 ## Notes
 

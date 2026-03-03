@@ -422,6 +422,21 @@ class UniFiClient {
     const wsUrl = `wss://${this.host}:${this.port}/api/v1/developer/devices/notifications`;
     logger.info(`Connecting WebSocket: ${wsUrl}`);
 
+    if (!this.wsStats) {
+      this.wsStats = { passed: 0, filtered: 0, lastFilteredType: null };
+    }
+
+    const WS_EVENT_WHITELIST = new Set([
+      'access.logs.add',
+      'access.door.unlock',
+      'access.doorbell.completed',
+      'access.doorbell.incoming',
+      'access.remote_view',
+      'access.door.lock',
+      'access.door.close',
+      'access.notifications'
+    ]);
+
     const wsOptions = {
       headers: {
         'Authorization': `Bearer ${this.token}`,
@@ -440,7 +455,16 @@ class UniFiClient {
     this.ws.on('message', (data) => {
       try {
         const event = JSON.parse(data.toString());
-        onEvent(event);
+        const eventType = event.event || event.type || '';
+
+        if (WS_EVENT_WHITELIST.has(eventType)) {
+          this.wsStats.passed++;
+          onEvent(event);
+        } else {
+          this.wsStats.filtered++;
+          this.wsStats.lastFilteredType = eventType || 'unknown';
+          logger.debug(`WebSocket filtered: ${eventType || 'unknown'}`);
+        }
       } catch (err) {
         logger.warn(`Failed to parse WebSocket message: ${err.message}`);
       }
@@ -476,7 +500,10 @@ class UniFiClient {
       doors_discovered: this.doors.size,
       doors: Object.fromEntries(this.doors),
       users_mapped: this.userGroupMap.size,
-      websocket_connected: this.ws?.readyState === WebSocket.OPEN
+      websocket_connected: this.ws?.readyState === WebSocket.OPEN,
+      ws_events_passed: this.wsStats?.passed || 0,
+      ws_events_filtered: this.wsStats?.filtered || 0,
+      ws_last_filtered_type: this.wsStats?.lastFilteredType || null
     };
   }
 

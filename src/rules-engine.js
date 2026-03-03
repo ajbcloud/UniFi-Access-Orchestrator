@@ -55,6 +55,7 @@ class RulesEngine {
     // Stats
     this.stats = {
       events_received: 0,
+      events_filtered: 0,
       events_processed: 0,
       events_skipped_self: 0,
       events_skipped_location: 0,
@@ -78,8 +79,9 @@ class RulesEngine {
 
     const event = this.normalizeEvent(rawPayload);
     if (!event) {
+      this.stats.events_filtered++;
       logger.debug('Ignoring unrecognized event payload');
-      return;
+      return false;
     }
 
     this.stats.last_event = {
@@ -121,6 +123,12 @@ class RulesEngine {
   // ---------------------------------------------------------------------------
 
   normalizeEvent(raw) {
+    const rawType = raw.event || raw.type || raw.event_type || '';
+    if (rawType.startsWith('data.') || rawType.startsWith('data.v2.')) {
+      logger.debug(`Ignoring device telemetry event: ${rawType}`);
+      return null;
+    }
+
     // API webhook / direct format (section 11.7)
     if (raw.event && raw.data) {
       return {
