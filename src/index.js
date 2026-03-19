@@ -146,6 +146,10 @@ function buildBroadcastAction(beforeStats, afterStats) {
 }
 
 function patchEngineForBroadcast(engine) {
+  if (engine._broadcastPatched) {
+    engine.setBroadcaster(broadcastEvent);
+    return;
+  }
   const origHandler = engine.handleEvent.bind(engine);
   engine.handleEvent = async function(rawPayload) {
     const before = { ...this.getStats() };
@@ -156,6 +160,7 @@ function patchEngineForBroadcast(engine) {
     const after = this.getStats();
     broadcastEvent(buildBroadcastAction(before, after));
   };
+  engine._broadcastPatched = true;
   engine.setBroadcaster(broadcastEvent);
 }
 
