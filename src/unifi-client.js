@@ -53,7 +53,10 @@ class UniFiClient {
     // HTTP agent for connection reuse
     this.agent = new https.Agent({
       rejectUnauthorized: this.verifySsl,
-      keepAlive: true
+      keepAlive: true,
+      keepAliveMsecs: 10000,
+      maxSockets: 10,
+      timeout: 15000
     });
   }
 
@@ -445,6 +448,15 @@ class UniFiClient {
       },
       rejectUnauthorized: this.verifySsl
     };
+
+    if (this.ws) {
+      this.ws.removeAllListeners();
+      if (this.ws.readyState === WebSocket.OPEN ||
+          this.ws.readyState === WebSocket.CONNECTING ||
+          this.ws.readyState === WebSocket.CLOSING) {
+        this.ws.terminate();
+      }
+    }
 
     this.ws = new WebSocket(wsUrl, wsOptions);
 

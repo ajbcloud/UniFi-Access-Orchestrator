@@ -1,34 +1,33 @@
-name: Build and Release
-
+name: Build & Release
 on:
   push:
     tags:
       - 'v*'
-
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to release (e.g. v4.1.6). Defaults to package.json version if left blank.'
+        required: false
+        default: ''
 permissions:
   contents: write
-
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-
       - name: Install dependencies
         run: npm ci
-
       - name: Build Windows installer
         run: npm run build:win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -37,54 +36,67 @@ jobs:
             dist/*.exe
             dist/*.exe.blockmap
           retention-days: 5
-
   build-linux:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-
       - name: Install dependencies
         run: npm ci
-
-      - name: Build Linux packages
+      - name: Build Linux packages (x64)
         run: npm run build:linux
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-build
           path: |
             dist/*.AppImage
-            dist/*.deb
+            dist/*amd64.deb
           retention-days: 5
-
-  build-mac:
-    runs-on: macos-latest
+  build-linux-arm:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-
       - name: Install dependencies
         run: npm ci
-
+      - name: Build Linux ARM package (Raspberry Pi)
+        run: npm run build:pi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload Linux ARM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm-build
+          path: |
+            dist/*armv7l.deb
+          retention-days: 5
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
       - name: Generate macOS app icon (1024x1024)
         run: sips -z 1024 1024 assets/icon_256.png --out assets/icon.png
-
       - name: Verify macOS icon dimensions
         run: |
           python - <<'PYICON'
@@ -99,12 +111,10 @@ jobs:
           if width < 512 or height < 512:
             raise SystemExit('Icon must be at least 512x512 for macOS packaging')
           PYICON
-
       - name: Build macOS package
         run: npm run build:mac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -112,32 +122,44 @@ jobs:
           path: |
             dist/*.dmg
           retention-days: 5
-
   release:
-    needs: [build-windows, build-linux, build-mac]
+    needs: [build-windows, build-linux, build-linux-arm, build-mac]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
+      - name: Resolve release tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${{ github.ref_name }}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            TAG="${{ inputs.version }}"
+            # Ensure the tag starts with 'v'
+            [[ "$TAG" != v* ]] && TAG="v${TAG}"
+          else
+            PKG_VERSION=$(node -p "require('./package.json').version")
+            TAG="v${PKG_VERSION}"
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-
       - name: List artifacts
-        run: find artifacts -type f | head -20
-
+        run: find artifacts -type f | sort
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: UniFi Access Orchestrator ${{ github.ref_name }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: UniFi Access Orchestrator ${{ steps.version.outputs.tag }}
           draft: false
           prerelease: false
           generate_release_notes: true
           files: |
             artifacts/windows-build/*
             artifacts/linux-build/*
+            artifacts/linux-arm-build/*
             artifacts/mac-build/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
