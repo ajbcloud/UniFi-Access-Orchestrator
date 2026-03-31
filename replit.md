@@ -105,6 +105,15 @@ Run command: `node src/index.js`
 - **UI**: "Backup & Restore" card in Settings tab with create/restore/download actions
 - **Electron**: `electron/main.js` sets `BACKUP_DIR` to `userData/backups/`, creates directory on startup, adds "Backup Config Now" and "Open Backups Folder" menu items
 
+## CI/CD — GitHub Actions
+
+- **Workflow**: `.github/workflows/release.yml` — "Build & Release"
+- **Triggers**: Tag push (`v*`) and manual `workflow_dispatch` with optional version input + bump type selector (patch/minor/major)
+- **Version bump**: On dispatch, auto-bumps `package.json`, commits, tags, and pushes before building. Validates semver format and checks for existing tags.
+- **Build matrix**: Windows (.exe), Linux x64 (.deb + .AppImage), Linux ARM/Raspberry Pi (.deb), macOS (.dmg)
+- **Release**: Creates GitHub Release with all artifacts and auto-generated release notes
+- **Version display**: `/health` endpoint exposes `version` from `package.json`; dashboard System Info card shows it as a badge (e.g. "v4.2.0")
+
 ## Notes
 
 - The setup wizard shows on first run when no controller is configured. Users can skip it and configure later from the Settings tab.

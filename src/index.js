@@ -261,8 +261,10 @@ app.post('/webhook', async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get('/health', (req, res) => {
+  const pkg = require('../package.json');
   res.json({
     status: 'running',
+    version: pkg.version,
     uptime_seconds: Math.floor(process.uptime()),
     event_source: config.event_source?.mode || 'alarm_manager',
     unifi: unifiClient.getStatus(),

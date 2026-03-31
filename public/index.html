@@ -740,7 +740,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     </div>
 
     <div class="card" style="margin-top:16px">
-      <div class="card-title">System Info</div>
+      <div class="card-title" style="display:flex;align-items:center;gap:8px">System Info <span id="infoVersion" style="font-size:11px;font-weight:500;color:var(--text-muted);background:var(--bg-secondary);padding:2px 8px;border-radius:4px">-</span></div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px">
         <div><span style="color:var(--text-muted)">Event Source:</span> <span id="infoEventSource">-</span> <span id="infoWsStatus"></span></div>
         <div><span style="color:var(--text-muted)">Memory:</span> <span id="infoMemory">-</span></div>
@@ -1119,6 +1119,7 @@ function updateDashboard() {
     `;
   }
 
+  document.getElementById('infoVersion').textContent = h.version ? `v${h.version}` : '-';
   document.getElementById('infoEventSource').textContent = h.event_source || '-';
 
   const wsStatusEl = document.getElementById('infoWsStatus');
