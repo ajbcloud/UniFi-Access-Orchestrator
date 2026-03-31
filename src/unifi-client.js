@@ -47,6 +47,7 @@ class UniFiClient {
     // Connection state tracking
     this.connectionState = 'disconnected';
     this.healthMonitorInterval = null;
+    this._shutdownRequested = false;
 
     // Sync interval
     this.syncInterval = null;
@@ -165,11 +166,12 @@ class UniFiClient {
   }
 
   async initializeWithRetry() {
+    this._shutdownRequested = false;
     this.connectionState = 'connecting';
     let attempt = 0;
     const backoffs = [5, 10, 20, 40, 60];
 
-    while (true) {
+    while (!this._shutdownRequested) {
       const success = await this.initialize();
       if (success) {
         this.connectionState = 'connected';
@@ -177,12 +179,17 @@ class UniFiClient {
         return true;
       }
 
+      if (this._shutdownRequested) break;
+
       attempt++;
       const delaySec = backoffs[Math.min(attempt - 1, backoffs.length - 1)];
       this.connectionState = 'reconnecting';
       logger.warn(`Initialization attempt ${attempt} failed. Retrying in ${delaySec}s...`);
       await new Promise(r => setTimeout(r, delaySec * 1000));
     }
+
+    logger.info('Retry loop cancelled (shutdown requested)');
+    return false;
   }
 
   // ---------------------------------------------------------------------------
@@ -619,6 +626,7 @@ class UniFiClient {
   // ---------------------------------------------------------------------------
 
   shutdown() {
+    this._shutdownRequested = true;
     if (this.syncInterval) {
       clearInterval(this.syncInterval);
       this.syncInterval = null;
