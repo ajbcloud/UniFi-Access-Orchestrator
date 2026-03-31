@@ -541,30 +541,48 @@ class RulesEngine {
   // ---------------------------------------------------------------------------
 
   async executeUnlocks(doorNames, reason) {
-    const results = await Promise.allSettled(
-      doorNames.map(name => this.unifiClient.unlockDoorByName(name, reason))
-    );
-
     const successfulDoors = [];
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 2000;
 
-    for (const result of results) {
-      if (result.status === 'fulfilled' && result.value.success) {
-        this.stats.unlocks_triggered++;
-        successfulDoors.push(result.value.door);
-        this.stats.last_unlock = {
-          door: result.value.door,
-          doors: successfulDoors,
-          reason,
-          time: new Date().toISOString()
-        };
-      } else {
+    for (const name of doorNames) {
+      let success = false;
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const result = await this.unifiClient.unlockDoorByName(name, reason);
+          if (result.success) {
+            this.stats.unlocks_triggered++;
+            successfulDoors.push(result.door);
+            this.stats.last_unlock = {
+              door: result.door,
+              doors: [...successfulDoors],
+              reason,
+              time: new Date().toISOString()
+            };
+            success = true;
+            break;
+          }
+          const errCode = result.statusCode || 0;
+          if (errCode === 401 || errCode === 403) {
+            logger.error(`Unlock "${name}" failed: auth error (${errCode}), skipping retries`);
+            break;
+          }
+          logger.warn(`Unlock "${name}" attempt ${attempt}/${MAX_RETRIES} failed: ${result.error}`);
+        } catch (err) {
+          logger.warn(`Unlock "${name}" attempt ${attempt}/${MAX_RETRIES} error: ${err.message}`);
+        }
+
+        if (attempt < MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+        }
+      }
+
+      if (!success) {
         this.stats.unlocks_failed++;
-        const err = result.status === 'rejected' ? result.reason?.message : result.value?.error;
-        logger.error(`Unlock failed: ${err}`);
+        logger.error(`Unlock "${name}" failed after ${MAX_RETRIES} attempts`);
       }
     }
 
-    // Update the single door string for backward compatibility with simple reporters
     if (successfulDoors.length > 1 && this.stats.last_unlock) {
       this.stats.last_unlock.door = successfulDoors.join(', ');
     }

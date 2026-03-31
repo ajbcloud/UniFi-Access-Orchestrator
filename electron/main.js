@@ -544,6 +544,40 @@ if (!gotLock) {
   });
 }
 
+let healthFailCount = 0;
+let healthWatchdog = null;
+
+function startHealthWatchdog() {
+  const http = require('http');
+  healthWatchdog = setInterval(() => {
+    const req = http.get(`http://127.0.0.1:${servicePort}/health`, { timeout: 5000 }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const h = JSON.parse(data);
+          healthFailCount = 0;
+          if (mainWindow) {
+            const cs = h.unifi?.connection_state || 'unknown';
+            const label = cs === 'connected' ? 'Online' : cs === 'reconnecting' ? 'Reconnecting...' : 'Disconnected';
+            mainWindow.setTitle(`UniFi Access Orchestrator — ${label}`);
+          }
+        } catch { healthFailCount++; }
+      });
+    });
+    req.on('error', () => {
+      healthFailCount++;
+      if (healthFailCount >= 3) {
+        console.error(`Health watchdog: ${healthFailCount} consecutive failures. Relaunching...`);
+        app.relaunch();
+        isQuitting = true;
+        app.quit();
+      }
+    });
+    req.on('timeout', () => { req.destroy(); healthFailCount++; });
+  }, 30000);
+}
+
 app.on('ready', async () => {
   const configExists = ensureConfig();
 
@@ -553,6 +587,7 @@ app.on('ready', async () => {
 
   createWindow();
   createTray();
+  startHealthWatchdog();
 
   if (!configExists) {
     console.log('First run detected. Config created at:', getConfigPath());

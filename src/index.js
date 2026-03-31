@@ -244,6 +244,7 @@ app.post('/webhook', async (req, res) => {
   const eventType = payload.event || payload.type || payload.event_type || 'unknown';
   logger.info(`Webhook received: ${eventType}`);
   logger.debug(`Webhook payload: ${JSON.stringify(payload).substring(0, 500)}`);
+  lastEventTime = Date.now();
   storeRawPayload('webhook', payload);
 
   try {
@@ -373,7 +374,12 @@ app.post('/reload', async (req, res) => {
     rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
     patchEngineForBroadcast(rulesEngine);
 
-    await unifiClient.initialize();
+    const initOk = await unifiClient.initialize();
+    if (initOk) {
+      unifiClient.startHealthMonitor();
+    } else {
+      unifiClient.initializeWithRetry().then(() => unifiClient.startHealthMonitor());
+    }
     config = newConfig;
 
     broadcastEvent({ type: 'system.reload', actor: 'GUI Admin', location: '-', action: 'Config reloaded', success: true });
@@ -410,7 +416,7 @@ app.put('/api/config', async (req, res) => {
     const current = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
 
     // Deep merge updates (only allow specific safe keys)
-    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup'];
+    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog'];
 
     // recursive merge for plain objects: source values override primitives/arrays
     function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
@@ -441,15 +447,6 @@ app.put('/api/config', async (req, res) => {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(current, null, 2));
     logger.info('Config saved to disk');
 
-    try {
-      const backupResult = createBackup(CONFIG_PATH, BACKUP_DIR);
-      const maxBackups = current.backup?.max_backups || 12;
-      pruneBackups(BACKUP_DIR, maxBackups);
-      logger.info(`Config backup created: ${backupResult.filename}`);
-    } catch (backupErr) {
-      logger.warn(`Config backup failed: ${backupErr.message}`);
-    }
-
     // Auto-reload the service to apply changes immediately
     try {
       const newConfig = loadConfig();
@@ -459,13 +456,17 @@ app.put('/api/config', async (req, res) => {
       rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
       patchEngineForBroadcast(rulesEngine);
 
-      await unifiClient.initialize();
+      const initOk = await unifiClient.initialize();
+      if (initOk) {
+        unifiClient.startHealthMonitor();
+      } else {
+        unifiClient.initializeWithRetry().then(() => unifiClient.startHealthMonitor());
+      }
       config = newConfig;
       broadcastEvent({ type: 'system.config_reload', actor: 'API', location: '-', action: 'Config reloaded', success: true });
       logger.info('Config reloaded automatically');
     } catch (reloadErr) {
       logger.warn(`Auto-reload after config save failed: ${reloadErr.message}`);
-      // Return success anyway; user can click Reload Service manually
     }
 
     res.json({ status: 'saved', note: 'Config applied automatically' });
@@ -520,7 +521,12 @@ app.post('/api/backups/restore', async (req, res) => {
       resolver = new Resolver(newConfig, unifiClient);
       rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
       patchEngineForBroadcast(rulesEngine);
-      await unifiClient.initialize();
+      const initOk = await unifiClient.initialize();
+      if (initOk) {
+        unifiClient.startHealthMonitor();
+      } else {
+        unifiClient.initializeWithRetry().then(() => unifiClient.startHealthMonitor());
+      }
       config = newConfig;
       broadcastEvent({ type: 'system.config_restore', actor: 'Admin', location: '-', action: `Restored from ${filename}`, success: true });
       logger.info('Config reloaded after restore');
@@ -846,6 +852,29 @@ app.get('*', (req, res) => {
 // Startup
 // ---------------------------------------------------------------------------
 
+let lastEventTime = Date.now();
+let watchdogInterval = null;
+
+function startWatchdog() {
+  const timeoutMin = config.watchdog?.inactivity_timeout_minutes ?? 60;
+  if (timeoutMin <= 0) {
+    logger.info('Event activity watchdog disabled (timeout <= 0)');
+    return;
+  }
+
+  const timeoutMs = timeoutMin * 60 * 1000;
+  watchdogInterval = setInterval(() => {
+    const silenceMs = Date.now() - lastEventTime;
+    if (silenceMs >= timeoutMs) {
+      logger.error(`Event activity watchdog: no events for ${Math.floor(silenceMs / 60000)} minutes. Exiting for restart.`);
+      unifiClient.shutdown();
+      process.exit(1);
+    }
+  }, 60000);
+
+  logger.info(`Event activity watchdog started: ${timeoutMin} min inactivity threshold`);
+}
+
 async function start() {
   logger.info('=== UniFi Access Orchestrator Starting ===');
   logger.info(`Event source mode: ${config.event_source?.mode || 'alarm_manager'}`);
@@ -861,8 +890,13 @@ async function start() {
   });
 
   const initialized = await unifiClient.initialize();
-  if (!initialized) {
-    logger.error('UniFi client initialization failed. Server will start but unlocks will fail until connectivity is restored.');
+  if (initialized) {
+    unifiClient.startHealthMonitor();
+  } else {
+    logger.warn('Initial connection failed. Retrying in background...');
+    unifiClient.initializeWithRetry().then(() => {
+      unifiClient.startHealthMonitor();
+    });
   }
 
   // Start periodic config backup — check daily, create if overdue
@@ -898,10 +932,13 @@ async function start() {
   } else if (mode === 'websocket') {
     const reconnectSec = config.event_source.websocket?.reconnect_interval_seconds || 5;
     unifiClient.connectWebSocket((event) => {
+      lastEventTime = Date.now();
       storeRawPayload('websocket', event);
       rulesEngine.handleEvent(event).catch(err => logger.error(`WebSocket event error: ${err.message}`));
     }, reconnectSec);
   }
+
+  startWatchdog();
 }
 
 // ---------------------------------------------------------------------------

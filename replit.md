@@ -82,11 +82,22 @@ Run command: `node src/index.js`
 - **Event noise filtering** (two layers): (1) WebSocket whitelist in `unifi-client.js` only passes access-relevant types (`access.logs.add`, `access.door.unlock`, `access.doorbell.*`, etc.) and drops device telemetry. (2) `normalizeEvent()` in `rules-engine.js` rejects any `data.*` / `data.v2.*` types and returns `false`, which causes `handleEvent` to return `false`. The broadcast wrapper (`patchEngineForBroadcast`) checks this return value and skips SSE broadcast entirely for filtered events — preventing stale data from appearing in the Live Events feed. Filter stats: `engine.events_filtered` in `/health`, plus `unifi.ws_events_passed/ws_events_filtered` for WebSocket-specific counts. Dashboard System Info shows combined filter count.
 - **`patchEngineForBroadcast(engine)`** helper in `src/index.js` consolidates the event handler monkey-patching for SSE broadcast. Skips broadcast when `handleEvent` returns `false` (filtered event). Called on initial setup and after reload/config-save re-instantiation.
 
+## Resilience & Auto-Recovery (v4.2.0)
+
+- **`initializeWithRetry()`**: Exponential backoff (5s→10s→20s→40s→60s cap), infinite retry. Used when initial `initialize()` fails.
+- **`startHealthMonitor()`**: 30s probe via GET /doors. Detects connectivity loss, auto re-discovers doors and re-syncs users on recovery. Tracks `connectionState` (connected/disconnected/reconnecting/connecting).
+- **WebSocket ping/pong heartbeat**: 30s ping interval, terminates stale half-open TCP connections that don't respond.
+- **Unlock retry**: `executeUnlocks()` tries each door sequentially with 3 attempts and 2s delay between retries. Skips retries on 401/403 auth errors.
+- **Event activity watchdog**: Exits process (for external restart) if no events received for `watchdog.inactivity_timeout_minutes` (default 60, configurable, 0 disables).
+- **Startup flow**: Fast first try with `initialize()`, falls back to background `initializeWithRetry()` + health monitor. Server always starts immediately.
+- **Electron watchdog**: 30s health poll, 3 consecutive failures trigger `app.relaunch()`. Updates window title with connection state.
+- **Dashboard enhancements**: Connection state pill in System Info + header, last event age display, date+time in Live Events feed ("Mar 31 7:21:36 PM" format).
+
 ## Config Backup System
 
 - **Module**: `src/backup.js` — `createBackup()`, `listBackups()`, `restoreBackup()`, `pruneBackups()`
-- **Auto-backup on save**: Every `PUT /api/config` creates a backup before applying changes
 - **Scheduled backup**: Daily check, creates backup if last one is older than `backup.interval_days` (default 30)
+- **Manual backup**: Dashboard button or Electron menu "Backup Config Now"
 - **Pre-restore safety**: Restoring always creates a backup of the current config first
 - **Config keys**: `backup.interval_days` (default 30), `backup.max_backups` (default 12)
 - **Backup directory**: `BACKUP_DIR` env var, or `backups/` subdirectory next to `config.json`

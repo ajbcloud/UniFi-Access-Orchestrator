@@ -59,5 +59,8 @@
     "file_path": "",
     "max_files": "30d",
     "max_size": "10m"
+  },
+  "watchdog": {
+    "inactivity_timeout_minutes": 60
   }
 }

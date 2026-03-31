@@ -78,6 +78,7 @@ body {
 
 .status-pill.online { background: var(--green-dim); color: var(--green); }
 .status-pill.offline { background: var(--red-dim); color: var(--red); }
+.status-pill.reconnecting { background: rgba(245,166,35,0.15); color: #f5a623; }
 
 .status-dot {
   width: 6px; height: 6px;
@@ -744,7 +745,8 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         <div><span style="color:var(--text-muted)">Event Source:</span> <span id="infoEventSource">-</span> <span id="infoWsStatus"></span></div>
         <div><span style="color:var(--text-muted)">Memory:</span> <span id="infoMemory">-</span></div>
         <div><span style="color:var(--text-muted)">Uptime:</span> <span id="infoUptime">-</span></div>
-        <div><span style="color:var(--text-muted)">Access Gateway:</span> <span id="infoHost">-</span></div>
+        <div><span style="color:var(--text-muted)">Access Gateway:</span> <span id="infoHost">-</span> <span id="infoConnState"></span></div>
+        <div id="infoLastEvent" style="display:none"><span style="color:var(--text-muted)">Last Event:</span> <span id="infoLastEventAge">-</span></div>
         <div id="infoWsFilter" style="display:none"><span style="color:var(--text-muted)">WS Events:</span> <span id="infoWsFilterStats">-</span></div>
       </div>
     </div>
@@ -1058,8 +1060,22 @@ async function fetchHealth() {
 
 function updateStatus(online) {
   const pill = document.getElementById('statusPill');
-  pill.className = `status-pill ${online ? 'online' : 'offline'}`;
-  pill.querySelector('span').textContent = online ? 'Online' : 'Offline';
+  if (!online) {
+    pill.className = 'status-pill offline';
+    pill.querySelector('span').textContent = 'Offline';
+    return;
+  }
+  const cs = healthData?.unifi?.connection_state;
+  if (cs === 'reconnecting' || cs === 'connecting') {
+    pill.className = 'status-pill reconnecting';
+    pill.querySelector('span').textContent = 'Reconnecting';
+  } else if (cs === 'disconnected') {
+    pill.className = 'status-pill offline';
+    pill.querySelector('span').textContent = 'Disconnected';
+  } else {
+    pill.className = 'status-pill online';
+    pill.querySelector('span').textContent = 'Online';
+  }
 }
 
 function formatUptime(seconds) {
@@ -1131,6 +1147,26 @@ function updateDashboard() {
   document.getElementById('infoUptime').textContent = formatUptime(h.uptime_seconds || 0);
   document.getElementById('uptimeDisplay').textContent = `Uptime: ${formatUptime(h.uptime_seconds || 0)}`;
   document.getElementById('infoHost').textContent = u.host ? `${u.host}:${u.port}` : '-';
+
+  const connStateEl = document.getElementById('infoConnState');
+  const cs = u.connection_state || 'unknown';
+  const csClass = cs === 'connected' ? 'online' : cs === 'reconnecting' ? 'reconnecting' : 'offline';
+  const csLabel = cs === 'connected' ? 'Connected' : cs === 'reconnecting' ? 'Reconnecting...' : cs === 'connecting' ? 'Connecting...' : cs === 'disconnected' ? 'Disconnected' : cs;
+  connStateEl.innerHTML = `<span class="status-pill ${csClass}" style="font-size:11px;padding:2px 8px"><span class="status-dot"></span>${csLabel}</span>`;
+
+  const lastEvEl = document.getElementById('infoLastEvent');
+  const lastEvAgeEl = document.getElementById('infoLastEventAge');
+  if (h.engine?.last_event?.time) {
+    lastEvEl.style.display = '';
+    const ageMs = Date.now() - new Date(h.engine.last_event.time).getTime();
+    const ageSec = Math.floor(ageMs / 1000);
+    if (ageSec < 60) lastEvAgeEl.textContent = `${ageSec}s ago`;
+    else if (ageSec < 3600) lastEvAgeEl.textContent = `${Math.floor(ageSec / 60)}m ago`;
+    else if (ageSec < 86400) lastEvAgeEl.textContent = `${Math.floor(ageSec / 3600)}h ago`;
+    else lastEvAgeEl.textContent = `${Math.floor(ageSec / 86400)}d ago`;
+  } else {
+    lastEvEl.style.display = 'none';
+  }
 }
 
 // ============================================================
@@ -1159,7 +1195,8 @@ function addEventRow(evt) {
   }
 
   const tr = document.createElement('tr');
-  const time = new Date(evt.timestamp).toLocaleTimeString();
+  const _d = new Date(evt.timestamp);
+  const time = _d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + _d.toLocaleTimeString();
   const typeBadge = evt.type?.includes('doorbell') ? 'info'
     : evt.type?.includes('unlock') ? 'success'
     : evt.type?.includes('system') ? 'warning' : 'info';
@@ -1272,10 +1309,10 @@ async function loadBackups() {
     const backups = data.backups || [];
     const settings = data.settings || {};
 
-    infoEl.textContent = `Schedule: every ${settings.interval_days || 30} days, keeping last ${settings.max_backups || 12} backups. Also backs up on every config save.`;
+    infoEl.textContent = `Schedule: every ${settings.interval_days || 30} days, keeping last ${settings.max_backups || 12} backups.`;
 
     if (backups.length === 0) {
-      listEl.innerHTML = '<div style="color:var(--text-muted);padding:12px;background:var(--bg-input);border-radius:var(--radius)">No backups yet. Click "Create Backup Now" or save any configuration change to create one.</div>';
+      listEl.innerHTML = '<div style="color:var(--text-muted);padding:12px;background:var(--bg-input);border-radius:var(--radius)">No backups yet. Click "Create Backup Now" to create one.</div>';
       return;
     }
 
@@ -2283,7 +2320,8 @@ async function loadRawPayloads() {
     }
     let html = '';
     payloads.forEach((entry, i) => {
-      const time = new Date(entry.timestamp).toLocaleTimeString();
+      const _d2 = new Date(entry.timestamp);
+      const time = _d2.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + _d2.toLocaleTimeString();
       const sourceBadge = entry.source === 'websocket' ? 'info' : 'success';
       const jsonStr = JSON.stringify(entry.payload, null, 2);
       const preview = jsonStr.length > 120 ? jsonStr.substring(0, 120) + '...' : jsonStr;

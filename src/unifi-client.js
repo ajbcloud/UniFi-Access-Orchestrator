@@ -41,6 +41,12 @@ class UniFiClient {
     // WebSocket
     this.ws = null;
     this.wsReconnectTimer = null;
+    this.wsPingInterval = null;
+    this.wsAlive = false;
+
+    // Connection state tracking
+    this.connectionState = 'disconnected';
+    this.healthMonitorInterval = null;
 
     // Sync interval
     this.syncInterval = null;
@@ -86,10 +92,14 @@ class UniFiClient {
             if (parsed.code === 'SUCCESS') {
               resolve(parsed);
             } else {
-              reject(new Error(`API error: ${parsed.code} - ${parsed.msg}`));
+              const err = new Error(`API error: ${parsed.code} - ${parsed.msg}`);
+              err.statusCode = res.statusCode;
+              reject(err);
             }
           } catch (e) {
-            reject(new Error(`Failed to parse response from ${method} ${path}: ${data.substring(0, 200)}`));
+            const err = new Error(`Failed to parse response from ${method} ${path}: ${data.substring(0, 200)}`);
+            err.statusCode = res.statusCode;
+            reject(err);
           }
         });
       });
@@ -145,11 +155,33 @@ class UniFiClient {
       await this.discoverDoors();
       await this.syncUserGroups();
       this.startPeriodicSync();
+      this.connectionState = 'connected';
       logger.info('UniFi Access client initialized successfully');
       return true;
     } catch (err) {
       logger.error(`Initialization failed: ${err.message}`);
       return false;
+    }
+  }
+
+  async initializeWithRetry() {
+    this.connectionState = 'connecting';
+    let attempt = 0;
+    const backoffs = [5, 10, 20, 40, 60];
+
+    while (true) {
+      const success = await this.initialize();
+      if (success) {
+        this.connectionState = 'connected';
+        logger.info('UniFi client connected and ready');
+        return true;
+      }
+
+      attempt++;
+      const delaySec = backoffs[Math.min(attempt - 1, backoffs.length - 1)];
+      this.connectionState = 'reconnecting';
+      logger.warn(`Initialization attempt ${attempt} failed. Retrying in ${delaySec}s...`);
+      await new Promise(r => setTimeout(r, delaySec * 1000));
     }
   }
 
@@ -219,7 +251,7 @@ class UniFiClient {
       return { success: true, door: doorName, doorId };
     } catch (err) {
       logger.error(`Failed to unlock door "${doorName}": ${err.message}`);
-      return { success: false, door: doorName, doorId, error: err.message };
+      return { success: false, door: doorName, doorId, error: err.message, statusCode: err.statusCode || err.status || 0 };
     }
   }
 
@@ -361,6 +393,34 @@ class UniFiClient {
     logger.info(`Periodic user group sync started: every ${this.syncMinutes} minutes`);
   }
 
+  startHealthMonitor(onStateChange = null) {
+    if (this.healthMonitorInterval) clearInterval(this.healthMonitorInterval);
+
+    this.healthMonitorInterval = setInterval(async () => {
+      if (this.connectionState === 'reconnecting' || this.connectionState === 'connecting') return;
+
+      try {
+        await this.request('GET', '/doors?page_num=1&page_size=1');
+
+        if (this.connectionState !== 'connected') {
+          this.connectionState = 'connected';
+          logger.info('Health monitor: connectivity restored');
+          await this.discoverDoors();
+          await this.syncUserGroups();
+          if (onStateChange) onStateChange('connected');
+        }
+      } catch (err) {
+        if (this.connectionState === 'connected') {
+          this.connectionState = 'disconnected';
+          logger.warn(`Health monitor: connectivity lost (${err.message})`);
+          if (onStateChange) onStateChange('disconnected');
+        }
+      }
+    }, 30000);
+
+    logger.info('Health monitor started (30s interval)');
+  }
+
   // ---------------------------------------------------------------------------
   // Group lookup
   // ---------------------------------------------------------------------------
@@ -462,6 +522,21 @@ class UniFiClient {
 
     this.ws.on('open', () => {
       logger.info('WebSocket connected');
+      if (this.wsPingInterval) clearInterval(this.wsPingInterval);
+      this.wsAlive = true;
+      this.wsPingInterval = setInterval(() => {
+        if (!this.wsAlive) {
+          logger.warn('WebSocket heartbeat timeout — terminating stale connection');
+          this.ws.terminate();
+          return;
+        }
+        this.wsAlive = false;
+        this.ws.ping();
+      }, 30000);
+    });
+
+    this.ws.on('pong', () => {
+      this.wsAlive = true;
     });
 
     this.ws.on('message', (data) => {
@@ -483,11 +558,13 @@ class UniFiClient {
     });
 
     this.ws.on('close', (code, reason) => {
+      if (this.wsPingInterval) { clearInterval(this.wsPingInterval); this.wsPingInterval = null; }
       logger.warn(`WebSocket closed: code=${code} reason=${reason}`);
       this.scheduleReconnect(onEvent, reconnectSeconds);
     });
 
     this.ws.on('error', (err) => {
+      if (this.wsPingInterval) { clearInterval(this.wsPingInterval); this.wsPingInterval = null; }
       logger.error(`WebSocket error: ${err.message}`);
     });
   }
@@ -513,6 +590,7 @@ class UniFiClient {
       doors: Object.fromEntries(this.doors),
       users_mapped: this.userGroupMap.size,
       websocket_connected: this.ws?.readyState === WebSocket.OPEN,
+      connection_state: this.connectionState,
       ws_events_passed: this.wsStats?.passed || 0,
       ws_events_filtered: this.wsStats?.filtered || 0,
       ws_last_filtered_type: this.wsStats?.lastFilteredType || null
@@ -545,6 +623,14 @@ class UniFiClient {
       clearInterval(this.syncInterval);
       this.syncInterval = null;
     }
+    if (this.healthMonitorInterval) {
+      clearInterval(this.healthMonitorInterval);
+      this.healthMonitorInterval = null;
+    }
+    if (this.wsPingInterval) {
+      clearInterval(this.wsPingInterval);
+      this.wsPingInterval = null;
+    }
     if (this.wsReconnectTimer) {
       clearTimeout(this.wsReconnectTimer);
       this.wsReconnectTimer = null;
@@ -556,6 +642,7 @@ class UniFiClient {
     if (this.agent) {
       this.agent.destroy();
     }
+    this.connectionState = 'disconnected';
     logger.info('UniFi client shut down');
   }
 }
