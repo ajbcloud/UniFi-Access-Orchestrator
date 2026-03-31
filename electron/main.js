@@ -136,6 +136,14 @@ async function startOrchestrator() {
 
   try {
     const middleware = require(path.join(app.getAppPath(), 'src', 'index.js'));
+    if (middleware.setWatchdogRestartCallback) {
+      middleware.setWatchdogRestartCallback(() => {
+        console.log('Watchdog triggered app relaunch');
+        app.relaunch();
+        isQuitting = true;
+        app.quit();
+      });
+    }
     await middleware.start();
     orchestratorStarted = true;
     console.log(`Orchestrator started on port ${servicePort}`);

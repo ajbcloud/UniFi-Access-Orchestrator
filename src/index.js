@@ -382,6 +382,7 @@ app.post('/reload', async (req, res) => {
     }
     config = newConfig;
 
+    startWatchdog();
     broadcastEvent({ type: 'system.reload', actor: 'GUI Admin', location: '-', action: 'Config reloaded', success: true });
     logger.info('Config reloaded successfully');
     res.json({ status: 'reloaded' });
@@ -463,6 +464,7 @@ app.put('/api/config', async (req, res) => {
         unifiClient.initializeWithRetry().then(() => unifiClient.startHealthMonitor());
       }
       config = newConfig;
+      startWatchdog();
       broadcastEvent({ type: 'system.config_reload', actor: 'API', location: '-', action: 'Config reloaded', success: true });
       logger.info('Config reloaded automatically');
     } catch (reloadErr) {
@@ -528,6 +530,7 @@ app.post('/api/backups/restore', async (req, res) => {
         unifiClient.initializeWithRetry().then(() => unifiClient.startHealthMonitor());
       }
       config = newConfig;
+      startWatchdog();
       broadcastEvent({ type: 'system.config_restore', actor: 'Admin', location: '-', action: `Restored from ${filename}`, success: true });
       logger.info('Config reloaded after restore');
     } catch (reloadErr) {
@@ -854,8 +857,18 @@ app.get('*', (req, res) => {
 
 let lastEventTime = Date.now();
 let watchdogInterval = null;
+let watchdogRestartCallback = null;
+
+function setWatchdogRestartCallback(fn) {
+  watchdogRestartCallback = fn;
+}
 
 function startWatchdog() {
+  if (watchdogInterval) {
+    clearInterval(watchdogInterval);
+    watchdogInterval = null;
+  }
+
   const timeoutMin = config.watchdog?.inactivity_timeout_minutes ?? 60;
   if (timeoutMin <= 0) {
     logger.info('Event activity watchdog disabled (timeout <= 0)');
@@ -866,9 +879,13 @@ function startWatchdog() {
   watchdogInterval = setInterval(() => {
     const silenceMs = Date.now() - lastEventTime;
     if (silenceMs >= timeoutMs) {
-      logger.error(`Event activity watchdog: no events for ${Math.floor(silenceMs / 60000)} minutes. Exiting for restart.`);
+      logger.error(`Event activity watchdog: no events for ${Math.floor(silenceMs / 60000)} minutes. Triggering restart.`);
       unifiClient.shutdown();
-      process.exit(1);
+      if (watchdogRestartCallback) {
+        watchdogRestartCallback();
+      } else {
+        process.exit(1);
+      }
     }
   }, 60000);
 
@@ -945,7 +962,7 @@ async function start() {
 // Export for Electron (require as module) or run standalone
 // ---------------------------------------------------------------------------
 
-module.exports = { start, app };
+module.exports = { start, app, setWatchdogRestartCallback };
 
 // If run directly (node src/index.js), start immediately
 // If required by Electron, it will call start() when ready
