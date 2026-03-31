@@ -30,6 +30,7 @@ const UniFiClient = require('./unifi-client');
 const Resolver = require('./resolver');
 const RulesEngine = require('./rules-engine');
 const { createBackup, listBackups, restoreBackup, pruneBackups } = require('./backup');
+const APP_VERSION = require('../package.json').version;
 
 // ---------------------------------------------------------------------------
 // Load config
@@ -261,10 +262,9 @@ app.post('/webhook', async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get('/health', (req, res) => {
-  const pkg = require('../package.json');
   res.json({
     status: 'running',
-    version: pkg.version,
+    version: APP_VERSION,
     uptime_seconds: Math.floor(process.uptime()),
     event_source: config.event_source?.mode || 'alarm_manager',
     unifi: unifiClient.getStatus(),
