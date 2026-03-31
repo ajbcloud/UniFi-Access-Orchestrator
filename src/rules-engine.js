@@ -87,7 +87,7 @@ class RulesEngine {
     this.stats.last_event = {
       type: event.type,
       location: event.locationName,
-      actor: event.actorName || event.actorId || 'unknown',
+      actor: this.normalizeSentinel(event.actorName) || this.normalizeSentinel(event.actorId) || 'unknown',
       device: event.deviceName,
       time: new Date().toISOString()
     };
@@ -122,6 +122,18 @@ class RulesEngine {
   // Normalize events from different sources
   // ---------------------------------------------------------------------------
 
+  normalizeSentinel(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed === '' || trimmed.toUpperCase() === 'N/A' || trimmed.toUpperCase() === 'NA' || trimmed === '-') {
+        return null;
+      }
+      return trimmed;
+    }
+    return value;
+  }
+
   normalizeEvent(raw) {
     const rawType = raw.event || raw.type || raw.event_type || '';
     if (rawType.startsWith('data.') || rawType.startsWith('data.v2.')) {
@@ -140,9 +152,9 @@ class RulesEngine {
         deviceName: raw.data.device?.name || raw.data.device?.alias,
         deviceType: raw.data.device?.device_type,
         deviceId: raw.data.device?.id,
-        actorId: raw.data.actor?.id || null,
-        actorName: raw.data.actor?.name || null,
-        actorType: raw.data.actor?.type || null,
+        actorId: this.normalizeSentinel(raw.data.actor?.id) || null,
+        actorName: this.normalizeSentinel(raw.data.actor?.name) || null,
+        actorType: this.normalizeSentinel(raw.data.actor?.type) || null,
         authType: raw.data.object?.authentication_type,
         policyId: raw.data.object?.policy_id,
         policyName: raw.data.object?.policy_name,
@@ -160,6 +172,17 @@ class RulesEngine {
 
     // Alarm Manager format (wraps in { alarm: ... } envelope)
     if (raw.alarm) {
+      let alarmActorId = null;
+      let alarmActorName = null;
+      const triggers = raw.alarm.triggers || [];
+      for (const trigger of triggers) {
+        if (!alarmActorId) alarmActorId = this.normalizeSentinel(trigger.actor?.id || trigger.user_id || trigger.actor_id);
+        if (!alarmActorName) alarmActorName = this.normalizeSentinel(trigger.actor?.name || trigger.actor?.display_name || trigger.user_name || trigger.actor_name);
+        if (alarmActorId && alarmActorName) break;
+      }
+      if (!alarmActorId) alarmActorId = this.normalizeSentinel(raw.alarm.actor?.id || raw.alarm.user_id);
+      if (!alarmActorName) alarmActorName = this.normalizeSentinel(raw.alarm.actor?.name || raw.alarm.actor?.display_name || raw.alarm.user_name);
+
       return {
         type: this.inferAlarmType(raw),
         eventObjectId: null,
@@ -167,12 +190,12 @@ class RulesEngine {
         deviceName: null,
         deviceType: null,
         deviceId: raw.alarm.sources?.[0]?.device || null,
-        actorId: null,
-        actorName: null,
+        actorId: alarmActorId || null,
+        actorName: alarmActorName || null,
         authType: null,
         reasonCode: null,
         extra: null,
-        triggers: raw.alarm.triggers || [],
+        triggers,
         raw
       };
     }
@@ -187,8 +210,8 @@ class RulesEngine {
         deviceName: raw.device?.name || raw.device_name,
         deviceType: raw.device?.device_type || raw.device_type,
         deviceId: raw.device?.id,
-        actorId: raw.actor?.id || raw.user_id,
-        actorName: raw.actor?.name || raw.user_name || raw.actor_name,
+        actorId: this.normalizeSentinel(raw.actor?.id || raw.user_id) || null,
+        actorName: this.normalizeSentinel(raw.actor?.name || raw.user_name || raw.actor_name) || null,
         authType: raw.authentication_type || raw.auth_type,
         reasonCode: raw.reason_code,
         extra: raw.extra,
@@ -235,9 +258,9 @@ class RulesEngine {
       locationName: null,
       deviceName: null,
       deviceId: null,
-      actorId: source.actor?.id || source.actor?.user_id || null,
-      actorName: source.actor?.display_name || source.actor?.name || null,
-      actorType: source.actor?.type || null,
+      actorId: this.normalizeSentinel(source.actor?.id || source.actor?.user_id) || null,
+      actorName: this.normalizeSentinel(source.actor?.display_name || source.actor?.name) || null,
+      actorType: this.normalizeSentinel(source.actor?.type) || null,
       result: source.event?.result,
       reasonCode: source.event?.reason_code,
       extra: source.extra || null,
@@ -260,11 +283,15 @@ class RulesEngine {
 
     logger.info(`WebSocket log unwrapped: ${innerType} at "${normalized.locationName}", actor="${normalized.actorName || normalized.actorId || 'none'}" (actorId=${normalized.actorId || 'null'})`);
 
+    if (!normalized.actorId && !normalized.actorName) {
+      logger.debug(`WebSocket event missing actor data. source.actor: ${JSON.stringify(source.actor || null).substring(0, 200)}`);
+    }
+
     // Update last_event so SSE broadcast picks up correct info
     this.stats.last_event = {
       type: innerType,
       location: normalized.locationName,
-      actor: normalized.actorName || normalized.actorId || 'unknown',
+      actor: this.normalizeSentinel(normalized.actorName) || this.normalizeSentinel(normalized.actorId) || 'unknown',
       device: normalized.deviceName,
       time: new Date().toISOString()
     };
@@ -301,7 +328,17 @@ class RulesEngine {
       { policy_id: event.policyId, policy_name: event.policyName }
     );
 
-    const displayName = userName || event.actorName || event.actorId || 'unknown';
+    const displayName = this.normalizeSentinel(userName) || this.normalizeSentinel(event.actorName) || this.normalizeSentinel(event.actorId) || 'unknown';
+
+    if (displayName === 'unknown') {
+      const rawSnippet = event.raw ? JSON.stringify({
+        actor: event.raw.data?.actor || event.raw.actor || undefined,
+        user_id: event.raw.user_id || event.raw.data?.user_id || undefined,
+        user_name: event.raw.user_name || event.raw.data?.user_name || undefined,
+        _keys: Object.keys(event.raw)
+      }).substring(0, 300) : 'null';
+      logger.debug(`Actor resolved to unknown. Raw payload snippet: ${rawSnippet}`);
+    }
 
     if (!group) {
       logger.info(`User "${displayName}" (actorId: ${event.actorId || 'null'}) at "${event.locationName}": no group resolved`);
