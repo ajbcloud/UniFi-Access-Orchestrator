@@ -418,9 +418,9 @@ class UniFiClient {
         }
       } catch (err) {
         if (this.connectionState === 'connected') {
-          this.connectionState = 'disconnected';
+          this.connectionState = 'reconnecting';
           logger.warn(`Health monitor: connectivity lost (${err.message})`);
-          if (onStateChange) onStateChange('disconnected');
+          if (onStateChange) onStateChange('reconnecting');
         }
       }
     }, 30000);
