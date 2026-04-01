@@ -45,8 +45,15 @@ class RulesEngine {
 
     // Doorbell rules - normalize to array format
     this.doorbellRules = config.doorbell_rules || {};
-    this.viewerToGroup = this.doorbellRules.viewer_to_group || {};
     this.doorbellDefault = this.doorbellRules.default_action || {};
+    // Build case-insensitive viewer_to_group lookup
+    const rawViewerMap = this.doorbellRules.viewer_to_group || {};
+    this.viewerToGroup = {};
+    this._viewerToGroupCI = {};
+    for (const [key, val] of Object.entries(rawViewerMap)) {
+      this.viewerToGroup[key] = val;
+      this._viewerToGroupCI[key.trim().toLowerCase()] = val;
+    }
     this.visitorRules = this._normalizeRules(this.doorbellRules);
 
     // Self-trigger prevention
@@ -258,16 +265,17 @@ class RulesEngine {
       locationName: null,
       deviceName: null,
       deviceId: null,
-      actorId: this.normalizeSentinel(source.actor?.id || source.actor?.user_id) || null,
-      actorName: this.normalizeSentinel(source.actor?.display_name || source.actor?.name) || null,
+      actorId: this.normalizeSentinel(source.actor?.id || source.actor?.user_id || source.user_id) || null,
+      actorName: this.normalizeSentinel(source.actor?.display_name || source.actor?.name || source.actor?.full_name || source.user_name) || null,
       actorType: this.normalizeSentinel(source.actor?.type) || null,
+      authType: source.event?.authentication_type || source.authentication_type || null,
       result: source.event?.result,
       reasonCode: source.event?.reason_code,
       extra: source.extra || null,
       raw: event.raw
     };
 
-    // Extract door name from target array
+    // Extract door name and device info from target array
     if (source.target && Array.isArray(source.target)) {
       const doorTarget = source.target.find(t => t.type === 'door');
       if (doorTarget) {
@@ -279,12 +287,23 @@ class RulesEngine {
         normalized.deviceName = deviceTarget.display_name || deviceTarget.name;
         normalized.deviceId = deviceTarget.id;
       }
+      // Check for actor-type targets (viewer devices sometimes appear here)
+      if (!normalized.actorName) {
+        const userTarget = source.target.find(t => t.type === 'viewer' || t.type === 'user' || t.type === 'admin');
+        if (userTarget) {
+          normalized.actorName = this.normalizeSentinel(userTarget.display_name || userTarget.name) || null;
+          if (!normalized.actorId) normalized.actorId = userTarget.id || null;
+        }
+      }
     }
 
-    logger.info(`WebSocket log unwrapped: ${innerType} at "${normalized.locationName}", actor="${normalized.actorName || normalized.actorId || 'none'}" (actorId=${normalized.actorId || 'null'})`);
+    logger.info(`WebSocket log unwrapped: ${innerType} at "${normalized.locationName}", actor="${normalized.actorName || normalized.actorId || 'none'}" (actorId=${normalized.actorId || 'null'}, device="${normalized.deviceName || 'none'}")`);
 
     if (!normalized.actorId && !normalized.actorName) {
-      logger.debug(`WebSocket event missing actor data. source.actor: ${JSON.stringify(source.actor || null).substring(0, 200)}`);
+      const sourceKeys = Object.keys(source);
+      const actorSnippet = JSON.stringify(source.actor || null).substring(0, 200);
+      const targetSnippet = source.target ? JSON.stringify(source.target).substring(0, 300) : 'null';
+      logger.debug(`WebSocket event missing actor data. source keys: [${sourceKeys.join(',')}], actor: ${actorSnippet}, target: ${targetSnippet}`);
     }
 
     // Update last_event so SSE broadcast picks up correct info
@@ -323,21 +342,39 @@ class RulesEngine {
     }
 
     // Resolve user group
-    const { group, strategy, userName } = this.resolver.resolve(
+    let { group, strategy, userName } = this.resolver.resolve(
       event.actorId,
       { policy_id: event.policyId, policy_name: event.policyName }
     );
 
-    const displayName = this.normalizeSentinel(userName) || this.normalizeSentinel(event.actorName) || this.normalizeSentinel(event.actorId) || 'unknown';
+    let displayName = this.normalizeSentinel(userName) || this.normalizeSentinel(event.actorName) || this.normalizeSentinel(event.actorId) || 'unknown';
 
     if (displayName === 'unknown') {
       const rawSnippet = event.raw ? JSON.stringify({
         actor: event.raw.data?.actor || event.raw.actor || undefined,
+        device: event.raw.data?.device || event.raw.device || undefined,
         user_id: event.raw.user_id || event.raw.data?.user_id || undefined,
         user_name: event.raw.user_name || event.raw.data?.user_name || undefined,
+        _source_actor: event.raw.data?._source?.actor || undefined,
+        _source_keys: event.raw.data?._source ? Object.keys(event.raw.data._source) : undefined,
         _keys: Object.keys(event.raw)
-      }).substring(0, 300) : 'null';
+      }).substring(0, 500) : 'null';
       logger.debug(`Actor resolved to unknown. Raw payload snippet: ${rawSnippet}`);
+    }
+
+    // Fallback: check if actor or device is a mapped viewer (doorbell/intercom flow)
+    if (!group && Object.keys(this._viewerToGroupCI).length > 0) {
+      const actorNorm = this.normalizeSentinel(event.actorName);
+      const deviceNorm = this.normalizeSentinel(event.deviceName);
+      const viewerGroup = (actorNorm && this._viewerToGroupCI[actorNorm.toLowerCase()])
+        || (deviceNorm && this._viewerToGroupCI[deviceNorm.toLowerCase()])
+        || null;
+      if (viewerGroup) {
+        group = viewerGroup;
+        strategy = 'viewer_to_group';
+        displayName = actorNorm || deviceNorm;
+        logger.info(`Viewer fallback: "${displayName}" mapped to group "${group}" via viewer_to_group`);
+      }
     }
 
     if (!group) {
@@ -449,11 +486,12 @@ class RulesEngine {
     const triggerCode = this.doorbellRules.trigger_reason_code || 107;
     if (event.reasonCode !== triggerCode) {
       const desc = this.describeReasonCode(event.reasonCode);
-      logger.info(`Doorbell completed at "${event.locationName}": ${desc} (no action)`);
+      logger.info(`Doorbell completed at "${event.locationName}": reason_code=${event.reasonCode} (expected ${triggerCode}), ${desc} — skipping`);
+      logger.debug(`Doorbell event details: actor="${event.actorName || 'null'}", actorId=${event.actorId || 'null'}, device="${event.deviceName || 'null'}"`);
       this.stats.last_processing = {
         action: 'doorbell_wrong_reason',
         location: event.locationName,
-        detail: `Doorbell: ${desc} (not an admin unlock)`
+        detail: `Doorbell: reason_code=${event.reasonCode} (expected ${triggerCode}), ${desc}`
       };
       return;
     }
@@ -470,9 +508,9 @@ class RulesEngine {
       }
     }
 
-    // Strategy 2: Fallback to device name (viewer that answered)
+    // Strategy 2: Fallback to device name (viewer that answered) — case-insensitive
     if (!group && event.deviceName) {
-      group = this.viewerToGroup[event.deviceName] || null;
+      group = this._viewerToGroupCI[event.deviceName.trim().toLowerCase()] || null;
       if (group) {
         resolveMethod = `device: ${event.deviceName}`;
       }
@@ -637,9 +675,16 @@ class RulesEngine {
 
   isSelfTriggered(event) {
     if (!this.selfTrigger.marker_key || !this.selfTrigger.marker_value) return false;
+    const key = this.selfTrigger.marker_key;
+    const val = this.selfTrigger.marker_value;
     const extra = event.extra;
-    if (!extra || typeof extra !== 'object') return false;
-    return extra[this.selfTrigger.marker_key] === this.selfTrigger.marker_value;
+    if (extra && typeof extra === 'object' && extra[key] === val) return true;
+    // Check alternate paths for WebSocket-unwrapped events
+    const rawExtra = event.raw?.data?.object?.extra || event.raw?.data?.extra;
+    if (rawExtra && typeof rawExtra === 'object' && rawExtra[key] === val) return true;
+    const sourceExtra = event.raw?.data?._source?.extra;
+    if (sourceExtra && typeof sourceExtra === 'object' && sourceExtra[key] === val) return true;
+    return false;
   }
 
   // ---------------------------------------------------------------------------
