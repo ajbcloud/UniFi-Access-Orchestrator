@@ -366,8 +366,8 @@ class RulesEngine {
     if (!group && Object.keys(this._viewerToGroupCI).length > 0) {
       const actorNorm = this.normalizeSentinel(event.actorName);
       const deviceNorm = this.normalizeSentinel(event.deviceName);
-      const viewerGroup = (actorNorm && this._viewerToGroupCI[actorNorm.toLowerCase()])
-        || (deviceNorm && this._viewerToGroupCI[deviceNorm.toLowerCase()])
+      const viewerGroup = (typeof actorNorm === 'string' && this._viewerToGroupCI[actorNorm.toLowerCase()])
+        || (typeof deviceNorm === 'string' && this._viewerToGroupCI[deviceNorm.toLowerCase()])
         || null;
       if (viewerGroup) {
         group = viewerGroup;
@@ -509,7 +509,7 @@ class RulesEngine {
     }
 
     // Strategy 2: Fallback to device name (viewer that answered) — case-insensitive
-    if (!group && event.deviceName) {
+    if (!group && typeof event.deviceName === 'string' && event.deviceName) {
       group = this._viewerToGroupCI[event.deviceName.trim().toLowerCase()] || null;
       if (group) {
         resolveMethod = `device: ${event.deviceName}`;
