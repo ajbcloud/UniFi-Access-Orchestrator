@@ -401,6 +401,7 @@ app.post('/reload', async (req, res) => {
 app.get('/api/config', (req, res) => {
   const sanitized = JSON.parse(JSON.stringify(config));
   if (sanitized.unifi?.token) sanitized.unifi.token = '***REDACTED***';
+  if (sanitized.auto_lock?.shared_token) sanitized.auto_lock.shared_token = '***REDACTED***';
   res.json(sanitized);
 });
 
@@ -418,8 +419,12 @@ app.put('/api/config', async (req, res) => {
     // Read current config (with real token)
     const current = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
 
+    // Drop redacted secrets so the UI echoing placeholders doesn't overwrite real values.
+    if (updates.unifi?.token === '***REDACTED***') delete updates.unifi.token;
+    if (updates.auto_lock?.shared_token === '***REDACTED***') delete updates.auto_lock.shared_token;
+
     // Deep merge updates (only allow specific safe keys)
-    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog'];
+    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog', 'auto_lock'];
 
     // recursive merge for plain objects: source values override primitives/arrays
     function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
@@ -843,6 +848,67 @@ app.post('/api/sync', async (req, res) => {
   await unifiClient.syncUserGroups();
   broadcastEvent({ type: 'system.sync', actor: 'GUI Admin', location: '-', action: `Synced ${unifiClient.userGroupMap.size} users`, success: true });
   res.json({ status: 'synced', users_mapped: unifiClient.userGroupMap.size });
+});
+
+// ---------------------------------------------------------------------------
+// GET /auto-lock/:buttonId
+//
+// Unauthenticated GET endpoint for SIP phone DSS keys (e.g. Yealink), which
+// can only send a bare GET with no headers. Each buttonId maps to a configured
+// door + action. Optional shared_token is checked via ?token= query param.
+//
+// Do NOT log req.url or req.query.token — the token would leak into log files.
+// If running behind a reverse proxy, set `app.set('trust proxy', ...)` so
+// req.ip reports the real client IP instead of 127.0.0.1.
+// ---------------------------------------------------------------------------
+
+app.get('/auto-lock/:buttonId', async (req, res) => {
+  const cfg = config.auto_lock || {};
+  const button = (cfg.buttons || []).find(b => b.id === req.params.buttonId);
+  const sourceIp = req.ip;
+
+  if (!button) {
+    logger.warn(`Auto-lock: unknown button "${req.params.buttonId}" from ${sourceIp}`);
+    return res.status(404).json({ success: false, message: 'Unknown button' });
+  }
+
+  if (cfg.shared_token && !timingSafeCompare(req.query.token || '', cfg.shared_token)) {
+    logger.warn(`Auto-lock: bad token for "${button.id}" from ${sourceIp}`);
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+
+  if (!button.door_id) {
+    logger.warn(`Auto-lock: button "${button.id}" has no door_id configured`);
+    return res.status(400).json({ success: false, message: 'Button has no door configured' });
+  }
+
+  const doorName = unifiClient.doorsById.get(button.door_id) || button.door_id;
+  let result;
+  try {
+    if (button.action === 'unlock') {
+      result = await unifiClient.unlockDoor(button.door_id, `auto-lock "${button.id}" from ${sourceIp}`);
+    } else {
+      result = await unifiClient.setDoorLockRule(button.door_id, button.action);
+    }
+  } catch (err) {
+    result = { success: false, error: err.message };
+  }
+
+  logger.info(`Auto-lock: button="${button.id}" door="${doorName}" action=${button.action} src=${sourceIp} ok=${result.success}`);
+  broadcastEvent({
+    type: 'auto_lock.button',
+    actor: `Phone (${sourceIp})`,
+    location: doorName,
+    action: `${button.label || button.id}: ${button.action}`,
+    success: !!result.success
+  });
+
+  res.json({
+    success: !!result.success,
+    message: result.success
+      ? `${button.action} applied to ${doorName}`
+      : (result.error || 'Failed')
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -50,6 +50,10 @@
       "unlock": []
     }
   },
+  "auto_lock": {
+    "shared_token": "",
+    "buttons": []
+  },
   "self_trigger_prevention": {
     "marker_key": "source",
     "marker_value": "middleware"
