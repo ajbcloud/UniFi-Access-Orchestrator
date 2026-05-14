@@ -1017,11 +1017,34 @@ async function reloadServices(newConfig) {
   }
 
   logger.info('Reload: rules-only change — keeping live connection, rebuilding resolver + rules engine');
+
+  // Propagate updated group-name mappings to the live UniFi client.
+  // The client's userGroupMap is built from groupNameMap during
+  // syncUserGroups(); without this push the resolver would still see the
+  // previous logical labels until a full restart, which is exactly the
+  // failure mode the cascade-unlock fix is meant to repair.
+  const oldMap = config.resolver?.unifi_group_to_group || {};
+  const newMap = newConfig.resolver?.unifi_group_to_group || {};
+  const mappingChanged = JSON.stringify(oldMap) !== JSON.stringify(newMap);
+  if (mappingChanged) {
+    unifiClient.groupNameMap = newMap;
+  }
+
   resolver = new Resolver(newConfig, unifiClient);
   rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
   patchEngineForBroadcast(rulesEngine);
   config = newConfig;
   startWatchdog();
+
+  if (mappingChanged) {
+    // Re-sync in the background so the mapping takes effect immediately
+    // without blocking the API response. Errors are non-fatal — the next
+    // periodic sync will pick it up.
+    unifiClient.syncUserGroups()
+      .then(() => logger.info('Resolver mapping change applied — user/group cache re-synced'))
+      .catch(err => logger.warn(`Post-reload group resync failed: ${err.message}`));
+  }
+
   return { mode: 'rules-only' };
 }
 
