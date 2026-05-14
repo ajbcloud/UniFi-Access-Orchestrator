@@ -66,5 +66,9 @@
   },
   "watchdog": {
     "inactivity_timeout_minutes": 60
+  },
+  "auto_sync": {
+    "enabled": true,
+    "interval_seconds": 15
   }
 }

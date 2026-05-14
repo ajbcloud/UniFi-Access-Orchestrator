@@ -30,6 +30,7 @@ const UniFiClient = require('./unifi-client');
 const Resolver = require('./resolver');
 const RulesEngine = require('./rules-engine');
 const { createBackup, listBackups, restoreBackup, pruneBackups } = require('./backup');
+const ConfigSync = require('./config-sync');
 const APP_VERSION = require('../package.json').version;
 
 // ---------------------------------------------------------------------------
@@ -53,6 +54,7 @@ let config = loadConfig();
 let unifiClient = new UniFiClient(config);
 let resolver = new Resolver(config, unifiClient);
 let rulesEngine = new RulesEngine(config, unifiClient, resolver);
+let configSync = null;  // initialized in start() once Express + UniFi client are up
 
 // ---------------------------------------------------------------------------
 // Event history + SSE clients
@@ -269,6 +271,7 @@ app.get('/health', (req, res) => {
     event_source: config.event_source?.mode || 'alarm_manager',
     unifi: unifiClient.getStatus(),
     engine: rulesEngine.getStats(),
+    auto_sync: configSync ? configSync.getState() : { enabled: false, interval_seconds: 0, last_run_at: null, last_change_detected_at: null, last_error: null },
     memory_mb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 10) / 10
   });
 });
@@ -410,7 +413,7 @@ app.put('/api/config', async (req, res) => {
     if (updates.auto_lock?.shared_token === '***REDACTED***') delete updates.auto_lock.shared_token;
 
     // Deep merge updates (only allow specific safe keys)
-    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog', 'auto_lock'];
+    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog', 'auto_lock', 'auto_sync'];
 
     // recursive merge for plain objects: source values override primitives/arrays
     function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
@@ -440,6 +443,7 @@ app.put('/api/config', async (req, res) => {
 
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(current, null, 2));
     logger.info('Config saved to disk');
+    if (configSync) configSync.markConfigApplied();
 
     // Auto-reload the service to apply changes immediately
     let reloadMode = 'skipped';
@@ -449,6 +453,7 @@ app.put('/api/config', async (req, res) => {
       reloadMode = result.mode;
       broadcastEvent({ type: 'system.config_reload', actor: 'API', location: '-', action: `Config reloaded (${result.mode})`, success: true });
       logger.info(`Config reloaded automatically (${result.mode})`);
+      applyAutoSyncFromConfig();
     } catch (reloadErr) {
       logger.warn(`Auto-reload after config save failed: ${reloadErr.message}`);
     }
@@ -497,12 +502,14 @@ app.post('/api/backups/restore', async (req, res) => {
   try {
     const result = restoreBackup(filename, BACKUP_DIR, CONFIG_PATH);
     logger.info(`Config restored from backup: ${filename}`);
+    if (configSync) configSync.markConfigApplied();
 
     try {
       const newConfig = loadConfig();
       const reloadResult = await reloadServices(newConfig);
       broadcastEvent({ type: 'system.config_restore', actor: 'Admin', location: '-', action: `Restored from ${filename} (${reloadResult.mode})`, success: true });
       logger.info(`Config reloaded after restore (${reloadResult.mode})`);
+      applyAutoSyncFromConfig();
     } catch (reloadErr) {
       logger.warn(`Auto-reload after restore failed: ${reloadErr.message}`);
     }
@@ -991,6 +998,32 @@ function isEventSourceDegraded() {
   return !unifiClient?.ws || unifiClient.ws.readyState !== WebSocket.OPEN;
 }
 
+// Single shared reload entry point used by:
+//   - Manual POST /reload
+//   - PUT /api/config save (after writing to disk)
+//   - POST /api/backups/restore
+//   - Config Sync background job (when config.json changed on disk)
+// Broadcasts a `system.auto_reload` SSE event so the dashboard can
+// auto-refresh in place without a manual Refresh click.
+async function reloadOrchestrator(reason) {
+  if (configSync) configSync.stop();
+  try {
+    const newConfig = loadConfig();
+    const result = await reloadServices(newConfig);
+    broadcastEvent({
+      type: 'system.auto_reload',
+      actor: 'auto-sync',
+      location: '-',
+      action: `Auto-reloaded (${result.mode}) — reason: ${reason}`,
+      success: true,
+      reason
+    });
+    return result;
+  } finally {
+    applyAutoSyncFromConfig();
+  }
+}
+
 async function reloadServices(newConfig) {
   const settingsChanged = controllerOrSourceChanged(config, newConfig);
   const degraded = isEventSourceDegraded();
@@ -1100,6 +1133,59 @@ async function start() {
 
   startEventSource();
   startWatchdog();
+
+  // Start the periodic Config Sync job. Detects local config.json edits
+  // and upstream UniFi controller drift (door/user/group changes) and
+  // reloads in place. Read-only with respect to disk + controller.
+  initConfigSync();
+  applyAutoSyncFromConfig();
+}
+
+function initConfigSync() {
+  if (configSync) return;
+  configSync = new ConfigSync({
+    configPath: CONFIG_PATH,
+    getUnifiClient: () => unifiClient,
+    onConfigFileChanged: async ({ reason }) => {
+      try {
+        await reloadOrchestrator(reason);
+      } catch (err) {
+        logger.error(`Auto-reload (${reason}) failed: ${err.message}`);
+      }
+    },
+    onControllerDoorsChanged: async ({ reason }) => {
+      // discoverDoors() already updated the in-memory door registry on
+      // the live client. Just notify the dashboard so it re-renders.
+      broadcastEvent({
+        type: 'system.auto_reload',
+        actor: 'auto-sync',
+        location: '-',
+        action: `Doors changed on controller — refreshed registry`,
+        success: true,
+        reason
+      });
+    },
+    onControllerUsersChanged: async ({ reason }) => {
+      // syncUserGroups() already refreshed the resolver-backing cache.
+      broadcastEvent({
+        type: 'system.auto_reload',
+        actor: 'auto-sync',
+        location: '-',
+        action: `Users/groups changed on controller — refreshed cache`,
+        success: true,
+        reason
+      });
+    }
+  });
+}
+
+function applyAutoSyncFromConfig() {
+  if (!configSync) return;
+  const opts = config.auto_sync || {};
+  configSync.start({
+    enabled: opts.enabled !== false,
+    intervalSeconds: opts.interval_seconds || 15
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,8 +1197,8 @@ module.exports = { start, app, setWatchdogRestartCallback };
 // If run directly (node src/index.js), start immediately
 // If required by Electron, it will call start() when ready
 if (require.main === module) {
-  process.on('SIGTERM', () => { logger.info('SIGTERM'); unifiClient.shutdown(); process.exit(0); });
-  process.on('SIGINT', () => { logger.info('SIGINT'); unifiClient.shutdown(); process.exit(0); });
+  process.on('SIGTERM', () => { logger.info('SIGTERM'); if (configSync) configSync.stop(); unifiClient.shutdown(); process.exit(0); });
+  process.on('SIGINT', () => { logger.info('SIGINT'); if (configSync) configSync.stop(); unifiClient.shutdown(); process.exit(0); });
   process.on('uncaughtException', (err) => { logger.error(`Uncaught: ${err.message}\n${err.stack}`); });
   process.on('unhandledRejection', (reason) => { logger.error(`Unhandled rejection: ${reason}`); });
 

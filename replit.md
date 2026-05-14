@@ -93,6 +93,25 @@ Run command: `node src/index.js`
 - **Electron watchdog**: 30s health poll, 3 consecutive failures trigger `app.relaunch()`. Updates window title with connection state.
 - **Dashboard enhancements**: Connection state pill in System Info + header, last event age display, date+time in Live Events feed ("Mar 31 7:21:36 PM" format).
 
+## Auto-Reload Job (Config Sync)
+
+- **Module**: `src/config-sync.js` — periodic background job, exports `ConfigSync` class with `start({enabled, intervalSeconds})`, `stop()`, `markConfigApplied()`, `resyncControllerBaselines()`, `getState()`.
+- **Detection**:
+  - **Local**: `config/config.json` mtime + sha256. If both differ from baseline, treat as an external edit and call `onConfigFileChanged`.
+  - **Upstream**: each tick calls `unifiClient.discoverDoors()` and `unifiClient.syncUserGroups()` (existing GET-only helpers), then sha256-hashes the sorted door-id list and the user-id→group-name map. Diffs trigger `onControllerDoorsChanged` / `onControllerUsersChanged`.
+- **Read-only contract**: the sync job NEVER writes to `config/config.json` and NEVER PATCHes/POSTs to the controller. Friendly door names, logical group names, rule wording — all user-authored fields stay exactly as the operator saved them.
+- **Wiring** (`src/index.js`):
+  - `initConfigSync()` constructs the singleton; `applyAutoSyncFromConfig()` reads `config.auto_sync` and starts/stops it.
+  - Started after `start()` finishes initial UniFi init. Stopped on SIGTERM/SIGINT and at the top of `reloadOrchestrator()` to avoid overlap (re-applied in `finally`).
+  - `reloadOrchestrator(reason)` is the shared reload helper used by config-file-changed callbacks. Manual `POST /reload`, `PUT /api/config`, and restore endpoints continue to call `reloadServices()` directly with their own SSE event types.
+  - `markConfigApplied()` is called after every in-process write (`PUT /api/config`, `POST /api/backups/restore`) so the next tick doesn't false-trigger a reload.
+- **Config keys** (`config.auto_sync`): `enabled` (default `true`), `interval_seconds` (default `15`, clamped 5–600).
+- **`/health`**: includes `auto_sync.{enabled, interval_seconds, last_run_at, last_change_detected_at, last_error}`.
+- **SSE**: `system.auto_reload` event with `reason` field (`config_file_changed` / `controller_doors_changed` / `controller_users_changed`). Dashboard listener auto-runs `loadConfig()` so the Configuration tab refreshes in place.
+- **UI**:
+  - Settings tab → "Auto-Sync" card with enable toggle + interval input (5–600s, validated client-side).
+  - Configuration tab header → status pill `Auto-sync: on • last sync Ns ago` (or `off`, or red on error). Updates via the existing 10s `/health` poll and on every `system.auto_reload` SSE event.
+
 ## Config Backup System
 
 - **Module**: `src/backup.js` — `createBackup()`, `listBackups()`, `restoreBackup()`, `pruneBackups()`

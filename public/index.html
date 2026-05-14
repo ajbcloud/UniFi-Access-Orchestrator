@@ -786,7 +786,8 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <div id="config" class="page">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div style="font-size:15px;font-weight:600">Configuration</div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="autoSyncPill" class="badge info" title="Background config sync status" style="font-size:11px">Auto-sync: …</span>
         <button class="btn btn-sm btn-secondary" onclick="loadConfig()">Refresh</button>
         <button class="btn btn-sm btn-primary" onclick="reloadService()">Reload Service</button>
       </div>
@@ -863,6 +864,23 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
           <label class="form-label">API Token (masked)</label>
           <input type="text" id="settingUnifiToken" placeholder="********" autocomplete="new-password">
           <div style="font-size:12px;color:var(--text-muted);margin-top:8px">For security, the token is masked. Re-enter to change.</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-title">Auto-Sync</div>
+        <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+          Periodic background job that detects local config edits and upstream UniFi controller changes (doors, users, group membership) and reloads in place. Read-only — never writes to <code>config.json</code> or the controller.
+        </div>
+        <div class="form-group">
+          <label class="form-label">
+            <input type="checkbox" id="settingAutoSyncEnabled" style="margin-right:6px"> Enable auto-sync
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Interval (seconds)</label>
+          <input type="number" id="settingAutoSyncInterval" min="5" max="600" placeholder="15">
+          <div style="font-size:12px;color:var(--text-muted);margin-top:4px">Allowed range: 5 – 600 seconds. Default 15.</div>
         </div>
       </div>
 
@@ -1054,9 +1072,35 @@ async function fetchHealth() {
     healthData = await api('GET', '/health');
     updateDashboard();
     updateStatus(true);
+    updateAutoSyncPill();
   } catch (e) {
     updateStatus(false);
   }
+}
+
+function updateAutoSyncPill() {
+  const pill = document.getElementById('autoSyncPill');
+  if (!pill) return;
+  const as = healthData?.auto_sync;
+  if (!as) { pill.textContent = 'Auto-sync: …'; pill.className = 'badge info'; return; }
+  if (!as.enabled) {
+    pill.textContent = 'Auto-sync: off';
+    pill.className = 'badge warning';
+    pill.title = 'Background config sync disabled. Enable it in Settings → Auto-Sync.';
+    return;
+  }
+  let agePart = '';
+  if (as.last_run_at) {
+    const ageSec = Math.max(0, Math.floor((Date.now() - new Date(as.last_run_at).getTime()) / 1000));
+    agePart = ageSec < 90 ? `last sync ${ageSec}s ago` : `last sync ${Math.floor(ageSec / 60)}m ago`;
+  } else {
+    agePart = 'starting…';
+  }
+  pill.textContent = `Auto-sync: on • ${agePart}`;
+  pill.className = as.last_error ? 'badge error' : 'badge success';
+  pill.title = as.last_error
+    ? `Last error: ${as.last_error}`
+    : `Every ${as.interval_seconds}s` + (as.last_change_detected_at ? ` • last change ${new Date(as.last_change_detected_at).toLocaleString()}` : '');
 }
 
 function updateStatus(online) {
@@ -1182,6 +1226,13 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     if (data.type === 'connected') return;
     addEventRow(data);
+    // Auto-refresh Configuration tab data when the background sync job
+    // reloads or detects controller drift, so the user sees fresh
+    // door/user/group/rule data without clicking Refresh.
+    if (data.type === 'system.auto_reload') {
+      loadConfig();
+      updateAutoSyncPill();
+    }
   };
 
   eventSource.onerror = () => {
@@ -1274,6 +1325,9 @@ async function loadSettings() {
     // Do not pre-fill token for security; show placeholder
     document.getElementById('settingUnifiToken').value = '';
     document.getElementById('settingLogLevel').value = cfg.logging?.level || 'info';
+    const as = cfg.auto_sync || {};
+    document.getElementById('settingAutoSyncEnabled').checked = as.enabled !== false;
+    document.getElementById('settingAutoSyncInterval').value = as.interval_seconds || 15;
   } catch (e) {
     toast('Failed to load settings', 'error');
   }
@@ -1288,8 +1342,14 @@ async function saveSettings() {
     const tokenVal = document.getElementById('settingUnifiToken').value.trim();
     if (tokenVal !== '') unifi.token = tokenVal; // only send token when user provided one
     const logging = { level: document.getElementById('settingLogLevel').value || 'info' };
+    const intervalRaw = parseInt(document.getElementById('settingAutoSyncInterval').value, 10) || 15;
+    const interval = Math.min(600, Math.max(5, intervalRaw));
+    const auto_sync = {
+      enabled: document.getElementById('settingAutoSyncEnabled').checked,
+      interval_seconds: interval
+    };
 
-    await api('PUT', '/api/config', { server, unifi, logging });
+    await api('PUT', '/api/config', { server, unifi, logging, auto_sync });
     toast('Settings saved. Reloading service...', 'success');
     await api('POST', '/reload');
     // Refresh local state
