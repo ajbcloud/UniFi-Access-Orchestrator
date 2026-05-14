@@ -475,6 +475,110 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   min-height: 0;
 }
 
+.test-rule-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.test-rule-controls label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.test-rule-controls .real-unlock-toggle { color: var(--yellow); }
+
+.preflight-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+.preflight-list li {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+.preflight-list li:last-child { border-bottom: none; }
+.preflight-list .pf-icon { width: 16px; flex-shrink: 0; font-weight: 700; }
+.preflight-list .pf-icon.pass { color: var(--green); }
+.preflight-list .pf-icon.fail { color: var(--red); }
+.preflight-list .pf-name { font-weight: 600; color: var(--text-primary); min-width: 170px; }
+.preflight-list .pf-detail { color: var(--text-secondary); flex: 1; }
+
+.compare-diff {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+}
+.compare-diff table { width: 100%; border-collapse: collapse; }
+.compare-diff th { text-align: left; padding: 4px 8px; background: var(--bg-elev); color: var(--text-secondary); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+.compare-diff td { padding: 3px 8px; border-top: 1px solid var(--border); vertical-align: top; word-break: break-all; }
+.compare-diff tr.row-diff td { background: rgba(251, 191, 36, 0.08); }
+.compare-diff tr.row-diff td:first-child { color: var(--yellow); font-weight: 600; }
+.compare-diff tr.row-only-sim td:nth-child(3) { color: var(--text-muted); font-style: italic; }
+.compare-diff tr.row-only-real td:nth-child(2) { color: var(--text-muted); font-style: italic; }
+.compare-diff .diff-empty { padding: 8px; color: var(--text-muted); font-style: italic; }
+.test-rule-customize {
+  margin-top: 6px;
+  padding: 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: none;
+  font-size: 12px;
+}
+.test-rule-customize.open { display: block; }
+.test-rule-customize label { display: block; margin-bottom: 6px; color: var(--text-secondary); }
+.test-rule-customize select { width: 100%; }
+.test-rule-customize .hint { color: var(--text-muted); font-size: 11px; margin-top: 4px; }
+.compare-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 8px;
+}
+.compare-grid > div {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  font-size: 11px;
+  font-family: var(--mono);
+  max-height: 220px;
+  overflow: auto;
+}
+.compare-grid h5 {
+  font-family: var(--font);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.compare-diff { color: var(--yellow); }
+
+.help-blurb {
+  background: var(--blue-dim);
+  border: 1px solid rgba(0,112,243,0.3);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.help-blurb summary { cursor: pointer; font-weight: 600; color: var(--text-primary); list-style: none; }
+.help-blurb summary::before { content: '▶ '; font-size: 9px; color: var(--accent); }
+.help-blurb[open] summary::before { content: '▼ '; }
+.help-blurb ul { margin: 8px 0 0 20px; }
+.help-blurb li { margin-bottom: 3px; }
+
 .rule-form {
   background: var(--bg-primary);
   border: 1px solid var(--accent);
@@ -917,7 +1021,20 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 
     <div class="card">
       <div class="card-title">Test Configured Rules</div>
-      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Simulate your configured access and visitor rules. Pick a rule to trigger it through the rules engine with a matching user.</p>
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Pick a real user and door, run a preflight check, and simulate the rule end-to-end through the same path a real badge tap takes. By default no controller unlock is sent — flip <strong>Execute real unlock</strong> to verify the door physically opens.</p>
+
+      <details class="help-blurb">
+        <summary>Why a passing test can still fail at the door</summary>
+        <ul>
+          <li><strong>Reader / hub offline</strong> — door is in discovery cache but the controller reports it not bound to a hub.</li>
+          <li><strong>Controller auth</strong> — token lacks Locations:Edit, so unlock writes return 401/403 even though discovery works.</li>
+          <li><strong>Self-trigger filter</strong> — the orchestrator's own unlock event (with the configured marker) is intentionally ignored.</li>
+          <li><strong>Group not resolved</strong> — the user's UniFi group name isn't mapped in <em>resolver.unifi_group_to_group</em>, so no rule can match.</li>
+          <li><strong>No matching rule for that trigger door</strong> — a rule for the group exists, but its trigger door doesn't match where the user actually tapped.</li>
+          <li><strong>WebSocket disconnected</strong> — when event source = WebSocket, real taps never arrive if the socket isn't OPEN.</li>
+        </ul>
+      </details>
+
       <div id="testRulesContainer">Loading rules...</div>
     </div>
 
@@ -2122,7 +2239,20 @@ function renderTestRules() {
           <select id="testAccessUser-${idx}" class="test-rule-user-select">
             ${userOptions}
           </select>
+          <button class="btn btn-sm btn-secondary" onclick="runPreflight('access', ${idx})" id="testAccessPfBtn-${idx}">Preflight</button>
           <button class="btn btn-sm btn-primary" onclick="simulateRule('access', ${idx})" id="testAccessBtn-${idx}">Simulate</button>
+        </div>
+        <div class="test-rule-controls">
+          <label class="real-unlock-toggle" title="WARNING: actually issues PUT /doors/:id/unlock to your controller">
+            <input type="checkbox" id="testAccessReal-${idx}" onchange="confirmRealUnlock(this)"> Execute real unlock against controller
+          </label>
+          <label><input type="checkbox" onchange="toggleCustomize('access', ${idx}, this)"> Customize</label>
+        </div>
+        <div class="test-rule-customize" id="testAccessCustomize-${idx}">
+          <label>Trigger door (override) — simulate the badge tap happening at a different door:
+            <select id="testAccessDoorOverride-${idx}">${_doorOptions(rule.trigger)}</select>
+          </label>
+          <div class="hint">Pick a door other than "${rule.trigger}" to verify your rule does NOT fire on the wrong door.</div>
         </div>
         <div class="test-rule-result" id="testAccessResult-${idx}"></div>
       </div>`;
@@ -2159,7 +2289,20 @@ function renderTestRules() {
           <select id="testVisitorActor-${idx}" class="test-rule-user-select">
             ${actorOptions}
           </select>
+          <button class="btn btn-sm btn-secondary" onclick="runPreflight('visitor', ${idx})" id="testVisitorPfBtn-${idx}">Preflight</button>
           <button class="btn btn-sm btn-primary" onclick="simulateRule('visitor', ${idx})" id="testVisitorBtn-${idx}">Simulate</button>
+        </div>
+        <div class="test-rule-controls">
+          <label class="real-unlock-toggle" title="WARNING: actually issues PUT /doors/:id/unlock to your controller">
+            <input type="checkbox" id="testVisitorReal-${idx}" onchange="confirmRealUnlock(this)"> Execute real unlock against controller
+          </label>
+          <label><input type="checkbox" onchange="toggleCustomize('visitor', ${idx}, this)"> Customize</label>
+        </div>
+        <div class="test-rule-customize" id="testVisitorCustomize-${idx}">
+          <label>Trigger door (override):
+            <select id="testVisitorDoorOverride-${idx}">${_doorOptions(rule.trigger)}</select>
+          </label>
+          <div class="hint">Override the trigger door to test what happens when the doorbell rings at a different reader.</div>
         </div>
         <div class="test-rule-result" id="testVisitorResult-${idx}"></div>
       </div>`;
@@ -2169,46 +2312,209 @@ function renderTestRules() {
   container.innerHTML = html;
 }
 
-async function simulateRule(type, idx) {
+function _doorOptions(selected) {
+  const doors = doorsData?.discovered || doorsData?.configured || {};
+  const names = Object.keys(doors);
+  if (names.length === 0) return `<option value="${selected || ''}">${selected || '(no doors discovered)'}</option>`;
+  return names.map(n => `<option value="${n}"${n === selected ? ' selected' : ''}>${n}</option>`).join('');
+}
+
+function toggleCustomize(type, idx, checkbox) {
+  const el = document.getElementById(type === 'access' ? `testAccessCustomize-${idx}` : `testVisitorCustomize-${idx}`);
+  if (el) el.classList.toggle('open', checkbox.checked);
+}
+
+function _ruleSimContext(type, idx) {
   const rules = type === 'access' ? _getAccessRules() : _getVisitorRules();
   const rule = rules[idx];
-  if (!rule) { toast('Rule not found', 'error'); return; }
+  if (!rule) return null;
 
-  const btnId = type === 'access' ? `testAccessBtn-${idx}` : `testVisitorBtn-${idx}`;
-  const resultId = type === 'access' ? `testAccessResult-${idx}` : `testVisitorResult-${idx}`;
-  const cardId = type === 'access' ? `test-access-${idx}` : `test-visitor-${idx}`;
-  const btn = document.getElementById(btnId);
-  const resultEl = document.getElementById(resultId);
-  const card = document.getElementById(cardId);
-
-  if (btn) { btn.disabled = true; btn.textContent = 'Simulating...'; }
-  if (card) card.classList.add('simulating');
-
-  const body = { location: rule.trigger };
-
+  let userId = null, userName = '', deviceName = null;
   if (type === 'access') {
-    body.event_type = 'access.door.unlock';
     const userSelect = document.getElementById(`testAccessUser-${idx}`);
-    const userId = userSelect?.value;
-    const userName = userSelect?.selectedOptions?.[0]?.dataset?.name || '';
-    if (userId) { body.user_id = userId; body.user_name = userName; }
+    userId = userSelect?.value || null;
+    userName = userSelect?.selectedOptions?.[0]?.dataset?.name || '';
   } else {
-    body.event_type = 'access.doorbell.completed';
-    body.reason_code = '107';
     const actorSelect = document.getElementById(`testVisitorActor-${idx}`);
     const actorVal = actorSelect?.value || '';
     if (actorVal.startsWith('user:')) {
-      body.user_id = actorVal.replace('user:', '');
-      body.user_name = actorSelect?.selectedOptions?.[0]?.textContent?.replace('User: ', '') || '';
+      userId = actorVal.replace('user:', '');
+      userName = actorSelect?.selectedOptions?.[0]?.textContent?.replace('User: ', '') || '';
     } else if (actorVal.startsWith('device:')) {
-      body.device_name = actorVal.replace('device:', '');
+      deviceName = actorVal.replace('device:', '');
     }
   }
 
+  const realChk = document.getElementById(type === 'access' ? `testAccessReal-${idx}` : `testVisitorReal-${idx}`);
+  const resultEl = document.getElementById(type === 'access' ? `testAccessResult-${idx}` : `testVisitorResult-${idx}`);
+  const card = document.getElementById(type === 'access' ? `test-access-${idx}` : `test-visitor-${idx}`);
+
+  // Door override (customize panel) — falls back to the rule's configured trigger
+  const doorOverrideEl = document.getElementById(type === 'access' ? `testAccessDoorOverride-${idx}` : `testVisitorDoorOverride-${idx}`);
+  const customizePanel = document.getElementById(type === 'access' ? `testAccessCustomize-${idx}` : `testVisitorCustomize-${idx}`);
+  const customizeOpen = customizePanel?.classList.contains('open');
+  const triggerDoor = (customizeOpen && doorOverrideEl?.value) ? doorOverrideEl.value : rule.trigger;
+
+  return {
+    rule, userId, userName, deviceName, triggerDoor,
+    overridden: customizeOpen && triggerDoor !== rule.trigger,
+    executeRealUnlock: !!realChk?.checked,
+    resultEl, card
+  };
+}
+
+function _renderPreflight(checks, summary) {
+  const items = checks.map(c =>
+    `<li><span class="pf-icon ${c.pass ? 'pass' : 'fail'}">${c.pass ? '✓' : '✗'}</span><span class="pf-name">${c.name}</span><span class="pf-detail">${c.detail || ''}</span></li>`
+  ).join('');
+  const hdr = summary
+    ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">Preflight: ${summary.fail_count === 0 ? '<span style="color:var(--green)">all checks passed</span>' : `<span style="color:var(--red)">${summary.fail_count} check(s) failed</span>`} · envelope: ${summary.envelope_mode || '?'}</div>`
+    : '';
+  return `${hdr}<ul class="preflight-list">${items}</ul>`;
+}
+
+function confirmRealUnlock(checkbox) {
+  if (checkbox.checked) {
+    const ok = confirm('This will issue a REAL unlock command to the controller. The selected door(s) will physically unlock.\n\nProceed?');
+    if (!ok) checkbox.checked = false;
+  }
+}
+
+async function runPreflight(type, idx) {
+  const ctx = _ruleSimContext(type, idx);
+  if (!ctx) { toast('Rule not found', 'error'); return; }
+  const { userId, deviceName, triggerDoor, resultEl } = ctx;
+
+  if (resultEl) resultEl.innerHTML = '<span style="font-size:12px;color:var(--text-muted)">Running preflight...</span>';
+
   try {
-    await api('POST', '/test/event', body);
-    if (resultEl) resultEl.innerHTML = `<span class="badge success">Simulated successfully</span> <span style="font-size:11px;color:var(--text-muted)">Expected unlocks: ${(rule.unlock || []).join(', ')}</span>`;
-    toast(`Rule simulated: ${rule.group} at ${rule.trigger}`, 'success');
+    const r = await api('POST', '/test/preflight', {
+      user_id: userId,
+      door_name: triggerDoor,
+      device_name: deviceName,
+      rule_type: type
+    });
+    if (resultEl) resultEl.innerHTML = _renderPreflight(r.checks, r.summary);
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<span class="badge error">Preflight failed: ${e.message}</span>`;
+  }
+}
+
+// Flatten nested object/array to dot-paths -> string values, capped at 200 keys.
+function _flattenForDiff(obj, prefix = '', out = {}, cap = { n: 0 }) {
+  if (cap.n > 200) return out;
+  if (obj === null || typeof obj !== 'object') {
+    out[prefix || '(root)'] = obj === undefined ? 'undefined' : JSON.stringify(obj);
+    cap.n++;
+    return out;
+  }
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) { out[prefix] = '[]'; cap.n++; return out; }
+    obj.forEach((v, i) => _flattenForDiff(v, `${prefix}[${i}]`, out, cap));
+    return out;
+  }
+  const keys = Object.keys(obj);
+  if (keys.length === 0) { out[prefix || '(root)'] = '{}'; cap.n++; return out; }
+  for (const k of keys) {
+    _flattenForDiff(obj[k], prefix ? `${prefix}.${k}` : k, out, cap);
+  }
+  return out;
+}
+
+function _renderFieldDiff(simPayload, realPayload) {
+  if (!realPayload) return '';
+  const a = _flattenForDiff(simPayload);
+  const b = _flattenForDiff(realPayload);
+  const allKeys = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
+  const rows = [];
+  let diffCount = 0;
+  for (const k of allKeys) {
+    const av = a[k];
+    const bv = b[k];
+    const inA = k in a;
+    const inB = k in b;
+    let cls = '';
+    if (inA && inB && av !== bv) { cls = 'row-diff'; diffCount++; }
+    else if (inA && !inB) { cls = 'row-only-sim'; diffCount++; }
+    else if (!inA && inB) { cls = 'row-only-real'; diffCount++; }
+    else continue;
+    const esc = (s) => String(s ?? '—').replace(/</g, '&lt;');
+    rows.push(`<tr class="${cls}"><td>${esc(k)}</td><td>${inA ? esc(av) : '(missing)'}</td><td>${inB ? esc(bv) : '(missing)'}</td></tr>`);
+  }
+  const body = rows.length === 0
+    ? `<div class="diff-empty">No field differences (simulator payload structurally matches the real one).</div>`
+    : `<table><thead><tr><th>Path</th><th>Simulator</th><th>Real</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+  const hdr = `<div style="font-size:11px;color:var(--text-muted);margin:8px 0 4px">Field differences: <strong>${diffCount}</strong> (identical fields hidden)</div>`;
+  return `${hdr}<div class="compare-diff">${body}</div>`;
+}
+
+function _renderComparePanel(simPayload, realEntry, processing) {
+  const fmt = (o) => JSON.stringify(o, null, 2);
+  const realBlock = realEntry
+    ? `<div><h5>Most recent real event (matched on ${realEntry.matched_on}, source=${realEntry.source})</h5><pre>${fmt(realEntry.payload).replace(/</g, '&lt;')}</pre></div>`
+    : `<div><h5>Most recent real event</h5><div style="color:var(--text-muted);font-family:var(--font);font-size:12px">No prior real event for this user/door in the in-memory ring buffer.</div></div>`;
+  const procBlock = processing
+    ? `<div style="margin-top:6px;font-size:11px;color:var(--text-secondary)"><strong>last_processing:</strong> ${JSON.stringify(processing).replace(/</g, '&lt;')}</div>`
+    : '';
+  const diffBlock = realEntry ? _renderFieldDiff(simPayload, realEntry.payload) : '';
+  return `${procBlock}<div class="compare-grid"><div><h5>Simulator payload (${simPayload.event || (simPayload.alarm ? 'alarm' : 'unknown')})</h5><pre>${fmt(simPayload).replace(/</g, '&lt;')}</pre></div>${realBlock}</div>${diffBlock}`;
+}
+
+async function simulateRule(type, idx) {
+  const ctx = _ruleSimContext(type, idx);
+  if (!ctx) { toast('Rule not found', 'error'); return; }
+  const { rule, userId, userName, deviceName, triggerDoor, overridden, executeRealUnlock, resultEl, card } = ctx;
+
+  const btnId = type === 'access' ? `testAccessBtn-${idx}` : `testVisitorBtn-${idx}`;
+  const btn = document.getElementById(btnId);
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Running...'; }
+  if (card) card.classList.add('simulating');
+  if (resultEl) resultEl.innerHTML = '<span style="font-size:12px;color:var(--text-muted)">Running preflight + simulation...</span>';
+
+  try {
+    // Preflight first
+    const pf = await api('POST', '/test/preflight', {
+      user_id: userId,
+      door_name: triggerDoor,
+      device_name: deviceName,
+      rule_type: type
+    });
+
+    // Simulate
+    const sim = await api('POST', '/test/simulate-rule', {
+      user_id: userId,
+      user_name: userName,
+      door_name: triggerDoor,
+      device_name: deviceName,
+      rule_type: type,
+      execute_real_unlock: executeRealUnlock
+    });
+
+    const action = sim.processing?.action || 'no_processing';
+    const ok = action === 'unlocked' || action === 'delayed';
+    const summary = ok
+      ? `<span class="badge success">${action.toUpperCase()}</span>`
+      : `<span class="badge ${action === 'unlock_failed' ? 'error' : 'warning'}">${action.toUpperCase()}</span>`;
+    const detail = sim.processing?.detail || sim.error || '';
+    const overrideNote = overridden
+      ? `<div style="font-size:11px;color:var(--accent);margin-top:4px">Trigger overridden: simulating tap at "${triggerDoor}" instead of rule's configured "${rule.trigger}".</div>`
+      : '';
+    const dryNote = sim.dry_run
+      ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">Dry-run: no real PUT issued (delayed unlocks also blocked via simulated_dry_run flag).</div>`
+      : '';
+    const realNote = executeRealUnlock
+      ? `<div style="font-size:11px;color:var(--yellow);margin-top:4px">⚠ Real unlock executed against controller</div>`
+      : '';
+
+    if (resultEl) {
+      resultEl.innerHTML = `
+        ${_renderPreflight(pf.checks, pf.summary)}
+        <div style="margin-top:10px;font-size:12px">${summary} ${detail}${overrideNote}${dryNote}${realNote}</div>
+        ${_renderComparePanel(sim.payload, sim.real_event_for_comparison, sim.processing)}
+      `;
+    }
+    toast(`Rule simulated (${action})`, ok ? 'success' : 'error');
   } catch (e) {
     if (resultEl) resultEl.innerHTML = `<span class="badge error">Failed: ${e.message}</span>`;
     toast(`Simulation failed: ${e.message}`, 'error');

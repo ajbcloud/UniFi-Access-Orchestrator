@@ -366,6 +366,339 @@ app.post('/test/event', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Simulation helpers — build envelope-accurate payloads matching what the
+// configured event source would actually deliver, so the simulator exercises
+// the same normalization/filter/resolver paths as a real badge tap.
+// ---------------------------------------------------------------------------
+
+function buildSimulationPayload(opts) {
+  const {
+    envelopeMode, eventType,
+    userId, userName,
+    doorName, doorId,
+    deviceName, deviceId,
+    reasonCode, authType,
+    dryRun
+  } = opts;
+
+  const ts = Date.now();
+  const inferredAuth = authType || (eventType === 'access.doorbell.completed' ? 'CALL' : 'NFC');
+  const extra = { simulated: true, ...(dryRun ? { simulated_dry_run: true } : {}) };
+
+  if (envelopeMode === 'websocket') {
+    const target = [];
+    if (doorId || doorName) {
+      target.push({ type: 'door', id: doorId || `sim-door-${ts}`, display_name: doorName, name: doorName });
+    }
+    if (deviceName || deviceId) {
+      target.push({ type: 'device', id: deviceId || `sim-dev-${ts}`, display_name: deviceName || 'Simulated Reader', name: deviceName || 'Simulated Reader' });
+    }
+    return {
+      event: 'access.logs.add',
+      event_object_id: `sim-${ts}`,
+      data: {
+        _source: {
+          event: {
+            type: eventType,
+            authentication_type: inferredAuth,
+            result: 'ACCESS',
+            ...(reasonCode !== undefined ? { reason_code: Number(reasonCode) } : {})
+          },
+          actor: userId
+            ? { id: userId, display_name: userName || 'Simulated User', name: userName || 'Simulated User', type: 'user' }
+            : null,
+          target,
+          extra
+        }
+      }
+    };
+  }
+
+  if (envelopeMode === 'alarm_manager') {
+    return {
+      alarm: {
+        name: doorName,
+        triggers: [{
+          key: eventType === 'access.doorbell.completed' ? 'doorbell.completed' : 'door.unlock',
+          actor: userId ? { id: userId, name: userName || 'Simulated User', display_name: userName || 'Simulated User' } : null
+        }],
+        sources: [{ device: deviceId || `sim-dev-${ts}` }],
+        extra
+      }
+    };
+  }
+
+  // webhook (default)
+  return {
+    event: eventType,
+    event_object_id: `sim-${ts}`,
+    data: {
+      location: { id: doorId || `sim-loc-${ts}`, location_type: 'door', name: doorName },
+      device: { name: deviceName || 'Simulated Reader', device_type: 'TEST', id: deviceId || `sim-dev-${ts}` },
+      actor: userId ? { id: userId, name: userName || 'Simulated User', type: 'user' } : null,
+      object: {
+        authentication_type: inferredAuth,
+        policy_id: '', policy_name: '', result: 'Access Granted',
+        ...(reasonCode !== undefined ? { reason_code: Number(reasonCode) } : {})
+      },
+      extra
+    }
+  };
+}
+
+function findRealEventForComparison({ userId, doorName }) {
+  for (const entry of rawPayloads) {
+    if (typeof entry.source === 'string' && entry.source.startsWith('simulator')) continue;
+    const json = JSON.stringify(entry.payload || '');
+    const userMatch = userId && json.includes(userId);
+    const doorMatch = doorName && json.includes(doorName);
+    if (userMatch || doorMatch) {
+      return { ...entry, matched_on: userMatch ? 'user_id' : 'door_name' };
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// POST /test/preflight
+// Runs a sequence of pass/fail checks for a (user, door, rule type) tuple
+// before any simulation runs — surfaces the real-world failure modes the
+// dashboard's "simulate" button used to mask.
+// ---------------------------------------------------------------------------
+
+app.post('/test/preflight', async (req, res) => {
+  const { user_id, door_name, rule_type, device_name } = req.body || {};
+  const ruleType = rule_type === 'visitor' ? 'visitor' : 'access';
+  const checks = [];
+
+  // 1. Controller reachability
+  const ctrlState = unifiClient.connectionState || 'unknown';
+  checks.push({
+    name: 'Controller reachable',
+    pass: ctrlState === 'connected',
+    detail: `Connection state: ${ctrlState}`
+  });
+
+  // 2. Event source live
+  const mode = config.event_source?.mode || 'alarm_manager';
+  if (mode === 'websocket') {
+    const WebSocketLib = require('ws');
+    const wsOpen = unifiClient.ws?.readyState === WebSocketLib.OPEN;
+    checks.push({
+      name: 'WebSocket connected',
+      pass: wsOpen,
+      detail: wsOpen
+        ? 'Live (real taps would arrive here)'
+        : 'Disconnected — real badge taps would not reach the orchestrator'
+    });
+  } else {
+    checks.push({
+      name: 'Event source',
+      pass: true,
+      detail: `Mode: ${mode} (no live socket required)`
+    });
+  }
+
+  // 3. Door discovered + online
+  const doorId = door_name ? unifiClient.doors.get(door_name) : null;
+  if (!door_name) {
+    checks.push({ name: 'Door discovered', pass: false, detail: 'No door selected' });
+  } else if (!doorId) {
+    const known = [...unifiClient.doors.keys()].join(', ') || 'none';
+    checks.push({
+      name: 'Door discovered',
+      pass: false,
+      detail: `"${door_name}" not in discovery cache. Known: ${known}`
+    });
+  } else {
+    checks.push({
+      name: 'Door discovered',
+      pass: true,
+      detail: `"${door_name}" → ${doorId.substring(0, 12)}…`
+    });
+
+    // Probe door online state — fail-closed on any probe error so connectivity,
+    // auth, or permission failures surface here instead of being masked.
+    let onlinePass = false;
+    let probeDetail;
+    try {
+      const r = await unifiClient.request('GET', `/doors/${doorId}`);
+      const d = r.data || {};
+      if (d.is_bind_hub === false) {
+        probeDetail = 'Controller reports door is NOT bound to a hub (offline)';
+      } else {
+        onlinePass = true;
+        const lock = d.door_lock_relay_status ? `, lock=${d.door_lock_relay_status}` : '';
+        probeDetail = `Controller reports door bound to hub${lock}`;
+      }
+    } catch (err) {
+      const status = err.response?.status;
+      const tag = status === 401 || status === 403
+        ? 'auth/permission failure'
+        : status
+          ? `HTTP ${status}`
+          : 'network/connectivity failure';
+      probeDetail = `Online probe failed (${tag}): ${err.message}`;
+    }
+    checks.push({
+      name: 'Door online',
+      pass: onlinePass,
+      detail: probeDetail
+    });
+  }
+
+  // 4. Resolve to group — by user (access) or by viewer device (visitor fallback)
+  let resolvedGroup = null;
+  let resolveDetail = '';
+  if (user_id) {
+    const r = resolver.resolve(user_id);
+    resolvedGroup = r.group;
+    const displayName = r.userName || unifiClient.getUserName(user_id) || user_id;
+    resolveDetail = resolvedGroup
+      ? `${displayName} → "${resolvedGroup}" (via ${r.strategy})`
+      : `${displayName} did not resolve to any group — check resolver.unifi_group_to_group mapping`;
+    checks.push({ name: 'User resolves to group', pass: !!resolvedGroup, detail: resolveDetail });
+  } else if (ruleType === 'visitor' && device_name) {
+    const ci = rulesEngine._viewerToGroupCI || {};
+    resolvedGroup = ci[String(device_name).trim().toLowerCase()] || null;
+    resolveDetail = resolvedGroup
+      ? `viewer device "${device_name}" → "${resolvedGroup}" (via viewer_to_group)`
+      : `viewer device "${device_name}" not in doorbell_rules.viewer_to_group`;
+    checks.push({ name: 'Viewer device resolves to group', pass: !!resolvedGroup, detail: resolveDetail });
+  } else if (ruleType === 'visitor') {
+    checks.push({ name: 'Resolve to group', pass: false, detail: 'Pick a user OR a viewer device' });
+  } else {
+    checks.push({ name: 'User resolves to group', pass: false, detail: 'No user selected' });
+  }
+
+  // 5. Matching rule exists
+  const ruleSet = ruleType === 'visitor' ? rulesEngine.visitorRules : rulesEngine.accessRules;
+  const matching = resolvedGroup && door_name
+    ? ruleSet.filter(r => r.group === resolvedGroup && rulesEngine.locationMatches(door_name, r.trigger))
+    : [];
+  const allUnlocks = [...new Set(matching.flatMap(r => r.unlock || []))];
+  checks.push({
+    name: `Matching ${ruleType} rule`,
+    pass: matching.length > 0,
+    detail: matching.length > 0
+      ? `${matching.length} rule(s) → unlock: ${allUnlocks.join(', ') || '(none)'}`
+      : `No ${ruleType} rule for group "${resolvedGroup || 'unresolved'}" at trigger "${door_name || ''}"`
+  });
+
+  // 6. Self-trigger guard (synthetic payload never carries the marker)
+  const stk = config.self_trigger_prevention?.marker_key;
+  checks.push({
+    name: 'Self-trigger guard',
+    pass: true,
+    detail: stk
+      ? `Marker "${stk}" configured; simulator omits it so the event will not be filtered`
+      : 'No self-trigger marker configured'
+  });
+
+  const failCount = checks.filter(c => !c.pass).length;
+  res.json({
+    checks,
+    summary: {
+      pass: failCount === 0,
+      fail_count: failCount,
+      envelope_mode: mode === 'api_webhook' ? 'webhook' : mode
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /test/simulate-rule
+// Envelope-accurate end-to-end simulator. Builds a payload matching the
+// configured event-source shape and feeds it through the same handleEvent
+// path as a real event. By default the actual controller unlock call is
+// stubbed (dry-run); execute_real_unlock=true performs the real PUT.
+// ---------------------------------------------------------------------------
+
+app.post('/test/simulate-rule', async (req, res) => {
+  const {
+    user_id, user_name,
+    door_name, rule_type,
+    device_name,
+    execute_real_unlock
+  } = req.body || {};
+
+  if (!door_name) {
+    return res.status(400).json({ error: 'door_name is required' });
+  }
+
+  const ruleType = rule_type === 'visitor' ? 'visitor' : 'access';
+  const eventType = ruleType === 'visitor' ? 'access.doorbell.completed' : 'access.door.unlock';
+  const mode = config.event_source?.mode || 'alarm_manager';
+  const envelopeMode = mode === 'api_webhook' ? 'webhook' : (mode === 'websocket' ? 'websocket' : 'alarm_manager');
+
+  const doorId = unifiClient.doors.get(door_name) || null;
+  const resolvedUserName = user_name
+    || (user_id ? unifiClient.getUserName(user_id) : null)
+    || (user_id ? 'Simulated User' : null);
+
+  const dryRun = !execute_real_unlock;
+  const payload = buildSimulationPayload({
+    envelopeMode,
+    eventType,
+    userId: user_id || null,
+    userName: resolvedUserName,
+    doorName: door_name,
+    doorId,
+    deviceName: device_name || null,
+    reasonCode: ruleType === 'visitor' ? 107 : undefined,
+    dryRun
+  });
+
+  storeRawPayload(`simulator:${envelopeMode}${dryRun ? ':dry-run' : ':REAL'}`, payload);
+
+  if (!dryRun) {
+    logger.warn(`[SIMULATOR] execute_real_unlock=true — real PUT /doors/:id/unlock will be issued`);
+  }
+
+  let error = null;
+  const beforeStats = { ...rulesEngine.getStats() };
+  try {
+    // The dry-run flag is embedded in payload.extra.simulated_dry_run and
+    // propagates through normalizeEvent into event.extra, where executeUnlocks
+    // (including any setTimeout-deferred delayed unlocks) checks it. This
+    // guarantees no real PUT /doors/:id/unlock fires while dry-run is set,
+    // even for delayed rules whose unlock callback runs after this handler
+    // returns.
+    await rulesEngine.handleEvent(payload);
+  } catch (e) {
+    error = e.message;
+    logger.error(`Simulator error: ${e.message}`);
+  }
+
+  const afterStats = rulesEngine.getStats();
+  const processing = afterStats.last_processing || null;
+
+  const realEvent = findRealEventForComparison({ userId: user_id, doorName: door_name });
+
+  res.json({
+    status: error ? 'error' : 'ok',
+    error,
+    envelope_mode: envelopeMode,
+    event_type: eventType,
+    rule_type: ruleType,
+    payload,
+    executed_real_unlock: !!execute_real_unlock,
+    dry_run: dryRun,
+    processing,
+    last_event: afterStats.last_event,
+    stats_delta: {
+      events_filtered: afterStats.events_filtered - beforeStats.events_filtered,
+      events_processed: afterStats.events_processed - beforeStats.events_processed,
+      events_skipped_self: afterStats.events_skipped_self - beforeStats.events_skipped_self,
+      events_skipped_no_action: afterStats.events_skipped_no_action - beforeStats.events_skipped_no_action,
+      unlocks_triggered: afterStats.unlocks_triggered - beforeStats.unlocks_triggered,
+      unlocks_failed: afterStats.unlocks_failed - beforeStats.unlocks_failed
+    },
+    real_event_for_comparison: realEvent
+  });
+});
+
+// ---------------------------------------------------------------------------
 // POST /reload
 // ---------------------------------------------------------------------------
 

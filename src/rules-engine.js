@@ -229,13 +229,19 @@ class RulesEngine {
     return null;
   }
 
-  // Infer event type from Alarm Manager trigger keys
+  // Infer event type from Alarm Manager trigger keys.
+  // Order matters: doorbell/ring must be checked BEFORE generic door/unlock,
+  // because keys like "doorbell.completed" contain "door" and would otherwise
+  // be mis-routed to access.door.unlock.
   inferAlarmType(raw) {
     const triggers = raw.alarm?.triggers || [];
     for (const t of triggers) {
       const key = (t.key || '').toLowerCase();
+      if (key.includes('doorbell') || key.includes('ring') || key.includes('intercom')) {
+        if (key.includes('complete') || key.includes('answer')) return 'access.doorbell.completed';
+        return 'access.doorbell.incoming';
+      }
       if (key.includes('unlock') || key.includes('door')) return 'access.door.unlock';
-      if (key.includes('doorbell') || key.includes('ring')) return 'access.doorbell.incoming';
     }
     return 'alarm_manager.unknown';
   }
@@ -425,12 +431,13 @@ class RulesEngine {
 
     logger.info(`User "${displayName}" -> group "${group}" (via ${strategy}) at "${event.locationName}" -> unlocking: ${doorsToUnlock.join(', ')}`);
 
+    const dryRun = this.isSimulationDryRun(event);
     const reason = `NFC/tap: ${displayName} (${group || 'default'}) at ${event.locationName}`;
-    
+
     // Apply delay if specified in any matching rule
     const delay = ruleWithDelay ? ruleWithDelay.delay : 0;
     if (delay > 0) {
-      logger.info(`Delaying unlock by ${delay}s for "${displayName}"`);
+      logger.info(`Delaying unlock by ${delay}s for "${displayName}"${dryRun ? ' [DRY-RUN]' : ''}`);
       this.stats.last_processing = {
         action: 'delayed',
         actorName: displayName,
@@ -439,10 +446,11 @@ class RulesEngine {
         location: event.locationName,
         doorsAttempted: doorsToUnlock,
         delay,
-        detail: `Unlocking in ${delay}s: ${doorsToUnlock.join(', ')}`
+        dryRun,
+        detail: `${dryRun ? '[DRY-RUN] ' : ''}Unlocking in ${delay}s: ${doorsToUnlock.join(', ')}`
       };
       setTimeout(async () => {
-        const unlocked = await this.executeUnlocks(doorsToUnlock, reason);
+        const unlocked = await this.executeUnlocks(doorsToUnlock, reason, { dryRun });
         if (this.broadcaster) {
           this.broadcaster({
             type: event.type,
@@ -454,7 +462,7 @@ class RulesEngine {
         }
       }, delay * 1000);
     } else {
-      const unlocked = await this.executeUnlocks(doorsToUnlock, reason);
+      const unlocked = await this.executeUnlocks(doorsToUnlock, reason, { dryRun });
       this.stats.last_processing = {
         action: unlocked.length > 0 ? 'unlocked' : 'unlock_failed',
         actorName: displayName,
@@ -463,7 +471,8 @@ class RulesEngine {
         location: event.locationName,
         doorsAttempted: doorsToUnlock,
         doorsUnlocked: unlocked,
-        detail: unlocked.length > 0 ? `Unlocked: ${unlocked.join(', ')}` : `Unlock failed for: ${doorsToUnlock.join(', ')}`
+        dryRun,
+        detail: `${dryRun ? '[DRY-RUN] ' : ''}${unlocked.length > 0 ? `Unlocked: ${unlocked.join(', ')}` : `Unlock failed for: ${doorsToUnlock.join(', ')}`}`
       };
     }
     this.stats.events_processed++;
@@ -569,12 +578,13 @@ class RulesEngine {
       return;
     }
 
+    const dryRun = this.isSimulationDryRun(event);
     const reason = `Doorbell: answered by ${resolveMethod || 'unknown'} at ${event.locationName}`;
-    
+
     // Apply delay if specified in the rule
     const delay = ruleWithDelay ? ruleWithDelay.delay : 0;
     if (delay > 0) {
-      logger.info(`Delaying doorbell unlock by ${delay}s`);
+      logger.info(`Delaying doorbell unlock by ${delay}s${dryRun ? ' [DRY-RUN]' : ''}`);
       this.stats.last_processing = {
         action: 'delayed',
         actorName: resolveMethod,
@@ -582,10 +592,11 @@ class RulesEngine {
         location: event.locationName,
         doorsAttempted: doorsToUnlock,
         delay,
-        detail: `Doorbell: unlocking in ${delay}s: ${doorsToUnlock.join(', ')}`
+        dryRun,
+        detail: `${dryRun ? '[DRY-RUN] ' : ''}Doorbell: unlocking in ${delay}s: ${doorsToUnlock.join(', ')}`
       };
       setTimeout(async () => {
-        const unlocked = await this.executeUnlocks(doorsToUnlock, reason);
+        const unlocked = await this.executeUnlocks(doorsToUnlock, reason, { dryRun });
         if (this.broadcaster) {
           this.broadcaster({
             type: event.type,
@@ -597,7 +608,7 @@ class RulesEngine {
         }
       }, delay * 1000);
     } else {
-      const unlocked = await this.executeUnlocks(doorsToUnlock, reason);
+      const unlocked = await this.executeUnlocks(doorsToUnlock, reason, { dryRun });
       this.stats.last_processing = {
         action: unlocked.length > 0 ? 'unlocked' : 'unlock_failed',
         actorName: resolveMethod,
@@ -605,7 +616,8 @@ class RulesEngine {
         location: event.locationName,
         doorsAttempted: doorsToUnlock,
         doorsUnlocked: unlocked,
-        detail: unlocked.length > 0 ? `Unlocked: ${unlocked.join(', ')}` : `Unlock failed for: ${doorsToUnlock.join(', ')}`
+        dryRun,
+        detail: `${dryRun ? '[DRY-RUN] ' : ''}${unlocked.length > 0 ? `Unlocked: ${unlocked.join(', ')}` : `Unlock failed for: ${doorsToUnlock.join(', ')}`}`
       };
     }
     this.stats.events_processed++;
@@ -615,12 +627,26 @@ class RulesEngine {
   // Execute unlock commands
   // ---------------------------------------------------------------------------
 
-  async executeUnlocks(doorNames, reason) {
+  async executeUnlocks(doorNames, reason, opts = {}) {
     const successfulDoors = [];
     const MAX_RETRIES = 3;
     const RETRY_DELAY_MS = 2000;
+    const dryRun = opts && opts.dryRun === true;
 
     for (const name of doorNames) {
+      if (dryRun) {
+        logger.info(`[SIM dry-run] would unlock "${name}" — reason: ${reason}`);
+        this.stats.unlocks_triggered++;
+        successfulDoors.push(name);
+        this.stats.last_unlock = {
+          door: name,
+          doors: [...successfulDoors],
+          reason: `[DRY-RUN] ${reason}`,
+          time: new Date().toISOString(),
+          simulated: true
+        };
+        continue;
+      }
       let success = false;
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
@@ -672,6 +698,19 @@ class RulesEngine {
   // ---------------------------------------------------------------------------
   // Self-trigger prevention
   // ---------------------------------------------------------------------------
+
+  // Returns true if the event was synthesized by the simulator with the
+  // dry-run flag set. Checks every shape (webhook, websocket _source, alarm).
+  isSimulationDryRun(event) {
+    const check = (e) => e && typeof e === 'object' && e.simulated_dry_run === true;
+    if (check(event.extra)) return true;
+    const raw = event.raw || {};
+    if (check(raw?.data?.extra)) return true;
+    if (check(raw?.data?.object?.extra)) return true;
+    if (check(raw?.data?._source?.extra)) return true;
+    if (check(raw?.alarm?.extra)) return true;
+    return false;
+  }
 
   isSelfTriggered(event) {
     if (!this.selfTrigger.marker_key || !this.selfTrigger.marker_value) return false;
