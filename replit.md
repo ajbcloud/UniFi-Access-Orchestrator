@@ -139,6 +139,32 @@ The orchestrator only needs **read** on most scopes. It performs writes in a sma
 
 If `auto_lock.buttons` in `config.json` is empty (default), `setDoorLockRule` is never called; Locations:Edit is still required for unlock writes.
 
+## Production Data Fix — Tenant Group Mapping (2026-05)
+
+Cascading inner-door unlocks (e.g. inner glass stair door not opening after a
+Claussen badge at the main entrance) were caused by a name mismatch between
+`unlock_rules[].group` strings and the actual UniFi user group names. The
+resolver returned the raw UniFi group name, no rule matched, and only the
+controller-native main door unlock fired.
+
+To repair an existing deployment:
+
+1. Open the **Configuration** tab → **User Groups** card.
+2. For each row, set the **Logical Name** to exactly what the rules use. The
+   four production tenants are:
+   - `Claussen Weires PLLC`
+   - `Lane & Ducheine, PL`
+   - `Rosemurgy Properties`
+   - `AnswersMD`
+3. Click **Save Group Mappings**. The Event Source pill should stay green
+   (no full reconnect — rules-only changes are now hot-applied).
+4. In **Test Tools → Test Configured Rules**, run one simulation per tenant
+   to confirm the cascade fires.
+
+The dev-mode `config/config.json` in this repo ships with identity mappings
+for these four tenants as a reference — they're harmless if the controller
+groups already match, and serve as a template if rules are pasted in.
+
 ## Notes
 
 - The setup wizard shows on first run when no controller is configured. Users can skip it and configure later from the Settings tab.
