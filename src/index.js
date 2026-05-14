@@ -1164,7 +1164,7 @@ function initConfigSync() {
     getUnifiClient: () => unifiClient,
     onConfigFileChanged: async ({ reason }) => {
       try {
-        await reloadOrchestrator(reason);
+        await reloadOrchestrator({ reason });
       } catch (err) {
         logger.error(`Auto-reload (${reason}) failed: ${err.message}`);
       }
