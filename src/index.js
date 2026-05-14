@@ -372,9 +372,12 @@ app.post('/test/event', async (req, res) => {
 app.post('/reload', async (req, res) => {
   logger.info('Config reload requested');
   try {
-    const newConfig = loadConfig();
-    const result = await reloadServices(newConfig);
-    broadcastEvent({ type: 'system.reload', actor: 'GUI Admin', location: '-', action: `Config reloaded (${result.mode})`, success: true });
+    const result = await reloadOrchestrator({
+      reason: 'manual_reload',
+      actor: 'GUI Admin',
+      eventType: 'system.reload',
+      actionPrefix: 'Config reloaded'
+    });
     logger.info(`Config reloaded successfully (${result.mode})`);
     res.json({ status: 'reloaded', mode: result.mode });
   } catch (err) {
@@ -448,12 +451,14 @@ app.put('/api/config', async (req, res) => {
     // Auto-reload the service to apply changes immediately
     let reloadMode = 'skipped';
     try {
-      const newConfig = loadConfig();
-      const result = await reloadServices(newConfig);
+      const result = await reloadOrchestrator({
+        reason: 'config_saved',
+        actor: 'API',
+        eventType: 'system.config_reload',
+        actionPrefix: 'Config reloaded'
+      });
       reloadMode = result.mode;
-      broadcastEvent({ type: 'system.config_reload', actor: 'API', location: '-', action: `Config reloaded (${result.mode})`, success: true });
       logger.info(`Config reloaded automatically (${result.mode})`);
-      applyAutoSyncFromConfig();
     } catch (reloadErr) {
       logger.warn(`Auto-reload after config save failed: ${reloadErr.message}`);
     }
@@ -505,11 +510,13 @@ app.post('/api/backups/restore', async (req, res) => {
     if (configSync) configSync.markConfigApplied();
 
     try {
-      const newConfig = loadConfig();
-      const reloadResult = await reloadServices(newConfig);
-      broadcastEvent({ type: 'system.config_restore', actor: 'Admin', location: '-', action: `Restored from ${filename} (${reloadResult.mode})`, success: true });
+      const reloadResult = await reloadOrchestrator({
+        reason: 'backup_restore',
+        actor: 'Admin',
+        eventType: 'system.config_restore',
+        actionPrefix: `Restored from ${filename}`
+      });
       logger.info(`Config reloaded after restore (${reloadResult.mode})`);
-      applyAutoSyncFromConfig();
     } catch (reloadErr) {
       logger.warn(`Auto-reload after restore failed: ${reloadErr.message}`);
     }
@@ -1005,18 +1012,27 @@ function isEventSourceDegraded() {
 //   - Config Sync background job (when config.json changed on disk)
 // Broadcasts a `system.auto_reload` SSE event so the dashboard can
 // auto-refresh in place without a manual Refresh click.
-async function reloadOrchestrator(reason) {
+async function reloadOrchestrator({
+  reason,
+  actor = 'auto-sync',
+  eventType = 'system.auto_reload',
+  actionPrefix = 'Auto-reloaded'
+} = {}) {
+  // Stop the background sync first so its tick can't race with the
+  // unifiClient teardown/reinit inside reloadServices(). Re-applied in
+  // finally so a failed reload still leaves the job running.
   if (configSync) configSync.stop();
   try {
     const newConfig = loadConfig();
     const result = await reloadServices(newConfig);
+    const reasonSuffix = reason ? ` — reason: ${reason}` : '';
     broadcastEvent({
-      type: 'system.auto_reload',
-      actor: 'auto-sync',
+      type: eventType,
+      actor,
       location: '-',
-      action: `Auto-reloaded (${result.mode}) — reason: ${reason}`,
+      action: `${actionPrefix} (${result.mode})${reasonSuffix}`,
       success: true,
-      reason
+      reason: reason || null
     });
     return result;
   } finally {
