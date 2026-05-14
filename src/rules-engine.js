@@ -72,6 +72,7 @@ class RulesEngine {
       doorbell_events: 0,
       last_event: null,
       last_unlock: null,
+      last_rule_trigger: null,
       last_processing: null,
       started_at: new Date().toISOString()
     };
@@ -430,6 +431,19 @@ class RulesEngine {
     }
 
     logger.info(`User "${displayName}" -> group "${group}" (via ${strategy}) at "${event.locationName}" -> unlocking: ${doorsToUnlock.join(', ')}`);
+
+    // Record that an access rule matched and fired (for dashboard display).
+    // Set BEFORE executeUnlocks so a delayed/failing unlock still counts as
+    // "rule triggered" — the rule logic ran, regardless of controller outcome.
+    this.stats.last_rule_trigger = {
+      time: new Date().toISOString(),
+      kind: 'access',
+      actor: displayName,
+      group,
+      trigger: event.locationName,
+      doors: doorsToUnlock,
+      simulated: !!(event.extra && event.extra.simulated_dry_run)
+    };
 
     const dryRun = this.isSimulationDryRun(event);
     const reason = `NFC/tap: ${displayName} (${group || 'default'}) at ${event.locationName}`;

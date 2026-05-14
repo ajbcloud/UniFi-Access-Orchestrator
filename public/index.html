@@ -851,6 +851,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         <div><span style="color:var(--text-muted)">Uptime:</span> <span id="infoUptime">-</span></div>
         <div><span style="color:var(--text-muted)">Access Gateway:</span> <span id="infoHost">-</span> <span id="infoConnState"></span></div>
         <div id="infoLastEvent" style="display:none"><span style="color:var(--text-muted)">Last Event:</span> <span id="infoLastEventAge">-</span></div>
+        <div id="infoLastRule" style="display:none;grid-column:1 / -1"><span style="color:var(--text-muted)">Last Rule Triggered:</span> <span id="infoLastRuleText">-</span></div>
         <div id="infoWsFilter" style="display:none"><span style="color:var(--text-muted)">WS Events:</span> <span id="infoWsFilterStats">-</span></div>
       </div>
     </div>
@@ -1329,6 +1330,26 @@ function updateDashboard() {
     else lastEvAgeEl.textContent = `${Math.floor(ageSec / 86400)}d ago`;
   } else {
     lastEvEl.style.display = 'none';
+  }
+
+  const lastRuleEl = document.getElementById('infoLastRule');
+  const lastRuleTxt = document.getElementById('infoLastRuleText');
+  const lr = h.engine?.last_rule_trigger;
+  if (lr && lr.time) {
+    lastRuleEl.style.display = '';
+    const when = new Date(lr.time);
+    const ageMs = Date.now() - when.getTime();
+    const ageSec = Math.floor(ageMs / 1000);
+    let ageStr;
+    if (ageSec < 60) ageStr = `${ageSec}s ago`;
+    else if (ageSec < 3600) ageStr = `${Math.floor(ageSec / 60)}m ago`;
+    else if (ageSec < 86400) ageStr = `${Math.floor(ageSec / 3600)}h ago`;
+    else ageStr = `${Math.floor(ageSec / 86400)}d ago`;
+    const doors = Array.isArray(lr.doors) && lr.doors.length ? lr.doors.join(', ') : '(no doors)';
+    const sim = lr.simulated ? ' [simulated]' : '';
+    lastRuleTxt.innerHTML = `<strong>${ageStr}</strong> <span style="color:var(--text-muted)">— ${when.toLocaleString()}${sim}</span><div style="font-size:12px;color:var(--text-secondary);margin-top:2px">${lr.actor || '-'} (${lr.group || '-'}) at <strong>${lr.trigger || '-'}</strong> → ${doors}</div>`;
+  } else {
+    lastRuleEl.style.display = 'none';
   }
 }
 
