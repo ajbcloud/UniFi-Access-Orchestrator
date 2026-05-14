@@ -500,21 +500,9 @@ app.post('/api/backups/restore', async (req, res) => {
 
     try {
       const newConfig = loadConfig();
-      unifiClient.shutdown();
-      unifiClient = new UniFiClient(newConfig);
-      resolver = new Resolver(newConfig, unifiClient);
-      rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
-      patchEngineForBroadcast(rulesEngine);
-      const initOk = await unifiClient.initialize();
-      if (initOk) {
-        unifiClient.startHealthMonitor();
-      } else {
-        unifiClient.initializeWithRetry().then(() => unifiClient.startHealthMonitor());
-      }
-      config = newConfig;
-      startWatchdog();
-      broadcastEvent({ type: 'system.config_restore', actor: 'Admin', location: '-', action: `Restored from ${filename}`, success: true });
-      logger.info('Config reloaded after restore');
+      const reloadResult = await reloadServices(newConfig);
+      broadcastEvent({ type: 'system.config_restore', actor: 'Admin', location: '-', action: `Restored from ${filename} (${reloadResult.mode})`, success: true });
+      logger.info(`Config reloaded after restore (${reloadResult.mode})`);
     } catch (reloadErr) {
       logger.warn(`Auto-reload after restore failed: ${reloadErr.message}`);
     }
