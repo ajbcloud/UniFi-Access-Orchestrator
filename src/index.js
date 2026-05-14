@@ -1458,10 +1458,15 @@ async function start() {
     });
   }
 
-  // Start periodic config backup — check daily, create if overdue
+  // Start periodic config backup — check daily, create if overdue.
+  // Also runs once shortly after startup so desktop/Electron sessions
+  // (which rarely stay up for a full 24h) still get scheduled backups.
+  // The `daysSinceLast >= backupIntervalDays` guard prevents duplicate
+  // backups when the app is restarted multiple times in the same day.
   const backupIntervalDays = config.backup?.interval_days || 30;
   const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // check once per day
-  setInterval(() => {
+  const STARTUP_CHECK_DELAY_MS = 30 * 1000; // wait 30s after boot
+  const runScheduledBackupCheck = () => {
     try {
       const existing = listBackups(BACKUP_DIR);
       const now = Date.now();
@@ -1477,8 +1482,10 @@ async function start() {
     } catch (err) {
       logger.warn(`Scheduled backup check failed: ${err.message}`);
     }
-  }, CHECK_INTERVAL_MS);
-  logger.info(`Config backup schedule: every ${backupIntervalDays} days (checked daily)`);
+  };
+  setTimeout(runScheduledBackupCheck, STARTUP_CHECK_DELAY_MS);
+  setInterval(runScheduledBackupCheck, CHECK_INTERVAL_MS);
+  logger.info(`Config backup schedule: every ${backupIntervalDays} days (checked on startup + daily)`);
 
   startEventSource();
   startWatchdog();
