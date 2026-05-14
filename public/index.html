@@ -1003,6 +1003,7 @@ let healthData = null;
 let configData = null;
 let doorsData = null;
 let usersData = null;
+let groupsData = null;
 let autoscroll = true;
 let eventSource = null;
 let eventsReceived = false;
@@ -1246,10 +1247,11 @@ function clearEvents() {
 // ============================================================
 async function loadConfig() {
   try {
-    [configData, doorsData, usersData] = await Promise.all([
+    [configData, doorsData, usersData, groupsData] = await Promise.all([
       api('GET', '/api/config'),
       api('GET', '/api/doors'),
-      api('GET', '/api/users')
+      api('GET', '/api/users'),
+      api('GET', '/api/groups/discovered').catch(() => ({ groups: [] }))
     ]);
     renderConfig();
     populateSimForm();
@@ -1416,11 +1418,26 @@ function renderConfig() {
   // Get all doors for checkboxes
   const allDoors = Object.keys({ ...discovered, ...configured }).filter(d => !d.startsWith('_'));
   const currentResolver = configData?.resolver?.unifi_group_to_group || {};
+
+  // Mapping table source of truth = RAW UniFi group names from
+  // /api/groups/discovered. Sourcing from users[].group is wrong because
+  // that field is already the post-mapping logical name, so once a non-
+  // identity mapping is saved the UI loses the raw key and round-trips
+  // logical->logical (which is what made names appear to "revert").
+  // Fall back to users[].group only if the discovered list is empty
+  // (e.g. controller not yet reachable).
+  const rawUnifiGroups = new Set((groupsData?.groups || []));
+  if (rawUnifiGroups.size === 0) {
+    users.forEach(u => { if (u.group) rawUnifiGroups.add(u.group); });
+  }
+  // Also include any UniFi keys already present in the saved resolver map
+  // so an admin can fix a mapping even if the controller is offline.
+  Object.keys(currentResolver).forEach(k => rawUnifiGroups.add(k));
+
+  // Logical names (post-mapping) — used by viewer-mapping dropdowns and
+  // anywhere we need the labels rules actually reference.
   const discoveredGroupNames = new Set();
-  
-  users.forEach(u => {
-    if (u.group) discoveredGroupNames.add(u.group);
-  });
+  users.forEach(u => { if (u.group) discoveredGroupNames.add(u.group); });
 
   // Group Mappings Form (after rendering users)
   let groupMappingsHtml = `
@@ -1437,7 +1454,7 @@ function renderConfig() {
           <tbody>
   `;
 
-  for (const groupName of Array.from(discoveredGroupNames).sort()) {
+  for (const groupName of Array.from(rawUnifiGroups).sort()) {
     const logicalName = currentResolver[groupName] || groupName;
     groupMappingsHtml += `
       <tr>
@@ -1608,13 +1625,16 @@ async function saveGroupMappings() {
       discoveredGroups.add(groupName);
     });
 
+    // Always send every mapping (even identity ones). The previous behaviour
+    // dropped entries where logical === unifi name, which made the input
+    // appear to "revert" after save, and silently broke any rule that
+    // referenced the typed-in name. Persisting the full map keeps the UI
+    // consistent with what's saved and makes the mapping explicit.
     const unifi_group_to_group = {};
     for (const groupName of discoveredGroups) {
       const input = document.getElementById(`mapping-${groupName}`);
       const logicalName = input.value.trim() || groupName;
-      if (logicalName !== groupName) {
-        unifi_group_to_group[groupName] = logicalName;
-      }
+      unifi_group_to_group[groupName] = logicalName;
     }
 
     const resolver = { unifi_group_to_group };

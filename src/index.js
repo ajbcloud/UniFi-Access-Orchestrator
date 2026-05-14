@@ -370,24 +370,10 @@ app.post('/reload', async (req, res) => {
   logger.info('Config reload requested');
   try {
     const newConfig = loadConfig();
-    unifiClient.shutdown();
-    unifiClient = new UniFiClient(newConfig);
-    resolver = new Resolver(newConfig, unifiClient);
-    rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
-    patchEngineForBroadcast(rulesEngine);
-
-    const initOk = await unifiClient.initialize();
-    if (initOk) {
-      unifiClient.startHealthMonitor();
-    } else {
-      unifiClient.initializeWithRetry().then(() => unifiClient.startHealthMonitor());
-    }
-    config = newConfig;
-
-    startWatchdog();
-    broadcastEvent({ type: 'system.reload', actor: 'GUI Admin', location: '-', action: 'Config reloaded', success: true });
-    logger.info('Config reloaded successfully');
-    res.json({ status: 'reloaded' });
+    const result = await reloadServices(newConfig);
+    broadcastEvent({ type: 'system.reload', actor: 'GUI Admin', location: '-', action: `Config reloaded (${result.mode})`, success: true });
+    logger.info(`Config reloaded successfully (${result.mode})`);
+    res.json({ status: 'reloaded', mode: result.mode });
   } catch (err) {
     logger.error(`Config reload failed: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -456,29 +442,18 @@ app.put('/api/config', async (req, res) => {
     logger.info('Config saved to disk');
 
     // Auto-reload the service to apply changes immediately
+    let reloadMode = 'skipped';
     try {
       const newConfig = loadConfig();
-      unifiClient.shutdown();
-      unifiClient = new UniFiClient(newConfig);
-      resolver = new Resolver(newConfig, unifiClient);
-      rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
-      patchEngineForBroadcast(rulesEngine);
-
-      const initOk = await unifiClient.initialize();
-      if (initOk) {
-        unifiClient.startHealthMonitor();
-      } else {
-        unifiClient.initializeWithRetry().then(() => unifiClient.startHealthMonitor());
-      }
-      config = newConfig;
-      startWatchdog();
-      broadcastEvent({ type: 'system.config_reload', actor: 'API', location: '-', action: 'Config reloaded', success: true });
-      logger.info('Config reloaded automatically');
+      const result = await reloadServices(newConfig);
+      reloadMode = result.mode;
+      broadcastEvent({ type: 'system.config_reload', actor: 'API', location: '-', action: `Config reloaded (${result.mode})`, success: true });
+      logger.info(`Config reloaded automatically (${result.mode})`);
     } catch (reloadErr) {
       logger.warn(`Auto-reload after config save failed: ${reloadErr.message}`);
     }
 
-    res.json({ status: 'saved', note: 'Config applied automatically' });
+    res.json({ status: 'saved', note: 'Config applied automatically', reload_mode: reloadMode });
   } catch (err) {
     logger.error(`Config save failed: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -960,6 +935,96 @@ function startWatchdog() {
   logger.info(`Event activity watchdog started: ${timeoutMin} min inactivity threshold`);
 }
 
+// ---------------------------------------------------------------------------
+// Event source startup + service reload helpers
+//
+// startEventSource() boots whichever event-ingestion mode is configured
+// (alarm_manager / api_webhook / websocket) against the CURRENT unifiClient.
+// It's used at startup AND whenever we rebuild the client after a config
+// change — fixing the bug where saving config left the WebSocket dead.
+//
+// reloadServices(newConfig) decides whether the controller-side connection
+// actually needs to be torn down. Pure rules-only changes (renaming a group
+// mapping, editing unlock rules, etc.) keep the live WebSocket and just
+// rebuild the resolver + rules engine in place. Only changes to controller
+// host/token/port/SSL or event-source mode trigger a full client rebuild.
+// ---------------------------------------------------------------------------
+
+function startEventSource() {
+  const mode = config.event_source?.mode || 'alarm_manager';
+  if (mode === 'api_webhook') {
+    const webhookConfig = config.event_source.api_webhook;
+    if (webhookConfig) {
+      unifiClient.registerWebhookEndpoint(webhookConfig)
+        .then(result => {
+          if (result.success) logger.info(`API webhook ${result.existing ? 'already registered' : 'registered successfully'}`);
+          else logger.error(`API webhook registration failed: ${result.error}`);
+        })
+        .catch(err => logger.error(`API webhook registration error: ${err.message}`));
+    }
+  } else if (mode === 'websocket') {
+    const reconnectSec = config.event_source.websocket?.reconnect_interval_seconds || 5;
+    unifiClient.connectWebSocket((event) => {
+      lastEventTime = Date.now();
+      storeRawPayload('websocket', event);
+      rulesEngine.handleEvent(event).catch(err => logger.error(`WebSocket event error: ${err.message}`));
+    }, reconnectSec);
+  }
+}
+
+function controllerOrSourceChanged(oldCfg, newCfg) {
+  const get = (obj, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+  const fields = [
+    'unifi.host',
+    'unifi.port',
+    'unifi.token',
+    'unifi.verify_ssl',
+    'unifi.user_sync_interval_minutes',
+    'event_source.mode',
+    'event_source.api_webhook.endpoint_url',
+    'event_source.api_webhook.endpoint_name',
+    'event_source.api_webhook.secret',
+    'event_source.websocket.reconnect_interval_seconds'
+  ];
+  for (const f of fields) {
+    if (JSON.stringify(get(oldCfg, f)) !== JSON.stringify(get(newCfg, f))) return true;
+  }
+  if (JSON.stringify(oldCfg.event_source?.api_webhook?.events) !== JSON.stringify(newCfg.event_source?.api_webhook?.events)) return true;
+  return false;
+}
+
+async function reloadServices(newConfig) {
+  const fullReload = controllerOrSourceChanged(config, newConfig);
+
+  if (fullReload) {
+    logger.info('Reload: controller/event-source settings changed — rebuilding UniFi client');
+    unifiClient.shutdown();
+    unifiClient = new UniFiClient(newConfig);
+    resolver = new Resolver(newConfig, unifiClient);
+    rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
+    patchEngineForBroadcast(rulesEngine);
+    config = newConfig;
+
+    const initOk = await unifiClient.initialize();
+    if (initOk) {
+      unifiClient.startHealthMonitor();
+    } else {
+      unifiClient.initializeWithRetry().then(() => unifiClient.startHealthMonitor());
+    }
+    startEventSource();
+    startWatchdog();
+    return { mode: 'full' };
+  }
+
+  logger.info('Reload: rules-only change — keeping live connection, rebuilding resolver + rules engine');
+  resolver = new Resolver(newConfig, unifiClient);
+  rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
+  patchEngineForBroadcast(rulesEngine);
+  config = newConfig;
+  startWatchdog();
+  return { mode: 'rules-only' };
+}
+
 async function start() {
   logger.info('=== UniFi Access Orchestrator Starting ===');
   logger.info(`Event source mode: ${config.event_source?.mode || 'alarm_manager'}`);
@@ -1006,23 +1071,7 @@ async function start() {
   }, CHECK_INTERVAL_MS);
   logger.info(`Config backup schedule: every ${backupIntervalDays} days (checked daily)`);
 
-  const mode = config.event_source?.mode || 'alarm_manager';
-  if (mode === 'api_webhook') {
-    const webhookConfig = config.event_source.api_webhook;
-    if (webhookConfig) {
-      const result = await unifiClient.registerWebhookEndpoint(webhookConfig);
-      if (result.success) logger.info(`API webhook ${result.existing ? 'already registered' : 'registered successfully'}`);
-      else logger.error(`API webhook registration failed: ${result.error}`);
-    }
-  } else if (mode === 'websocket') {
-    const reconnectSec = config.event_source.websocket?.reconnect_interval_seconds || 5;
-    unifiClient.connectWebSocket((event) => {
-      lastEventTime = Date.now();
-      storeRawPayload('websocket', event);
-      rulesEngine.handleEvent(event).catch(err => logger.error(`WebSocket event error: ${err.message}`));
-    }, reconnectSec);
-  }
-
+  startEventSource();
   startWatchdog();
 }
 

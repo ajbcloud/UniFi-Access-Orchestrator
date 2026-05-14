@@ -114,6 +114,31 @@ Run command: `node src/index.js`
 - **Release**: Creates GitHub Release with all artifacts and auto-generated release notes
 - **Version display**: `/health` endpoint exposes `version` from `package.json`; dashboard System Info card shows it as a badge (e.g. "v4.2.0")
 
+## UniFi API Token — Minimum Permissions
+
+The orchestrator only needs **read** on most scopes. It performs writes in a small number of well-defined cases:
+
+| Scope          | Required level | Why                                                                           |
+|----------------|----------------|-------------------------------------------------------------------------------|
+| Locations      | **Edit**       | `PUT /doors/:id/unlock` (cascade unlocks) and `PUT /doors/:id/lock_rule` (only used if `auto_lock.buttons` is configured). |
+| User           | View           | `GET /users` for the periodic name/group sync.                                |
+| User Group     | View           | `GET /user_groups` + `GET /user_groups/:id/users/all` to build the group cache. |
+| System Log     | View           | Optional, used only for connectivity diagnostics.                             |
+| Webhook        | **Edit**       | Only required when **Event Source = API Webhook** (`POST /webhooks/endpoints` to register the orchestrator endpoint). Not needed for WebSocket or Alarm Manager modes. |
+| Visitor        | View (or none) | Not used. Set to View if your token UI requires a value.                      |
+| Space / Holiday Group / Schedule / Resource | None | Not used. |
+
+### Recommended minimum for typical deployments
+
+- **WebSocket mode (most common)**, no `auto_lock` buttons:
+  - Locations: **Edit**
+  - User + User Group: **View**
+  - Everything else: None
+- **API Webhook mode**: same as above plus **Webhook: Edit**.
+- **Alarm Manager mode**: same as WebSocket mode — Webhook permission is not required.
+
+If `auto_lock.buttons` in `config.json` is empty (default), `setDoorLockRule` is never called; Locations:Edit is still required for unlock writes.
+
 ## Notes
 
 - The setup wizard shows on first run when no controller is configured. Users can skip it and configure later from the Settings tab.
