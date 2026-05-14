@@ -981,8 +981,24 @@ function controllerOrSourceChanged(oldCfg, newCfg) {
   return false;
 }
 
+function isEventSourceDegraded() {
+  // For websocket mode, treat anything other than an OPEN socket as
+  // degraded so /reload escalates to a hard reconnect even when no
+  // controller settings actually changed.
+  const mode = config.event_source?.mode || 'alarm_manager';
+  if (mode !== 'websocket') return false;
+  const WebSocket = require('ws');
+  return !unifiClient?.ws || unifiClient.ws.readyState !== WebSocket.OPEN;
+}
+
 async function reloadServices(newConfig) {
-  const fullReload = controllerOrSourceChanged(config, newConfig);
+  const settingsChanged = controllerOrSourceChanged(config, newConfig);
+  const degraded = isEventSourceDegraded();
+  const fullReload = settingsChanged || degraded;
+
+  if (degraded && !settingsChanged) {
+    logger.info('Reload: event source is degraded — escalating to full reconnect');
+  }
 
   if (fullReload) {
     logger.info('Reload: controller/event-source settings changed — rebuilding UniFi client');
