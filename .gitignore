@@ -26,3 +26,6 @@ Thumbs.db
 .replit
 replit.nix
 .cache/
+
+# Runtime config backups
+config/backups/
