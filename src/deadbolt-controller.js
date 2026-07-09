@@ -49,6 +49,7 @@ class DeadboltController {
     this.triggerDoor = db.trigger_door || null;
     this.requireResult = db.require_result || 'ACCESS';
     this.mirrorUnlock = !!db.mirror_unlock; // retract on unsecured transition too (off by default)
+    this.relockCooldownMs = (db.relock_cooldown_seconds == null ? 10 : db.relock_cooldown_seconds) * 1000;
     this.cascadeRules = Array.isArray(casc.rules) ? casc.rules : [];
     this.orchestratorActorName = normName(config.self_trigger_actor_name || 'Access Orchestrator');
 
@@ -56,6 +57,7 @@ class DeadboltController {
     this.enabled = !!(this.lockDriver || this.cascadeRules.length);
 
     this._lastLockState = null; // last observed front-door lock state
+    this._lastRetractAt = 0; // ts of the last retract, for the re-lock cooldown
     this._cascadeLastFired = new Map(); // trigger door (normalized) -> ts
     this.stats = {
       retracts: 0,
@@ -103,18 +105,10 @@ class DeadboltController {
         credentialProvider: auth.credential_provider || null,
       };
     }
-    if (type === 'access.logs.insights.add') {
-      const d = raw.data || {};
-      if ((d.event_type || '') !== 'access.door.unlock') return null;
-      const md = d.metadata || {};
-      return {
-        result: d.result,
-        doorName: (md.door && (md.door.display_name || md.door.name)) || null,
-        direction: null,
-        actorName: (md.actor && md.actor.display_name) || null,
-        credentialProvider: (md.authentication && md.authentication.display_name) || null,
-      };
-    }
+    // access.logs.insights.add is a parallel, flatter event newer firmware
+    // emits alongside access.logs.add for the SAME tap. Handling it too would
+    // double-fire retract and carries no direction and a weaker actor field, so
+    // we intentionally ignore it and act only on the confirmed access.logs.add.
     return null;
   }
 
@@ -156,26 +150,39 @@ class DeadboltController {
     if (this.lockDriver && this._matchDoor(g.doorName, this.triggerDoor)) {
       this._retract(`entry: ${g.actorName || 'user'} at ${g.doorName}`);
     }
-    for (const rule of this.cascadeRules) {
-      if (this._matchDoor(g.doorName, rule.trigger_door) && this._debounceOk(rule)) {
+    this.cascadeRules.forEach((rule, idx) => {
+      if (this._matchDoor(g.doorName, rule.trigger_door) && this._debounceOk(rule, idx)) {
         this._cascade(rule, g);
       }
-    }
+    });
   }
 
   _onLocationUpdate(l) {
     if (!this.lockDriver || !this._matchDoor(l.doorName, this.triggerDoor)) return;
     const prev = this._lastLockState;
     this._lastLockState = l.lock;
+    // Only act on an OBSERVED transition. A null prior state means this is the
+    // first telemetry since startup: seed it, do not fire (avoids a spurious
+    // lock/retract on boot).
+    if (prev == null) return;
     if (l.lock === 'locked' && prev !== 'locked') {
+      // Suppress an immediate re-lock right after an entry retract, in case a
+      // normal entry's momentary mag-lock cycle emits a locked transition.
+      if (this._lastRetractAt && (this.now() - this._lastRetractAt) < this.relockCooldownMs) {
+        this.log.debug && this.log.debug('deadbolt: skip lock within retract cooldown');
+        return;
+      }
       this._lock('front door secured (mag lock)');
     } else if (this.mirrorUnlock && l.lock === 'unlocked' && prev !== 'unlocked') {
       this._retract('front door unsecured (schedule)');
     }
   }
 
-  _debounceOk(rule) {
-    const key = normName(rule.trigger_door);
+  _debounceOk(rule, idx) {
+    // Key per rule (index + door), not by door alone, so two rules sharing a
+    // trigger door debounce independently instead of one silently suppressing
+    // the other on the same entry.
+    const key = idx + ':' + normName(rule.trigger_door);
     const windowMs = (rule.debounce_seconds == null ? 8 : rule.debounce_seconds) * 1000;
     const last = this._cascadeLastFired.get(key);
     const nowTs = this.now();
@@ -187,6 +194,7 @@ class DeadboltController {
   // ---- actions (fire-and-forget so ingestion never blocks) ---------------
 
   _retract(reason) {
+    this._lastRetractAt = this.now(); // start the re-lock cooldown window
     Promise.resolve()
       .then(() => this.lockDriver.unlock(reason))
       .then((r) => {

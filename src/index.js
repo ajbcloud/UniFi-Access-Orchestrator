@@ -85,9 +85,16 @@ function buildDeadbolt() {
         locks[lockId] || {}
       );
       lockDriver = new ZwaveLock(lockCfg, { logger });
-    } else {
+    } else if ((zw && zw.dev_fake_lock) || process.env.NODE_ENV === 'development') {
+      // Fake lock is OPT-IN only. It ALWAYS reports success and drives no
+      // hardware, so it must never be substituted silently in production.
       lockDriver = new FakeLock({ initial: 'locked' });
-      logger.warn('Deadbolt configured but devices.zwave.enabled is not true — using in-memory FakeLock (dev/dry-run).');
+      logger.warn('Deadbolt: using in-memory FakeLock (dev/dry-run). It ALWAYS reports success and drives no hardware. Never use in production.');
+    } else {
+      // Configured but no real transport: fail loud, do NOT fake success.
+      lockDriver = null;
+      logger.error('Deadbolt configured but devices.zwave.enabled is not true and dev_fake_lock is not set. Deadbolt LOCK/RETRACT are DISABLED (cascade still active). Set devices.zwave.enabled for hardware, or devices.zwave.dev_fake_lock for dev.');
+      notifier.notify({ type: 'deadbolt_no_transport', detail: 'deadbolt configured but no lock transport enabled' });
     }
   }
   deadboltController = new DeadboltController(config, {
@@ -103,14 +110,17 @@ function buildDeadbolt() {
 // Route every raw UniFi event to the capture recorder and the deadbolt
 // controller. Re-applied whenever the UniFi client is rebuilt (reload).
 function applyEventTaps() {
-  if (unifiClient && typeof unifiClient.setRawTap === 'function') {
-    unifiClient.setRawTap((e) => {
-      capture.add(e);
-      if (deadboltController) {
-        try { deadboltController.observe(e); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
-      }
-    });
+  if (!unifiClient || typeof unifiClient.setRawTap !== 'function') return;
+  // Inert by default: only install the tap when the add-on is active, so an
+  // unconfigured deployment's event path is unchanged. Clear it otherwise.
+  if (!deadboltController) {
+    unifiClient.setRawTap(null);
+    return;
   }
+  unifiClient.setRawTap((e) => {
+    capture.add(e);
+    try { deadboltController.observe(e); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1669,8 +1679,21 @@ module.exports = { start, app, setWatchdogRestartCallback };
 // If run directly (node src/index.js), start immediately
 // If required by Electron, it will call start() when ready
 if (require.main === module) {
-  process.on('SIGTERM', () => { logger.info('SIGTERM'); if (configSync) configSync.stop(); if (lockDriver) lockDriver.shutdown(); unifiClient.shutdown(); process.exit(0); });
-  process.on('SIGINT', () => { logger.info('SIGINT'); if (configSync) configSync.stop(); if (lockDriver) lockDriver.shutdown(); unifiClient.shutdown(); process.exit(0); });
+  const gracefulExit = async (sig) => {
+    logger.info(sig);
+    if (configSync) configSync.stop();
+    try {
+      // Await the Z-Wave driver teardown (bounded) so destroy() can complete.
+      if (lockDriver) await Promise.race([
+        Promise.resolve(lockDriver.shutdown()),
+        new Promise((r) => setTimeout(r, 3000)),
+      ]);
+    } catch (e) { /* ignore teardown errors */ }
+    try { unifiClient.shutdown(); } catch (e) { /* ignore */ }
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => gracefulExit('SIGTERM'));
+  process.on('SIGINT', () => gracefulExit('SIGINT'));
   process.on('uncaughtException', (err) => { logger.error(`Uncaught: ${err.message}\n${err.stack}`); });
   process.on('unhandledRejection', (reason) => { logger.error(`Unhandled rejection: ${reason}`); });
 

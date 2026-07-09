@@ -61,6 +61,7 @@
   "devices": {
     "zwave": {
       "enabled": false,
+      "dev_fake_lock": false,
       "serial_path": "/dev/serial/by-id/REPLACE-WITH-STABLE-PATH",
       "cache_dir": "",
       "locks": {
@@ -78,7 +79,8 @@
     "lock_id": "front_deadbolt",
     "trigger_door": "Front Door",
     "require_result": "ACCESS",
-    "mirror_unlock": false
+    "mirror_unlock": false,
+    "relock_cooldown_seconds": 10
   },
   "cascade_rules": {
     "rules": [

@@ -138,20 +138,56 @@ test('cascade is debounced then fires again after the window', async () => {
 test('front-door secured transition throws the deadbolt', async () => {
   const { ctl, lock } = makeController({ initial: LockState.UNLOCKED });
   await lock.init();
+  ctl.observe(locationUpdate('Front Door', 'unlocked')); // seed prior state
+  await flush();
   ctl.observe(locationUpdate('Front Door', 'locked'));
   await flush();
   assert.equal(lock._state, LockState.LOCKED);
   assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 1);
 });
 
+test('first telemetry does not fire (seeds state), only an observed transition acts', async () => {
+  const { ctl, lock } = makeController({ initial: LockState.UNLOCKED });
+  await lock.init();
+  ctl.observe(locationUpdate('Front Door', 'locked')); // first observation: seed only
+  await flush();
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 0);
+});
+
 test('a repeated locked state does not re-lock', async () => {
   const { ctl, lock } = makeController({ initial: LockState.UNLOCKED });
   await lock.init();
-  ctl.observe(locationUpdate('Front Door', 'locked'));
+  ctl.observe(locationUpdate('Front Door', 'unlocked')); // seed
   await flush();
-  ctl.observe(locationUpdate('Front Door', 'locked'));
+  ctl.observe(locationUpdate('Front Door', 'locked')); // transition -> fires
+  await flush();
+  ctl.observe(locationUpdate('Front Door', 'locked')); // no re-lock
   await flush();
   assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 1);
+});
+
+test('lock-on-secured is suppressed within the re-lock cooldown after a retract', async () => {
+  const { ctl, lock, clock } = makeController();
+  await lock.init();
+  clock.t = 1000;
+  ctl.observe(entryGrant('Front Door')); // retract, starts the cooldown at t=1000
+  await flush();
+  ctl.observe(locationUpdate('Front Door', 'unlocked')); // seed prior state
+  await flush();
+  clock.t = 3000; // 2s later, within the default 10s cooldown
+  ctl.observe(locationUpdate('Front Door', 'locked'));
+  await flush();
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 0, 'no re-lock within cooldown');
+});
+
+test('two cascade rules on the same trigger door both fire on one entry', async () => {
+  const { ctl, unifi } = makeController({ cascade_rules: { rules: [
+    { trigger_door: 'Front Door', unlock: ['Interior Door'], debounce_seconds: 8 },
+    { trigger_door: 'Front Door', unlock: ['Garage Door'], debounce_seconds: 8 },
+  ] } });
+  ctl.observe(entryGrant('Front Door'));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name).sort(), ['Garage Door', 'Interior Door']);
 });
 
 test('mirror_unlock retracts on an unsecured transition when enabled', async () => {

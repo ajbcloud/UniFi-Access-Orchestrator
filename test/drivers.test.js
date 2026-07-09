@@ -124,6 +124,15 @@ test('ZwaveLock: unsolicited jam notification updates state', async () => {
   assert.equal(s.boltState, LockState.JAMMED);
 });
 
+test('ZwaveLock: ignores a notification whose type is not Access Control', async () => {
+  const { node, lock } = await makeZwave({ current: 0xff }); // seeded locked
+  // A non-Access-Control (type != 6) notification that reuses event number 2
+  // must NOT be interpreted as an unlock.
+  node.emit('notification', node, 0x71, { type: 5, event: 0x02 });
+  const s = await lock.getState();
+  assert.equal(s.boltState, LockState.LOCKED, 'state unchanged for non-AC notification');
+});
+
 test('ZwaveLock: capabilities include lock/unlock/state', () => {
   const lock = new ZwaveLock({ node_id: 2 }, { node: new MockNode() });
   for (const c of ['lock', 'unlock', 'state', 'battery']) assert.ok(lock.capabilities.has(c));

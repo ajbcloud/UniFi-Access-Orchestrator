@@ -84,6 +84,16 @@ class ZwaveLock extends LockDriver {
     }
     if (!this._node) throw new Error(`Z-Wave node ${this.nodeId} not found`);
     this._wireNode(this._node);
+    // Persistent driver-level error handler: without a listener a later 'error'
+    // would be an unhandled EventEmitter error and crash the process. Flip the
+    // link offline so /health and alerting reflect it; systemd restarts as the
+    // outer backstop (a full in-process reconnect is future work).
+    if (this._driver && typeof this._driver.on === 'function') {
+      this._driver.on('error', (err) => {
+        this.logger.warn && this.logger.warn(`Z-Wave driver error: ${err && err.message}`);
+        this._setOnline(false);
+      });
+    }
     this._state.online = true;
     try {
       await this._seedState();
@@ -112,11 +122,17 @@ class ZwaveLock extends LockDriver {
       storage: this.cfg.cache_dir ? { cacheDir: this.cfg.cache_dir } : undefined,
     });
     await new Promise((resolve, reject) => {
-      driver.once('driver ready', resolve);
-      driver.once('error', reject);
+      const cleanup = () => {
+        driver.removeListener('driver ready', onReady);
+        driver.removeListener('error', onErr);
+      };
+      const onReady = () => { cleanup(); resolve(); };
+      const onErr = (e) => { cleanup(); reject(e); };
+      driver.once('driver ready', onReady);
+      driver.once('error', onErr);
       Promise.resolve()
         .then(() => driver.start())
-        .catch(reject);
+        .catch(onErr);
     });
     return driver;
   }
@@ -148,13 +164,21 @@ class ZwaveLock extends LockDriver {
 
   _wireNode(node) {
     if (!node || typeof node.on !== 'function') return;
+    if (this._wired) return; // idempotent: never stack duplicate listeners on re-init
+    this._wired = true;
     node.on('notification', (_endpoint, ccId, args) => this._onNotification(ccId, args || {}));
     node.on('value updated', (_node, args) => this._onValueUpdated(args || {}));
     node.on('dead', () => this._setOnline(false));
     node.on('alive', () => this._setOnline(true));
   }
 
-  _onNotification(_ccId, args) {
+  _onNotification(ccId, args) {
+    // Only Access Control (type 6) notifications on Notification CC (0x71)
+    // describe lock/unlock/jam. Other notification types reuse the same event
+    // numbers for unrelated meanings, so gate strictly before mapping, or an
+    // unrelated notification could corrupt bolt state and falsely confirm a set.
+    if (ccId != null && ccId !== 0x71) return;
+    if (args.type != null && args.type !== 6) return;
     const event = args.event;
     if (event === AC_NOTIFICATION.LOCK_JAMMED) {
       this._updateState(LockState.JAMMED);
