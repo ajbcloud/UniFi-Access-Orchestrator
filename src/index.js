@@ -32,6 +32,7 @@ const RulesEngine = require('./rules-engine');
 const { createBackup, listBackups, restoreBackup, pruneBackups } = require('./backup');
 const ConfigSync = require('./config-sync');
 const CaptureSession = require('./capture');
+const Notifier = require('./notifier');
 const DeadboltController = require('./deadbolt-controller');
 const FakeLock = require('./drivers/fake-lock');
 const { ZwaveLock } = require('./drivers/zwave-lock');
@@ -66,6 +67,7 @@ let configSync = null;  // initialized in start() once Express + UniFi client ar
 // ---------------------------------------------------------------------------
 const captureDir = process.env.CAPTURE_DIR || path.join(path.dirname(CONFIG_PATH), 'captures');
 const capture = new CaptureSession({ dir: captureDir });
+let notifier = new Notifier(config.alerts || {}, { logger });
 let lockDriver = null;
 let deadboltController = null;
 
@@ -93,7 +95,7 @@ function buildDeadbolt() {
     getUnifiClient: () => unifiClient,
     broadcaster: broadcastEvent,
     logger,
-    onAlert: (a) => logger.warn(`ALERT ${a.type}: ${JSON.stringify(a)}`), // TODO: outbound notifier
+    onAlert: (a) => { logger.warn(`ALERT ${a.type}: ${JSON.stringify(a)}`); notifier.notify(a); },
   });
   logger.info(`Deadbolt add-on active (lock driver: ${lockDriver ? lockDriver.constructor.name : 'none'}, cascade rules: ${deadboltController.cascadeRules.length})`);
 }
@@ -333,6 +335,7 @@ app.get('/health', (req, res) => {
     auto_sync: configSync ? configSync.getState() : { enabled: false, interval_seconds: 0, last_run_at: null, last_change_detected_at: null, last_error: null },
     deadbolt: deadboltController ? deadboltController.getStatus() : { enabled: false },
     capture: capture.status(),
+    alerts: notifier.getStatus(),
     memory_mb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 10) / 10
   });
 });
@@ -1483,6 +1486,7 @@ async function reloadServices(newConfig) {
     rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
     patchEngineForBroadcast(rulesEngine);
     config = newConfig;
+    notifier = new Notifier(config.alerts || {}, { logger }); // pick up alert config changes
     applyEventTaps(); // re-attach capture + deadbolt observers to the new client
 
     // Note: the deadbolt lock driver and controller rules are intentionally NOT

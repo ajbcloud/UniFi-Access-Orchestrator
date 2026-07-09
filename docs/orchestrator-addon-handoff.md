@@ -23,11 +23,11 @@ Branch: `claude/comprehensive-review-x9e1kk`.
 | Deadbolt controller (retract / lock / cascade) | Built, unit-tested, verified end-to-end in a running server with the fake lock |
 | Event capture mode | Built, verified in a running server |
 | Orchestrator wiring (index.js) | Built, verified boots + processes events with the add-on active |
-| Unit tests | 23 passing (`npm test`) |
+| Unit tests | 29 passing (`npm test`) |
 | zwave-js dependency | NOT installed / NOT in package.json (deliberate, see below) |
 | S2 pairing with the real lock | Not done (needs hardware) |
 | On-site payload confirmation (double-badge, extra echo) | Not done (needs the live console) |
-| Outbound alerting notifier | Stubbed (logs only) |
+| Outbound alerting notifier | Built + verified (posts JSON to a webhook), wired to deadbolt alerts |
 | Dashboard device card / cascade UI | Not built |
 
 Nothing here changes behavior for a deployment that has not configured
@@ -37,7 +37,7 @@ Nothing here changes behavior for a deployment that has not configured
 
 ## 2. What was verified, and how
 
-Run `npm test` (23 tests, all passing): driver verify/retry/jam/offline, and
+Run `npm test` (29 tests, all passing): driver verify/retry/jam/offline, and
 the controller's retract/cascade/lock/self-trigger/debounce logic over captured
 event shapes.
 
@@ -73,7 +73,9 @@ New:
   itself (independent of the engine's telemetry filter) and drives the three
   behaviors.
 - `src/capture.js`: labeled full-fidelity event recorder.
-- `test/drivers.test.js`, `test/deadbolt-controller.test.js`: unit tests.
+- `src/notifier.js`: outbound alerting (posts JSON to a configurable webhook,
+  per-type de-dupe, injected HTTP sender for tests).
+- `test/drivers.test.js`, `test/deadbolt-controller.test.js`, `test/notifier.test.js`: unit tests.
 - `config/config.deadbolt.example.json`: full add-on config template.
 
 Changed:
@@ -167,8 +169,13 @@ Endpoints (admin-gated when `admin_api_key` is set):
    confirm whether a self-issued unlock's custom `extra` echoes on the stream
    (if not, the actor discriminator already covers self-trigger prevention).
 5. Bench and site tests per section 7.
-6. Replace the alerting stub in `index.js` (`onAlert`) with a real outbound
-   notifier (email/webhook/push), gated by the `alerts` config block.
+6. DONE: outbound alerting. `src/notifier.js` posts a JSON alert to
+   `config.alerts.webhook_url` (per-type de-dupe, filtered by `alerts.on`), wired
+   to the deadbolt `onAlert` and exposed at `/health` `alerts`. Verified
+   end-to-end (a failed cascade delivered a `cascade_failed` alert to a webhook).
+   Follow-on if wanted: also fire alerts on controller disconnect and sustained
+   unlock failures (would tap the UniFi health monitor), and add an email/SMTP
+   channel (needs a dependency).
 7. Dashboard: add a device card (bolt state, battery, last action) fed by
    `/api/devices` and the SSE `deadbolt.*` events; optionally a cascade-rule
    editor.
