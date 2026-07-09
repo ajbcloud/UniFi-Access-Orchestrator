@@ -468,15 +468,16 @@ state. Verify the thumbturn-retracts-bolt behavior physically during commissioni
 
 ## 12. Risks and open questions
 
-- **O-1: confirm what the lock-up gesture emits over the WebSocket.** Decision made: exits are not
-  credential-tracked; the only middleware deadbolt-lock trigger is the deliberate lock-up gesture
-  (Double-Badge Override at the reader, or Lock Now from the app), and the Schlage physical button plus
-  its auto-lock timer are the always-on backstop. So there is no exit-direction reader. The single
-  remaining capture is: what event does that secured transition (Double-Badge Override / Lock Now /
-  schedule end) produce on the notifications stream (does UniFi emit `access.door.lock` or a
-  notification, and what is its shape)? That event is the deadbolt-lock trigger. The capture mode
-  built in Phase 1 makes this a one-gesture check; if UniFi emits nothing usable, the deadbolt still
-  self-secures via its auto-lock timer and physical button, and middleware lock-on-gesture is omitted.
+- **O-1 (largely resolved): the deadbolt-lock trigger is the door-secured transition on the stream.**
+  Decision: exits are not credential-tracked; the only middleware deadbolt-lock trigger is the
+  deliberate lock-up gesture (Double-Badge Override, or Lock Now), with the Schlage physical button and
+  auto-lock timer as the always-on backstop, so there is no exit-direction reader. Research resolved the
+  event: a secured transition surfaces as `access.data.v2.location.update` with `state.lock: "locked"`
+  (see O-4), not as any `access.door.lock`. Phase 2 keys the deadbolt lock on that `state.lock ->
+  locked` transition at the front door. The only piece left to confirm live is exactly what a
+  Double-Badge Override emits (likely an `unlock_schedule.deactivate` plus the `location.update` lock
+  flip), which the capture mode checks in one gesture. If nothing usable is emitted, the deadbolt still
+  self-secures via its auto-lock and button, and the middleware lock step is simply omitted.
 - **O-2: the middleware-dependent entry path is scoped and backstopped; keep it that way.** The
   deadbolt is thrown only when the suite is unoccupied, so the dependency is limited to
   unoccupied-arrival entry, and the site design keeps the Schlage keypad code as the documented manual
@@ -486,17 +487,31 @@ state. Verify the thumbturn-retracts-bolt behavior physically during commissioni
   fixes (WebSocket handshake timeout, the zombie-socket fix, make `uncaughtException` exit so systemd
   restarts, and alert on driver/stream offline) so a stalled middleware becomes a fast restart rather
   than a silent lockout.
-- **O-3: do the unlock body fields `actor_id`/`actor_name`/`extra` echo into events?** The repo's
-  self-trigger prevention depends on the `extra` marker coming back. The official PDF does not document
-  these fields. Verify via the payload viewer; if they do not echo, add a dedupe-on-actor/timestamp
-  fallback for self-trigger prevention.
-- **O-4: are the repo's event strings real?** `access.logs.add`, `access.door.lock`,
-  `access.door.close`, `access.notifications` are whitelisted in `unifi-client.js` but are not in the
-  official reference (`access.logs.add` is very likely the real log-push name; the others are
-  unverified). Confirm by capture before relying on `access.door.lock`/`access.door.close` for any
-  deadbolt state inference.
-- **O-5: First Person In has no documented API event.** Behavior 2 currently collapses into behavior 1
-  until a distinct signal is confirmed on-site.
+- **O-3 (mostly resolved): distinguishing the orchestrator's own unlocks.** Community-captured evidence
+  plus the API reference confirm `actor_id`/`actor_name` DO echo into the log record, so a self-issued
+  unlock appears on the stream as `_source.actor.display_name == "Access Orchestrator"`, and remote
+  unlocks also carry `credential_provider: "REMOTE_THROUGH_UAH"` / "Access Granted (Remote)". The custom
+  `extra` marker is documented to echo only into the webhook payload, and the community log model has no
+  `extra` field, so it likely does NOT ride the WebSocket `access.logs.add` record. Action: base
+  self-trigger prevention on the documented actor discriminator (actor id/name + REMOTE_THROUGH_UAH),
+  not solely the `extra` marker; a live capture can confirm whether `extra` also appears. The marker
+  becomes a nice-to-have, not a dependency.
+- **O-4 (resolved): the repo's `access.door.lock` / `access.door.close` / `access.notifications`
+  whitelist entries are NOT real UniFi event types.** They are absent from the official catalog and
+  every community dispatch table, so they never fire. The real lock/secured signal is a device-state
+  push, `access.data.v2.location.update` (newer firmware) or `access.data.device.location_update_v2`
+  (legacy), carrying `state.lock: "locked"|"unlocked"`, `dps`, and `remain_lock`/`remain_unlock`
+  (`keep_lock`/`keep_unlock`, `until`). IMPORTANT: `normalizeEvent` currently drops every `data.*` /
+  `data.v2.*` type as telemetry (`rules-engine.js:147`), so this event is filtered out today. Phase 2
+  must (a) drop the fake whitelist entries, (b) add `access.data.v2.location.update` (and the legacy
+  name) to the WebSocket whitelist, and (c) parse it without tripping the telemetry filter, so the
+  deadbolt-lock trigger (a `state.lock -> locked` transition) can be observed.
+- **O-5 (resolved): First Person In has no distinct event.** No FPI event or flag exists anywhere. FPI
+  is an unlock-schedule gate: it looks like an ordinary `access.logs.add` ACCESS entry (with a real
+  `credential_provider`, never REMOTE_THROUGH_UAH), immediately followed by the schedule engaging
+  (`access.unlock_schedule.activate` and/or a `location.update` with `remain_unlock` keep_unlock). So
+  behavior 2 collapses into behavior 1: retract on any front-door ACCESS entry. No special FPI handling
+  is needed; optionally correlate the schedule-activate as a "morning retract" signal.
 - **O-6: retract latency vs the eventually-consistent Schlage.** Prefer schedule-based morning retract;
   set expectations for badge-triggered retract.
 - **O-7: ZST39 firmware lockup on some SDK builds; ModemManager grabbing the serial port on Linux.**
