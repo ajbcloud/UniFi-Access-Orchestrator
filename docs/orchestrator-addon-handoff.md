@@ -23,12 +23,12 @@ Branch: `claude/comprehensive-review-x9e1kk`.
 | Deadbolt controller (retract / lock / cascade) | Built, unit-tested, verified end-to-end in a running server with the fake lock |
 | Event capture mode | Built, verified in a running server |
 | Orchestrator wiring (index.js) | Built, verified boots + processes events with the add-on active |
-| Unit tests | 29 passing (`npm test`) |
+| Unit tests | 32 passing (`npm test`) |
 | zwave-js dependency | NOT installed / NOT in package.json (deliberate, see below) |
 | S2 pairing with the real lock | Not done (needs hardware) |
 | On-site payload confirmation (double-badge, extra echo) | Not done (needs the live console) |
 | Outbound alerting notifier | Built + verified (posts JSON to a webhook), wired to deadbolt alerts |
-| Dashboard device card / cascade UI | Not built |
+| Dashboard device card | Built + verified (render + XSS-safe); cascade-rule editor still optional |
 
 Nothing here changes behavior for a deployment that has not configured
 `deadbolt_rules`/`cascade_rules`. The add-on is inert by default.
@@ -37,7 +37,7 @@ Nothing here changes behavior for a deployment that has not configured
 
 ## 2. What was verified, and how
 
-Run `npm test` (29 tests, all passing): driver verify/retry/jam/offline, and
+Run `npm test` (32 tests, all passing): driver verify/retry/jam/offline, and
 the controller's retract/cascade/lock/self-trigger/debounce logic over captured
 event shapes.
 
@@ -75,7 +75,8 @@ New:
 - `src/capture.js`: labeled full-fidelity event recorder.
 - `src/notifier.js`: outbound alerting (posts JSON to a configurable webhook,
   per-type de-dupe, injected HTTP sender for tests).
-- `test/drivers.test.js`, `test/deadbolt-controller.test.js`, `test/notifier.test.js`: unit tests.
+- `test/drivers.test.js`, `test/deadbolt-controller.test.js`, `test/notifier.test.js`,
+  `test/dashboard-render.test.js`: unit tests.
 - `config/config.deadbolt.example.json`: full add-on config template.
 
 Changed:
@@ -85,6 +86,10 @@ Changed:
 - `src/index.js`: constructs the add-on (gated), taps webhook + WS events, adds
   `/api/devices` and `/api/capture/*`, `/health` fields, reload re-tap, and
   lock-driver shutdown.
+- `public/index.html`: a Smart Deadbolt card on the Dashboard tab (bolt state,
+  battery, link, trigger door, last action, totals), populated from `/health` on
+  the existing 10s poll and hidden unless the add-on is enabled. Controller-derived
+  strings are escaped.
 - `package.json`: `test` script and `engines: node>=20`.
 - `.gitignore`: `config/captures/`.
 
@@ -176,9 +181,11 @@ Endpoints (admin-gated when `admin_api_key` is set):
    Follow-on if wanted: also fire alerts on controller disconnect and sustained
    unlock failures (would tap the UniFi health monitor), and add an email/SMTP
    channel (needs a dependency).
-7. Dashboard: add a device card (bolt state, battery, last action) fed by
-   `/api/devices` and the SSE `deadbolt.*` events; optionally a cascade-rule
-   editor.
+7. PARTLY DONE: dashboard device card. The Smart Deadbolt card (bolt state,
+   battery, link, last action, totals) is built on the Dashboard tab, fed by
+   `/health` on the 10s poll, and unit-tested for render + XSS-safety. A quick
+   visual pass in a real browser is still worth doing (no browser package would
+   install here). Still optional: a cascade-rule editor in the Configuration tab.
 8. Optional cleanup: `src/unifi-client.js` WS whitelist still lists the
    non-real event types `access.door.lock`, `access.door.close`,
    `access.notifications` (harmless, they never fire); consider removing them

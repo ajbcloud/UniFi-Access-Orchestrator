@@ -855,6 +855,17 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         <div id="infoWsFilter" style="display:none"><span style="color:var(--text-muted)">WS Events:</span> <span id="infoWsFilterStats">-</span></div>
       </div>
     </div>
+
+    <div class="card" id="deadboltCard" style="margin-top:16px;display:none">
+      <div class="card-title" style="display:flex;align-items:center;gap:8px">Smart Deadbolt <span id="deadboltState" class="badge">-</span></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px">
+        <div><span style="color:var(--text-muted)">Battery:</span> <span id="deadboltBattery">-</span></div>
+        <div><span style="color:var(--text-muted)">Link:</span> <span id="deadboltLink">-</span></div>
+        <div><span style="color:var(--text-muted)">Trigger door:</span> <span id="deadboltDoor">-</span></div>
+        <div style="grid-column:1 / -1"><span style="color:var(--text-muted)">Last action:</span> <span id="deadboltLastAction">-</span></div>
+        <div style="grid-column:1 / -1"><span style="color:var(--text-muted)">Totals:</span> <span id="deadboltStats">-</span></div>
+      </div>
+    </div>
   </div>
 
   <!-- LIVE EVENTS -->
@@ -1351,6 +1362,47 @@ function updateDashboard() {
   } else {
     lastRuleEl.style.display = 'none';
   }
+
+  renderDeadbolt(h);
+}
+
+// Renders the Smart Deadbolt card from /health. Hidden unless the add-on is
+// enabled. Controller-derived strings (last-action detail carries event actor
+// names) are escaped; internal enums/config go in via textContent.
+function renderDeadbolt(h) {
+  const card = document.getElementById('deadboltCard');
+  if (!card) return;
+  const db = h && h.deadbolt;
+  if (!db || !db.enabled) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  const lock = db.lock || {};
+  const bolt = lock.boltState || 'unknown';
+  const stateEl = document.getElementById('deadboltState');
+  stateEl.className = 'badge ' + (bolt === 'locked' ? 'success' : bolt === 'unlocked' ? 'warning' : bolt === 'jammed' ? 'error' : 'info');
+  stateEl.textContent = bolt;
+
+  document.getElementById('deadboltBattery').textContent = (lock.battery == null ? 'n/a' : lock.battery + '%');
+  const linkEl = document.getElementById('deadboltLink');
+  linkEl.textContent = lock.online ? 'online' : 'offline';
+  document.getElementById('deadboltDoor').textContent = db.trigger_door || '-';
+
+  const s = db.stats || {};
+  const la = s.last_action;
+  const laEl = document.getElementById('deadboltLastAction');
+  if (la && la.detail) {
+    const when = la.time ? new Date(la.time).toLocaleString() : '';
+    laEl.innerHTML = '<strong>' + escapeHtml((la.action || '') + (la.success ? ' ok' : ' FAILED')) + '</strong> '
+      + '<span style="color:var(--text-muted)">' + escapeHtml(when) + '</span>'
+      + '<div style="font-size:12px;color:var(--text-secondary);margin-top:2px">' + escapeHtml(la.detail) + '</div>';
+  } else {
+    laEl.textContent = 'none yet';
+  }
+
+  document.getElementById('deadboltStats').textContent =
+    'retracts ' + (s.retracts || 0) + ' (' + (s.retracts_failed || 0) + ' failed) · '
+    + 'locks ' + (s.locks || 0) + ' (' + (s.locks_failed || 0) + ' failed) · '
+    + 'cascades ' + (s.cascades || 0) + ' (' + (s.cascades_failed || 0) + ' failed)';
 }
 
 // ============================================================
