@@ -2,7 +2,15 @@
 
 Status: planning only. No implementation code beyond illustrative interfaces and pseudocode.
 Target repo: `ajbcloud/UniFi-Access-Orchestrator` (canonical root tree, v5.1.0).
-Target site: QIT Solutions HQ, Suite 105 (two doors).
+Target site: QIT Solutions HQ, 400 Columbia Dr, Suite 105, West Palm Beach FL (two doors).
+
+Authoritative site design: "Access Control Design and Implementation Plan, UniFi Access with
+Smart-Deadbolt Integration" (QIT AC2, Draft 1.9, Jul 8 2026). That document owns the site design,
+hardware and BOM, the daily schedule (Configuration 1), life-safety and AHJ requirements, and the
+BTS/QIT responsibility split. This plan is the middleware-implementation companion to it: it covers
+only the Orchestrator's slice (the Z-Wave lock driver, the event-to-action logic, the interior
+cascade, config, and resilience), and it corrects one thing the middleware must code against, the
+event model (see section 4.1).
 
 This plan is written against the app as it actually works today. Every external fact is tagged
 **[confirmed]** (verified against a primary source, cited in the References section) or
@@ -164,6 +172,14 @@ drift check, because aggressive polling drains a battery lock. **[confirmed as b
   direction with an on-site lookup table. **[verify device ids/aliases on-site]**
 - Actor and door: `data.actor` / `_source.actor` (`id`, `name`/`display_name`); door at
   `data.location` / a `target[]` entry. **[confirmed]**
+
+> Note for implementers: the QIT AC2 site design uses the shorthand event names `access.entry` and
+> `access.exit` in its illustrative config. Those are not real UniFi event types. The wire reality is
+> a single `access.door.unlock` event whose direction lives in the log/WebSocket `_source.target[]`
+> (`door_entry_method: entry|exit`) and is absent from Alarm Manager webhooks. Do not code to
+> `access.entry`/`access.exit`; derive direction from the target array. This is why the site must run
+> in WebSocket mode, and why direction extraction is net-new middleware work (section 2): the current
+> rules engine reads actor/door/result from the target array but not `door_entry_method`.
 
 ### 4.2 Mapping table
 
@@ -363,19 +379,21 @@ deadbolt must self-secure without it.**
 |---|---|---|---|---|
 | Orchestrator (this app) | Works: UniFi mag-lock unlock schedule + interior reader are native | Self-secures via Schlage auto-lock timer and physical button | Both stop | See after-hours caveat below (O-2). |
 | UniFi console | Hub-controlled doors follow their last-pushed schedule / local behavior; no new events reach the app | Self-secures via Schlage auto-lock | Stop (no events) | Middleware cannot see entries, so it will not retract on badge; morning-retract schedule still fires locally. |
-| Z-Wave stick / deadbolt link | Unaffected | Self-secures via Schlage auto-lock; middleware cannot lock/unlock | Retract fails -> alert; cascade unaffected | Physical key fallback for after-hours entry. |
+| Z-Wave stick / deadbolt link | Unaffected | Self-secures via Schlage auto-lock; middleware cannot lock/unlock | Retract fails -> alert; cascade unaffected | Schlage keypad code is the manual entry backstop for an unoccupied-arrival entry. |
 | Power loss | On restore, systemd starts the service on boot; mag lock is fail-safe wiring | Deadbolt holds its physical state; auto-lock resumes | Resume after boot | Recommend a UPS for the host. |
 
-**The one real single-point-of-failure to name plainly (O-2):** after hours, when the deadbolt is
-thrown, UniFi cannot retract it (no lock/unlock over the Access API), so a credentialed after-hours
-entry depends on the middleware performing the Z-Wave retract. If the middleware is down at that
-moment, a valid badge releases the mag lock but the door stays bolted, and entry falls back to a
-physical key. This does not violate the business-hours no-SPOF rule (during scheduled-unlock hours the
-bolt is retracted and the mag lock is open, both native), but after-hours convenience entry is
-genuinely middleware-dependent. The plan's mitigations: keep the physical key as the documented
-fallback, alert immediately when the deadbolt driver goes offline, and let the Schlage auto-lock plus
-its physical button remain the primary securing mechanism so nothing about basic security depends on
-the app.
+**The one middleware-dependent path to name plainly (O-2):** the deadbolt is thrown only when the
+suite is unoccupied, and UniFi cannot retract it (no lock/unlock over the Access API), so a
+credentialed entry into an unoccupied suite depends on the middleware performing the Z-Wave retract.
+If the middleware is down at that moment, a valid badge releases the mag lock but the door stays
+bolted, and entry falls back to the Schlage keypad code (the site design's documented manual backup);
+egress via the interior thumbturn is always available. This does not violate the business-hours
+no-SPOF rule (during scheduled-unlock hours the bolt is retracted and the mag lock is open, both
+native), and it is backstopped, so it is not an unmitigated single point of failure. The plan's
+mitigations: keep the Schlage keypad code as the documented manual entry backstop, alert immediately
+when the deadbolt driver goes offline, and ship the resilience fixes so a stalled middleware restarts
+fast rather than silently. The Schlage auto-lock and physical button remain the primary securing
+mechanism, so nothing about basic security depends on the app.
 
 **Life-safety (hard constraint, unchanged):** the middleware sits nowhere in the egress or
 fire-release path. The mag lock's fire relay, the Bosch DS160 IR REX, and the exit button release the
@@ -442,16 +460,23 @@ state. Verify the thumbturn-retracts-bolt behavior physically during commissioni
 
 ## 12. Risks and open questions
 
-- **O-1 (blocking for behavior 3): how is a credentialed EXIT detected at the front door?** The site
-  lists one exterior reader (G3 Reader Pro, entry-facing) plus a Bosch IR REX and an exit button for
-  egress. REX and button releases typically do not produce an `access.door.unlock` with an actor and
-  `result:ACCESS`. So "lock on exit on a valid badge" needs either an exit-facing credential read or a
-  different signal. Confirm on-site what event, if any, an exit produces. If none carries a credential,
-  lock-on-exit should fall back to the Schlage auto-lock (the backstop already covers it) or a
-  door-closed-plus-timer heuristic, and behavior 3 becomes best-effort.
-- **O-2 (already discussed): after-hours entry depends on the middleware to retract the bolt.** Accept
-  the physical-key fallback, or widen the retract window, and alert on driver-offline. Confirm this is
-  acceptable to the customer.
+- **O-1: confirm how a credentialed EXIT is produced at the front door.** The site design resolves the
+  intent: lock-on-exit keys on an exit-direction reader `ACCESS` event, with the Schlage physical lock
+  button and its auto-lock timer as the real backstop, so middleware lock-on-exit is a convenience, not
+  load-bearing. What remains is a bench/site capture: the door has one exterior reader plus IR REX,
+  push-to-exit, and a thumbturn, and egress needs no badge, so confirm whether you set that single
+  reader to Exit direction or add a paired reader, and capture the actual exit event (type, direction
+  field, result) before wiring behavior 3. If no credentialed exit is produced, the deadbolt
+  auto-lock and button already cover locking and behavior 3 is simply omitted.
+- **O-2: the middleware-dependent entry path is scoped and backstopped; keep it that way.** The
+  deadbolt is thrown only when the suite is unoccupied, so the dependency is limited to
+  unoccupied-arrival entry, and the site design keeps the Schlage keypad code as the documented manual
+  entry backstop (a lock-managed code, distinct from the per-user-PIN non-goal), with the interior
+  thumbturn always available for egress. This is not an unmitigated single point of failure. The
+  middleware-side obligation is to minimize how often that fallback is needed: ship the resilience
+  fixes (WebSocket handshake timeout, the zombie-socket fix, make `uncaughtException` exit so systemd
+  restarts, and alert on driver/stream offline) so a stalled middleware becomes a fast restart rather
+  than a silent lockout.
 - **O-3: do the unlock body fields `actor_id`/`actor_name`/`extra` echo into events?** The repo's
   self-trigger prevention depends on the `extra` marker coming back. The official PDF does not document
   these fields. Verify via the payload viewer; if they do not echo, add a dedupe-on-actor/timestamp
@@ -475,7 +500,10 @@ state. Verify the thumbturn-retracts-bolt behavior physically during commissioni
 
 ## 13. Explicit non-goals
 
-- No per-user PINs on the deadbolt (User Code CC is not used).
+- No per-user PINs provisioned by the middleware on the deadbolt (User Code CC management is out of
+  scope). A single facility/backup keypad code is retained on the lock itself as the manual entry
+  backstop when the middleware is offline; that is a lock-managed code, not middleware-provisioned
+  per-user PINs.
 - No cloud services or external dependency in the control path.
 - No lock command to the UniFi side, ever (UniFi API stays unlock-only; the mag lock and strike are
   UniFi-native).
