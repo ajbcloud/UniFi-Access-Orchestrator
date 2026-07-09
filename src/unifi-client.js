@@ -551,6 +551,14 @@ class UniFiClient {
         const event = JSON.parse(data.toString());
         const eventType = event.event || event.type || '';
 
+        // Raw tap: sees EVERY parsed event before the whitelist, so observers
+        // (event capture, and the deadbolt controller's lock-on-secured signal
+        // that rides access.data.v2.location.update) get full-fidelity data
+        // without widening the engine's whitelist. Null by default; never throws.
+        if (this._rawTap) {
+          try { this._rawTap(event); } catch (e) { /* observer must not break ingestion */ }
+        }
+
         if (WS_EVENT_WHITELIST.has(eventType)) {
           this.wsStats.passed++;
           onEvent(event);
@@ -583,6 +591,12 @@ class UniFiClient {
       this.wsReconnectTimer = null;
       this.connectWebSocket(onEvent, seconds);
     }, seconds * 1000);
+  }
+
+  // Register a passive observer that receives every parsed WebSocket event
+  // before whitelisting. Used by event capture and the deadbolt controller.
+  setRawTap(fn) {
+    this._rawTap = typeof fn === 'function' ? fn : null;
   }
 
   // ---------------------------------------------------------------------------

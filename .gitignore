@@ -29,3 +29,6 @@ replit.nix
 
 # Runtime config backups
 config/backups/
+
+# Runtime event captures
+config/captures/

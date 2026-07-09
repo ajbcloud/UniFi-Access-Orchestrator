@@ -1,0 +1,99 @@
+{
+  "server": {
+    "port": 3000,
+    "host": "0.0.0.0",
+    "admin_api_key": ""
+  },
+  "unifi": {
+    "host": "",
+    "port": 12445,
+    "token": "",
+    "verify_ssl": false,
+    "user_sync_interval_minutes": 5
+  },
+  "event_source": {
+    "mode": "websocket",
+    "websocket": {
+      "reconnect_interval_seconds": 5
+    },
+    "api_webhook": {
+      "endpoint_url": "",
+      "endpoint_name": "Access Orchestrator",
+      "events": [],
+      "secret": ""
+    }
+  },
+  "resolver": {
+    "strategy_order": ["api_group", "manual"],
+    "unifi_group_to_group": {},
+    "manual_overrides": {}
+  },
+  "doors": {},
+  "unlock_rules": {
+    "rules": [],
+    "default_action": { "unlock": [] }
+  },
+  "doorbell_rules": {
+    "rules": [],
+    "trigger_reason_code": 107,
+    "viewer_to_group": {},
+    "default_action": { "unlock": [] }
+  },
+  "self_trigger_prevention": {
+    "marker_key": "source",
+    "marker_value": "middleware"
+  },
+  "self_trigger_actor_name": "Access Orchestrator",
+  "logging": {
+    "level": "info",
+    "file_path": "",
+    "max_files": "30d",
+    "max_size": "10m"
+  },
+  "watchdog": {
+    "inactivity_timeout_minutes": 0
+  },
+  "auto_sync": {
+    "enabled": true,
+    "interval_seconds": 15
+  },
+
+  "devices": {
+    "zwave": {
+      "enabled": false,
+      "dev_fake_lock": false,
+      "serial_path": "/dev/serial/by-id/REPLACE-WITH-STABLE-PATH",
+      "cache_dir": "",
+      "locks": {
+        "front_deadbolt": {
+          "node_id": 0,
+          "verify_timeout_ms": 12000,
+          "verify_retries": 1,
+          "poll_minutes": 20,
+          "low_battery_pct": 25
+        }
+      }
+    }
+  },
+  "deadbolt_rules": {
+    "lock_id": "front_deadbolt",
+    "trigger_door": "Front Door",
+    "require_result": "ACCESS",
+    "mirror_unlock": false,
+    "relock_cooldown_seconds": 10
+  },
+  "cascade_rules": {
+    "rules": [
+      {
+        "trigger_door": "Front Door",
+        "unlock": ["Interior Door"],
+        "debounce_seconds": 8
+      }
+    ]
+  },
+  "alerts": {
+    "enabled": false,
+    "webhook_url": "",
+    "on": ["deadbolt_retract_failed", "deadbolt_lock_failed", "cascade_failed"]
+  }
+}
