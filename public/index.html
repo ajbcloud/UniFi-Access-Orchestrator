@@ -1186,10 +1186,29 @@ function toast(message, type = 'info') {
 // ============================================================
 // API helpers
 // ============================================================
-async function api(method, path, body) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+function getApiKey() {
+  try { return localStorage.getItem('adminApiKey') || ''; } catch (e) { return ''; }
+}
+function setApiKey(k) {
+  try { if (k) localStorage.setItem('adminApiKey', k); } catch (e) { /* storage disabled */ }
+}
+
+async function api(method, path, body, _retried) {
+  const headers = { 'Content-Type': 'application/json' };
+  const key = getApiKey();
+  if (key) headers['x-api-key'] = key;
+  const opts = { method, headers };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
+  // If the server now requires a key, prompt once and retry so enabling auth
+  // does not silently break the dashboard.
+  if (res.status === 401 && !_retried) {
+    const entered = window.prompt('Admin API key required. Enter the key shown in the service config or startup log:');
+    if (entered) {
+      setApiKey(entered.trim());
+      return api(method, path, body, true);
+    }
+  }
   return res.json();
 }
 
@@ -1278,8 +1297,8 @@ function updateDashboard() {
   if (e.last_event) {
     const le = e.last_event;
     document.getElementById('lastEvent').innerHTML = `
-      <div><strong>${le.type}</strong></div>
-      <div>Actor: ${le.actor || 'none'} &middot; Location: ${le.location || '-'}</div>
+      <div><strong>${escapeHtml(le.type)}</strong></div>
+      <div>Actor: ${escapeHtml(le.actor || 'none')} &middot; Location: ${escapeHtml(le.location || '-')}</div>
       <div style="color:var(--text-muted);font-size:12px">${le.time ? new Date(le.time).toLocaleString() : ''}</div>
     `;
   }
@@ -1287,8 +1306,8 @@ function updateDashboard() {
   if (e.last_unlock) {
     const lu = e.last_unlock;
     document.getElementById('lastUnlock').innerHTML = `
-      <div><strong>${lu.door}</strong></div>
-      <div>${lu.reason || ''}</div>
+      <div><strong>${escapeHtml(lu.door)}</strong></div>
+      <div>${escapeHtml(lu.reason || '')}</div>
       <div style="color:var(--text-muted);font-size:12px">${lu.time ? new Date(lu.time).toLocaleString() : ''}</div>
     `;
   }
@@ -1358,7 +1377,7 @@ function updateDashboard() {
     else ageStr = `${Math.floor(ageSec / 86400)}d ago`;
     const doors = Array.isArray(lr.doors) && lr.doors.length ? lr.doors.join(', ') : '(no doors)';
     const sim = lr.simulated ? ' [simulated]' : '';
-    lastRuleTxt.innerHTML = `<strong>${ageStr}</strong> <span style="color:var(--text-muted)">— ${when.toLocaleString()}${sim}</span><div style="font-size:12px;color:var(--text-secondary);margin-top:2px">${lr.actor || '-'} (${lr.group || '-'}) at <strong>${lr.trigger || '-'}</strong> → ${doors}</div>`;
+    lastRuleTxt.innerHTML = `<strong>${ageStr}</strong> <span style="color:var(--text-muted)">— ${when.toLocaleString()}${sim}</span><div style="font-size:12px;color:var(--text-secondary);margin-top:2px">${escapeHtml(lr.actor || '-')} (${escapeHtml(lr.group || '-')}) at <strong>${escapeHtml(lr.trigger || '-')}</strong> → ${escapeHtml(doors)}</div>`;
   } else {
     lastRuleEl.style.display = 'none';
   }
@@ -1410,7 +1429,11 @@ function renderDeadbolt(h) {
 // ============================================================
 function connectSSE() {
   if (eventSource) eventSource.close();
-  eventSource = new EventSource('/api/events/stream');
+  // EventSource cannot set headers, so the admin key rides as a query param
+  // (the server accepts it for this route only).
+  const key = getApiKey();
+  const url = '/api/events/stream' + (key ? ('?key=' + encodeURIComponent(key)) : '');
+  eventSource = new EventSource(url);
 
   eventSource.onmessage = (e) => {
     const data = JSON.parse(e.data);
@@ -1455,10 +1478,10 @@ function addEventRow(evt) {
 
   tr.innerHTML = `
     <td class="time">${time}</td>
-    <td><span class="badge ${typeBadge}">${(evt.type || '').replace('access.', '').replace('test.', 'test:')}</span></td>
-    <td style="color:var(--text-primary)">${evt.actor || '-'}</td>
-    <td>${evt.location || '-'}</td>
-    <td>${evt.action || '-'}</td>
+    <td><span class="badge ${typeBadge}">${escapeHtml((evt.type || '').replace('access.', '').replace('test.', 'test:'))}</span></td>
+    <td style="color:var(--text-primary)">${escapeHtml(evt.actor || '-')}</td>
+    <td>${escapeHtml(evt.location || '-')}</td>
+    <td>${escapeHtml(evt.action || '-')}</td>
     <td><span class="badge ${statusBadge}">${statusText}</span></td>
   `;
 
@@ -1629,12 +1652,12 @@ function renderConfig() {
   if (hasDoors) {
     let doorsHtml = '<table class="event-table"><thead><tr><th>Door Name</th><th>Door ID</th><th>Status</th></tr></thead><tbody>';
     for (const [name, id] of Object.entries(discovered)) {
-      doorsHtml += `<tr><td style="color:var(--text-primary);font-weight:600">${name}</td><td style="font-family:var(--mono);font-size:12px">${id}</td><td><span class="badge success">Discovered</span></td></tr>`;
+      doorsHtml += `<tr><td style="color:var(--text-primary);font-weight:600">${escapeHtml(name)}</td><td style="font-family:var(--mono);font-size:12px">${escapeHtml(id)}</td><td><span class="badge success">Discovered</span></td></tr>`;
     }
     for (const [name, id] of Object.entries(configured)) {
       if (name.startsWith('_')) continue;
       if (!discovered[name]) {
-        doorsHtml += `<tr><td style="color:var(--text-primary)">${name}</td><td style="font-family:var(--mono);font-size:12px">${id || '<em>No ID</em>'}</td><td><span class="badge ${id ? 'warning' : 'error'}">${id ? 'Not discovered' : 'Needs ID'}</span></td></tr>`;
+        doorsHtml += `<tr><td style="color:var(--text-primary)">${escapeHtml(name)}</td><td style="font-family:var(--mono);font-size:12px">${id ? escapeHtml(id) : '<em>No ID</em>'}</td><td><span class="badge ${id ? 'warning' : 'error'}">${id ? 'Not discovered' : 'Needs ID'}</span></td></tr>`;
       }
     }
     doorsHtml += '</tbody></table>';
@@ -1660,7 +1683,7 @@ function renderConfig() {
   });
   let usersHtml = '<div style="margin-bottom:16px">';
   for (const [group, members] of Object.entries(groups).sort()) {
-    usersHtml += `<div style="margin-bottom:12px"><div style="font-weight:600;color:var(--accent);margin-bottom:4px">${group} (${members.length})</div><div style="font-size:13px;color:var(--text-secondary)">${members.join(', ')}</div></div>`;
+    usersHtml += `<div style="margin-bottom:12px"><div style="font-weight:600;color:var(--accent);margin-bottom:4px">${escapeHtml(group)} (${members.length})</div><div style="font-size:13px;color:var(--text-secondary)">${escapeHtml(members.join(', '))}</div></div>`;
   }
   usersHtml += '</div>';
   document.getElementById('configUsers').innerHTML = usersHtml;
@@ -1708,9 +1731,9 @@ function renderConfig() {
     const logicalName = currentResolver[groupName] || groupName;
     groupMappingsHtml += `
       <tr>
-        <td style="color:var(--text-primary);font-weight:600">${groupName}</td>
+        <td style="color:var(--text-primary);font-weight:600">${escapeHtml(groupName)}</td>
         <td>
-          <input type="text" id="mapping-${groupName}" value="${logicalName}" placeholder="${groupName}" style="font-size:12px;padding:6px 8px">
+          <input type="text" id="mapping-${escapeHtml(groupName)}" value="${escapeHtml(logicalName)}" placeholder="${escapeHtml(groupName)}" style="font-size:12px;padding:6px 8px">
         </td>
       </tr>
     `;
@@ -1746,9 +1769,9 @@ function renderConfig() {
           <button class="delete" onclick="deleteNfcRule(${idx})">Delete</button>
         </div>
         <div class="rule-sentence">
-          When <strong>${rule.group}</strong> badges in at <strong>${rule.trigger || '(any door)'}</strong>, 
-          ${rule.delay > 0 ? `wait <strong>${rule.delay}s</strong>, ` : ''}unlock
-          <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
+          When <strong>${escapeHtml(rule.group)}</strong> badges in at <strong>${escapeHtml(rule.trigger || '(any door)')}</strong>,
+          ${rule.delay > 0 ? `wait <strong>${escapeHtml(rule.delay)}s</strong>, ` : ''}unlock
+          <span class="rule-doors-list">${escapeHtml((rule.unlock || []).join(', '))}</span>
         </div>
       </div>`;
     });
@@ -1786,9 +1809,9 @@ function renderConfig() {
           <button class="delete" onclick="deleteDoorbellRule(${idx})">Delete</button>
         </div>
         <div class="rule-sentence">
-          When a visitor for <strong>${rule.group}</strong> is buzzed in at <strong>${rule.trigger || '(any door)'}</strong>, 
-          ${rule.delay > 0 ? `wait <strong>${rule.delay}s</strong>, ` : ''}unlock
-          <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
+          When a visitor for <strong>${escapeHtml(rule.group)}</strong> is buzzed in at <strong>${escapeHtml(rule.trigger || '(any door)')}</strong>,
+          ${rule.delay > 0 ? `wait <strong>${escapeHtml(rule.delay)}s</strong>, ` : ''}unlock
+          <span class="rule-doors-list">${escapeHtml((rule.unlock || []).join(', '))}</span>
           ${isLinked ? '<span style="font-size:11px;color:var(--text-muted);margin-left:6px">(same as access rule)</span>' : ''}
         </div>
       </div>`;
@@ -1813,10 +1836,10 @@ function renderConfig() {
   } else {
     for (const [viewer, group] of viewerEntries) {
       dbHtml += `<div class="viewer-mapping-row">
-        <input type="text" class="viewer-name-input" value="${viewer}" placeholder="Device name" style="flex:1;font-size:12px;padding:6px 8px">
+        <input type="text" class="viewer-name-input" value="${escapeHtml(viewer)}" placeholder="Device name" style="flex:1;font-size:12px;padding:6px 8px">
         <span style="color:var(--text-muted);font-size:12px">&#8594;</span>
         <select class="viewer-group-select" style="width:auto;min-width:150px;font-size:12px;padding:6px 28px 6px 10px">
-          ${Array.from(discoveredGroupNames).sort().map(g => `<option value="${g}" ${g === group ? 'selected' : ''}>${g}</option>`).join('')}
+          ${Array.from(discoveredGroupNames).sort().map(g => `<option value="${escapeHtml(g)}" ${g === group ? 'selected' : ''}>${escapeHtml(g)}</option>`).join('')}
         </select>
         <button class="btn btn-sm btn-secondary" onclick="this.closest('.viewer-mapping-row').remove()" style="padding:4px 8px;font-size:11px">&#10005;</button>
       </div>`;
@@ -2224,7 +2247,7 @@ function addViewerMapping() {
     <input type="text" class="viewer-name-input" value="" placeholder="Viewer device name" style="flex:1;font-size:12px;padding:6px 8px">
     <span style="color:var(--text-muted);font-size:12px">&#8594;</span>
     <select class="viewer-group-select" style="width:auto;min-width:150px;font-size:12px;padding:6px 28px 6px 10px">
-      ${groups.map(g => `<option value="${g}">${g}</option>`).join('')}
+      ${groups.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('')}
     </select>
     <button class="btn btn-sm btn-secondary" onclick="this.closest('.viewer-mapping-row').remove()" style="padding:4px 8px;font-size:11px">&#10005;</button>
   `;
@@ -2299,14 +2322,14 @@ function renderTestRules() {
     accessRules.forEach((rule, idx) => {
       const groupUsers = users.filter(u => u.group === rule.group);
       const userOptions = groupUsers.length > 0
-        ? groupUsers.map(u => `<option value="${u.id}" data-name="${u.name}">${u.name}</option>`).join('')
+        ? groupUsers.map(u => `<option value="${escapeHtml(u.id)}" data-name="${escapeHtml(u.name)}">${escapeHtml(u.name)}</option>`).join('')
         : `<option value="">No users in this group</option>`;
 
       html += `<div class="test-rule-card" id="test-access-${idx}">
         <div class="test-rule-desc">
           <span class="test-rule-type-badge access">ACCESS</span>
-          When <strong>${rule.group}</strong> badges in at <strong>${rule.trigger}</strong>, 
-          ${rule.delay > 0 ? `wait <strong>${rule.delay}s</strong>, ` : ''}unlock <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
+          When <strong>${escapeHtml(rule.group)}</strong> badges in at <strong>${escapeHtml(rule.trigger)}</strong>,
+          ${rule.delay > 0 ? `wait <strong>${escapeHtml(rule.delay)}s</strong>, ` : ''}unlock <span class="rule-doors-list">${escapeHtml((rule.unlock || []).join(', '))}</span>
         </div>
         <div class="test-rule-actions">
           <select id="testAccessUser-${idx}" class="test-rule-user-select">
@@ -2325,7 +2348,7 @@ function renderTestRules() {
           <label>Trigger door (override) — simulate the badge tap happening at a different door:
             <select id="testAccessDoorOverride-${idx}">${_doorOptions(rule.trigger)}</select>
           </label>
-          <div class="hint">Pick a door other than "${rule.trigger}" to verify your rule does NOT fire on the wrong door.</div>
+          <div class="hint">Pick a door other than "${escapeHtml(rule.trigger)}" to verify your rule does NOT fire on the wrong door.</div>
         </div>
         <div class="test-rule-result" id="testAccessResult-${idx}"></div>
       </div>`;
@@ -2343,10 +2366,10 @@ function renderTestRules() {
 
       let actorOptions = '';
       if (groupUsers.length > 0) {
-        actorOptions += groupUsers.map(u => `<option value="user:${u.id}" data-name="${u.name}">User: ${u.name}</option>`).join('');
+        actorOptions += groupUsers.map(u => `<option value="user:${escapeHtml(u.id)}" data-name="${escapeHtml(u.name)}">User: ${escapeHtml(u.name)}</option>`).join('');
       }
       if (matchingViewers.length > 0) {
-        actorOptions += matchingViewers.map(([v]) => `<option value="device:${v}">Viewer: ${v}</option>`).join('');
+        actorOptions += matchingViewers.map(([v]) => `<option value="device:${escapeHtml(v)}">Viewer: ${escapeHtml(v)}</option>`).join('');
       }
       if (!actorOptions) {
         actorOptions = `<option value="">No users or viewers for this group</option>`;
@@ -2355,8 +2378,8 @@ function renderTestRules() {
       html += `<div class="test-rule-card" id="test-visitor-${idx}">
         <div class="test-rule-desc">
           <span class="test-rule-type-badge visitor">VISITOR</span>
-          When a visitor for <strong>${rule.group}</strong> is buzzed in at <strong>${rule.trigger}</strong>, 
-          ${rule.delay > 0 ? `wait <strong>${rule.delay}s</strong>, ` : ''}unlock <span class="rule-doors-list">${(rule.unlock || []).join(', ')}</span>
+          When a visitor for <strong>${escapeHtml(rule.group)}</strong> is buzzed in at <strong>${escapeHtml(rule.trigger)}</strong>,
+          ${rule.delay > 0 ? `wait <strong>${escapeHtml(rule.delay)}s</strong>, ` : ''}unlock <span class="rule-doors-list">${escapeHtml((rule.unlock || []).join(', '))}</span>
         </div>
         <div class="test-rule-actions">
           <select id="testVisitorActor-${idx}" class="test-rule-user-select">
@@ -2388,8 +2411,8 @@ function renderTestRules() {
 function _doorOptions(selected) {
   const doors = doorsData?.discovered || doorsData?.configured || {};
   const names = Object.keys(doors);
-  if (names.length === 0) return `<option value="${selected || ''}">${selected || '(no doors discovered)'}</option>`;
-  return names.map(n => `<option value="${n}"${n === selected ? ' selected' : ''}>${n}</option>`).join('');
+  if (names.length === 0) return `<option value="${escapeHtml(selected || '')}">${escapeHtml(selected || '(no doors discovered)')}</option>`;
+  return names.map(n => `<option value="${escapeHtml(n)}"${n === selected ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('');
 }
 
 function toggleCustomize(type, idx, checkbox) {
@@ -2438,7 +2461,7 @@ function _ruleSimContext(type, idx) {
 
 function _renderPreflight(checks, summary) {
   const items = checks.map(c =>
-    `<li><span class="pf-icon ${c.pass ? 'pass' : 'fail'}">${c.pass ? '✓' : '✗'}</span><span class="pf-name">${c.name}</span><span class="pf-detail">${c.detail || ''}</span></li>`
+    `<li><span class="pf-icon ${c.pass ? 'pass' : 'fail'}">${c.pass ? '✓' : '✗'}</span><span class="pf-name">${escapeHtml(c.name)}</span><span class="pf-detail">${escapeHtml(c.detail || '')}</span></li>`
   ).join('');
   const hdr = summary
     ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">Preflight: ${summary.fail_count === 0 ? '<span style="color:var(--green)">all checks passed</span>' : `<span style="color:var(--red)">${summary.fail_count} check(s) failed</span>`} · envelope: ${summary.envelope_mode || '?'}</div>`
@@ -2571,7 +2594,7 @@ async function simulateRule(type, idx) {
       : `<span class="badge ${action === 'unlock_failed' ? 'error' : 'warning'}">${action.toUpperCase()}</span>`;
     const detail = sim.processing?.detail || sim.error || '';
     const overrideNote = overridden
-      ? `<div style="font-size:11px;color:var(--accent);margin-top:4px">Trigger overridden: simulating tap at "${triggerDoor}" instead of rule's configured "${rule.trigger}".</div>`
+      ? `<div style="font-size:11px;color:var(--accent);margin-top:4px">Trigger overridden: simulating tap at "${escapeHtml(triggerDoor)}" instead of rule's configured "${escapeHtml(rule.trigger)}".</div>`
       : '';
     const dryNote = sim.dry_run
       ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">Dry-run: no real PUT issued (delayed unlocks also blocked via simulated_dry_run flag).</div>`
@@ -2583,7 +2606,7 @@ async function simulateRule(type, idx) {
     if (resultEl) {
       resultEl.innerHTML = `
         ${_renderPreflight(pf.checks, pf.summary)}
-        <div style="margin-top:10px;font-size:12px">${summary} ${detail}${overrideNote}${dryNote}${realNote}</div>
+        <div style="margin-top:10px;font-size:12px">${summary} ${escapeHtml(detail)}${overrideNote}${dryNote}${realNote}</div>
         ${_renderComparePanel(sim.payload, sim.real_event_for_comparison, sim.processing)}
       `;
     }
@@ -2649,9 +2672,13 @@ function renderDoorGrid() {
 
   let html = '';
   for (const [name, id] of doorEntries) {
-    html += `<div class="door-card" id="door-${name.replace(/\s/g, '-')}" onclick="testUnlock('${name}')">
-      <div class="door-name">${name}</div>
-      <div class="door-id">${id ? id.substring(0, 12) + '...' : 'No ID'}</div>
+    // Door name rides in a data attribute (escaped) and is read at click time,
+    // so a name containing a quote cannot break out of the inline handler's JS
+    // string. The element id keeps the same space->dash transform testUnlock
+    // uses to find the card.
+    html += `<div class="door-card" id="door-${escapeHtml(name.replace(/\s/g, '-'))}" data-door="${escapeHtml(name)}" onclick="testUnlock(this.dataset.door)">
+      <div class="door-name">${escapeHtml(name)}</div>
+      <div class="door-id">${id ? escapeHtml(id.substring(0, 12)) + '...' : 'No ID'}</div>
       <div class="door-status">${id ? '<span class="badge success">Ready</span>' : '<span class="badge error">No ID</span>'}</div>
     </div>`;
   }
@@ -2721,7 +2748,7 @@ async function runConnectivityTest() {
     const result = await api('GET', '/api/test-connection');
     const steps = result.steps || [];
 
-    let html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Target: <strong>${result.host || 'Not configured'}:${result.port || 12445}</strong></div>`;
+    let html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Target: <strong>${escapeHtml(result.host || 'Not configured')}:${escapeHtml(result.port || 12445)}</strong></div>`;
     html += '<div style="display:flex;flex-direction:column;gap:8px">';
 
     for (const step of steps) {
@@ -2732,8 +2759,8 @@ async function runConnectivityTest() {
         <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 12px;background:var(--bg-input);border-radius:var(--radius)">
           <span style="color:${color};font-size:16px;line-height:1;min-width:18px">${icon}</span>
           <div>
-            <div style="font-weight:600;font-size:13px;color:var(--text-primary)">${step.name}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">${step.detail}</div>
+            <div style="font-weight:600;font-size:13px;color:var(--text-primary)">${escapeHtml(step.name)}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">${escapeHtml(step.detail)}</div>
           </div>
         </div>
       `;
@@ -2787,7 +2814,7 @@ async function loadRawPayloads() {
       const preview = jsonStr.length > 120 ? jsonStr.substring(0, 120) + '...' : jsonStr;
       html += `<div style="margin-bottom:8px;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
         <div style="padding:8px 12px;background:var(--bg-hover);display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
-          <span><span class="badge ${sourceBadge}">${entry.source}</span> <span style="color:var(--text-muted);font-size:11px">${time}</span></span>
+          <span><span class="badge ${sourceBadge}">${escapeHtml(entry.source)}</span> <span style="color:var(--text-muted);font-size:11px">${time}</span></span>
           <span style="color:var(--text-muted);font-size:11px">${jsonStr.length} chars</span>
         </div>
         <pre style="display:none;padding:12px;margin:0;background:var(--bg-input);overflow-x:auto;white-space:pre-wrap;word-break:break-all;font-size:11px;line-height:1.4;color:var(--text-secondary)">${escapeHtml(jsonStr)}</pre>
@@ -2799,8 +2826,15 @@ async function loadRawPayloads() {
   }
 }
 
+// HTML-escapes a value for safe interpolation into innerHTML. Coerces null/
+// undefined to '' so a missing field can never throw and break the dashboard.
+// Escapes the four characters that matter in element text and double-quoted
+// attributes. NOT sufficient on its own for a single-quoted attribute or an
+// inline JS string; for those, prefer a data-* attribute read at call time.
 function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 async function forceSync() {
@@ -2989,11 +3023,11 @@ async function runDiscovery() {
     if (controllers.length > 0) {
       resultsEl.style.display = 'block';
       listEl.innerHTML = controllers.map(c => `
-        <div class="door-card" style="text-align:left;cursor:pointer;margin-bottom:8px" onclick="selectController('${c.ip}', ${c.port})">
+        <div class="door-card" style="text-align:left;cursor:pointer;margin-bottom:8px" data-ip="${escapeHtml(c.ip)}" data-port="${Number(c.port) || 12445}" onclick="selectController(this.dataset.ip, this.dataset.port)">
           <div style="display:flex;justify-content:space-between;align-items:center">
             <div>
-              <div class="door-name">${c.ip}</div>
-              <div style="font-size:12px;color:var(--text-secondary)">${c.type}</div>
+              <div class="door-name">${escapeHtml(c.ip)}</div>
+              <div style="font-size:12px;color:var(--text-secondary)">${escapeHtml(c.type)}</div>
             </div>
             <span class="badge success">Found</span>
           </div>
@@ -3018,11 +3052,11 @@ async function runDiscovery() {
       resultsEl.style.display = unconfirmed.length > 0;
       if (unconfirmed.length > 0) {
         listEl.innerHTML = unconfirmed.map(c => `
-          <div class="door-card" style="text-align:left;cursor:pointer;margin-bottom:8px" onclick="selectController('${c.ip}', ${c.port})">
+          <div class="door-card" style="text-align:left;cursor:pointer;margin-bottom:8px" data-ip="${escapeHtml(c.ip)}" data-port="${Number(c.port) || 12445}" onclick="selectController(this.dataset.ip, this.dataset.port)">
             <div style="display:flex;justify-content:space-between;align-items:center">
               <div>
-                <div class="door-name">${c.ip}</div>
-                <div style="font-size:12px;color:var(--text-secondary)">${c.type}</div>
+                <div class="door-name">${escapeHtml(c.ip)}</div>
+                <div style="font-size:12px;color:var(--text-secondary)">${escapeHtml(c.type)}</div>
               </div>
               <span class="badge warning">Maybe</span>
             </div>
@@ -3032,7 +3066,7 @@ async function runDiscovery() {
 
       statusEl.innerHTML = `
         <div style="font-size:13px;color:var(--yellow);margin-bottom:8px">
-          No confirmed UniFi Access controllers found on ${(result.subnets_scanned || []).join(', ')}.
+          No confirmed UniFi Access controllers found on ${escapeHtml((result.subnets_scanned || []).join(', '))}.
           ${unconfirmed.length > 0 ? 'We found some devices that might be controllers (see above).' : ''}
         </div>
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">

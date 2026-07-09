@@ -266,13 +266,61 @@ function requireAdminApiKey(req, res, next) {
     return next();
   }
 
-  const providedApiKey = req.get('x-api-key');
+  // The SSE stream is consumed by EventSource, which cannot set request
+  // headers, so the key is accepted as a query param for that route ONLY.
+  // This middleware is mounted at '/api', so req.path here is '/events/stream'
+  // (Express strips the mount prefix); reconstruct the full path with baseUrl
+  // to match. req.path excludes the query string, so the request logger below
+  // never records the key. All other routes require the x-api-key header.
+  const fullPath = (req.baseUrl || '') + req.path;
+  const providedApiKey = req.get('x-api-key')
+    || (fullPath === '/api/events/stream' ? req.query.key : undefined);
   if (!timingSafeCompare(providedApiKey, expectedApiKey)) {
     logger.warn(`Blocked unauthorized request: ${req.method} ${req.path}`);
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
   next();
+}
+
+// Ensure an admin API key exists. If none is configured, generate one, persist
+// it (0600, atomic temp+rename), and log it loudly. This closes the shipped
+// default where an empty key silently disabled auth on every admin/test/reload
+// route, without locking out an existing keyless install: it keeps running and
+// becomes protected, and the operator enters the logged key in the dashboard
+// once (it prompts on 401). If the config cannot be written, degrade to an
+// in-memory key for this run rather than crash.
+function ensureAdminApiKey() {
+  if (!config.server || typeof config.server !== 'object') config.server = {};
+  const existing = config.server.admin_api_key;
+  if (existing && String(existing).length > 0) return;
+
+  const key = crypto.randomBytes(24).toString('hex');
+  config.server.admin_api_key = key;
+  try {
+    const tmp = `${CONFIG_PATH}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(config, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, CONFIG_PATH);
+    if (configSync && typeof configSync.markConfigApplied === 'function') configSync.markConfigApplied();
+    logger.warn('=================================================================');
+    logger.warn('No server.admin_api_key was set, so admin/test/reload routes were');
+    logger.warn('unauthenticated. A key has been generated and saved to config:');
+    logger.warn(`    ${key}`);
+    logger.warn('Enter it in the dashboard when prompted, and send it as the');
+    logger.warn('x-api-key header on API calls.');
+    logger.warn('=================================================================');
+  } catch (err) {
+    logger.error(`Could not persist a generated admin_api_key (${err.message}). Using an in-memory key for THIS run only (it changes on restart): ${key}`);
+  }
+}
+
+// Warn when /webhook has no shared secret, so unsigned events are accepted.
+function warnOnWebhookExposure() {
+  const secret = config.event_source?.api_webhook?.secret;
+  const mode = config.event_source?.mode || 'alarm_manager';
+  if (!secret) {
+    logger.warn(`/webhook accepts UNSIGNED events (no event_source.api_webhook.secret set): anyone who can reach it can inject access events and trigger unlocks.${mode === 'api_webhook' ? ' A secret is strongly recommended for api_webhook mode.' : ''} Set a secret and restrict the port to the controller.`);
+  }
 }
 
 // Serve static GUI files
@@ -1551,8 +1599,16 @@ async function start() {
   logger.info('=== UniFi Access Orchestrator Starting ===');
   logger.info(`Event source mode: ${config.event_source?.mode || 'alarm_manager'}`);
 
+  // Close the "empty key disables auth" default before the server accepts
+  // requests, and warn if the webhook is unauthenticated.
+  ensureAdminApiKey();
+  warnOnWebhookExposure();
+
   const port = config.server?.port || 3000;
   const host = config.server?.host || '0.0.0.0';
+  if (host !== '127.0.0.1' && host !== 'localhost') {
+    logger.warn(`Server is bound to ${host} (reachable on the LAN). Admin routes require the API key; restrict port ${port} with a host firewall to admin hosts, or bind 127.0.0.1 for WebSocket-only setups that do not receive inbound webhooks.`);
+  }
 
   app.listen(port, host, () => {
     logger.info(`Server listening on ${host}:${port}`);
