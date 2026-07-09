@@ -21,7 +21,8 @@
         "access.doorbell.incoming",
         "access.doorbell.completed"
       ],
-      "secret": ""
+      "secret": "",
+      "replay_window_seconds": 120
     },
     "websocket": {
       "reconnect_interval_seconds": 5

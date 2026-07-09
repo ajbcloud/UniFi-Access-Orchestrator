@@ -36,6 +36,12 @@ const Notifier = require('./notifier');
 const DeadboltController = require('./deadbolt-controller');
 const FakeLock = require('./drivers/fake-lock');
 const { ZwaveLock } = require('./drivers/zwave-lock');
+const {
+  redactSecrets,
+  stripRedactedPlaceholders,
+  validateConfigUpdates,
+  ReplayGuard,
+} = require('./security');
 const APP_VERSION = require('../package.json').version;
 
 // ---------------------------------------------------------------------------
@@ -242,12 +248,70 @@ patchEngineForBroadcast(rulesEngine);
 // ---------------------------------------------------------------------------
 
 const app = express();
+
+// Security response headers on every route (static, API and SSE). The CSP still
+// allows 'unsafe-inline' scripts/styles because the dashboard is a single-file
+// SPA with inline handlers; tightening script-src to a nonce is future work that
+// depends on refactoring those out. Even so, default-src/connect-src 'self'
+// block loading or exfiltrating to any other origin, object-src 'none' and
+// base-uri 'self' close common injection vectors, and frame-ancestors 'none'
+// prevents clickjacking. No Access-Control-Allow-Origin is ever set, so the API
+// stays same-origin only; combined with header-based auth this is CSRF-safe.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Content-Security-Policy', CSP);
+  next();
+});
+
 app.use(express.json({
   limit: '1mb',
   verify: (req, res, buf) => {
     req.rawBody = buf;
   }
 }));
+
+// Rejects replayed signed webhooks (identical body within the window). Window
+// is read once at boot; changing it needs a restart.
+const webhookReplayGuard = new ReplayGuard({
+  windowMs: (config.event_source?.api_webhook?.replay_window_seconds || 120) * 1000,
+});
+
+// Cooldown so the subnet scan (254 probes) cannot be hammered even by an
+// authenticated admin holding the button.
+let lastDiscoverAt = 0;
+const DISCOVER_COOLDOWN_MS = 15000;
+
+// Atomic, owner-only (0600) config write used everywhere the config is
+// persisted, so secrets never land in a world-readable file. temp+rename means
+// a crash mid-write cannot truncate the live config.
+function writeConfigFile(obj) {
+  const tmp = `${CONFIG_PATH}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, CONFIG_PATH);
+}
+
+// True only when the request carries the configured admin key (header, or the
+// query param used by header-less clients). Used to gate detail on /health.
+function requestHasValidAdminKey(req) {
+  const expected = config.server?.admin_api_key;
+  if (!expected) return false;
+  const provided = req.get('x-api-key') || req.query.key;
+  return timingSafeCompare(provided, expected);
+}
 
 function timingSafeCompare(a, b) {
   const aBuf = Buffer.from(a || '', 'utf8');
@@ -298,9 +362,7 @@ function ensureAdminApiKey() {
   const key = crypto.randomBytes(24).toString('hex');
   config.server.admin_api_key = key;
   try {
-    const tmp = `${CONFIG_PATH}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(config, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, CONFIG_PATH);
+    writeConfigFile(config);
     if (configSync && typeof configSync.markConfigApplied === 'function') configSync.markConfigApplied();
     logger.warn('=================================================================');
     logger.warn('No server.admin_api_key was set, so admin/test/reload routes were');
@@ -311,6 +373,33 @@ function ensureAdminApiKey() {
     logger.warn('=================================================================');
   } catch (err) {
     logger.error(`Could not persist a generated admin_api_key (${err.message}). Using an in-memory key for THIS run only (it changes on restart): ${key}`);
+  }
+}
+
+// Ensure /auto-lock cannot be triggered anonymously. That endpoint physically
+// drives doors and is NOT behind the admin-key middleware, so it must carry its
+// own shared token. If phone buttons are configured but no token is set,
+// generate and persist one (0600) and log it so the operator can add it to the
+// phone shortcut, rather than leaving door control open to anyone on the LAN.
+function ensureAutoLockToken() {
+  const cfg = config.auto_lock;
+  if (!cfg || !Array.isArray(cfg.buttons) || cfg.buttons.length === 0) return;
+  if (cfg.shared_token && String(cfg.shared_token).length > 0) return;
+
+  const token = crypto.randomBytes(24).toString('hex');
+  cfg.shared_token = token;
+  try {
+    writeConfigFile(config);
+    if (configSync && typeof configSync.markConfigApplied === 'function') configSync.markConfigApplied();
+    logger.warn('=================================================================');
+    logger.warn('auto_lock buttons are configured but no auto_lock.shared_token was');
+    logger.warn('set, so /auto-lock could be triggered by anyone on the network. A');
+    logger.warn('token has been generated and saved to config:');
+    logger.warn(`    ${token}`);
+    logger.warn('Add ?token=<that value> to your phone shortcut URLs.');
+    logger.warn('=================================================================');
+  } catch (err) {
+    logger.error(`Could not persist a generated auto_lock.shared_token (${err.message}). Using an in-memory token for THIS run only: ${token}`);
   }
 }
 
@@ -346,10 +435,19 @@ app.post('/webhook', async (req, res) => {
   const webhookSecret = config.event_source?.api_webhook?.secret;
   if (webhookSecret) {
     const signatureHeader = req.get('x-orchestrator-signature') || '';
-    const expectedSignature = `sha256=${crypto.createHmac('sha256', webhookSecret).update(req.rawBody || '').digest('hex')}`;
+    const rawBody = req.rawBody || '';
+    const expectedSignature = `sha256=${crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex')}`;
     if (!timingSafeCompare(signatureHeader, expectedSignature)) {
       logger.warn('Rejected webhook with invalid signature');
       return res.status(401).json({ error: 'Invalid signature' });
+    }
+    // Replay protection only matters once the signature is trusted: an attacker
+    // who captured one valid signed request could otherwise resend it. An
+    // identical body within the window is a replay (real events carry unique
+    // ids/timestamps). Ack with 200 so a legitimate retry does not loop.
+    if (webhookReplayGuard.isReplay(rawBody)) {
+      logger.warn('Ignored replayed webhook (duplicate signed body within window)');
+      return res.status(200).json({ status: 'ignored', reason: 'duplicate' });
     }
   }
 
@@ -361,7 +459,7 @@ app.post('/webhook', async (req, res) => {
 
   const eventType = payload.event || payload.type || payload.event_type || 'unknown';
   logger.info(`Webhook received: ${eventType}`);
-  logger.debug(`Webhook payload: ${JSON.stringify(payload).substring(0, 500)}`);
+  logger.debug(`Webhook payload: ${JSON.stringify(redactSecrets(payload)).substring(0, 500)}`);
   lastEventTime = Date.now();
   storeRawPayload('webhook', payload);
   capture.add(payload);
@@ -383,6 +481,18 @@ app.post('/webhook', async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get('/health', (req, res) => {
+  // Public callers (uptime monitors, unauthenticated probes) get a minimal
+  // liveness payload only. The full status, which reveals the controller host,
+  // door/user counts, versions and whether the deadbolt add-on exists, is
+  // returned only to a caller carrying the admin key. The dashboard fetches
+  // /health through its authenticated api() helper, so it still sees detail.
+  if (!requestHasValidAdminKey(req)) {
+    return res.json({
+      status: 'running',
+      uptime_seconds: Math.floor(process.uptime())
+    });
+  }
+
   res.json({
     status: 'running',
     version: APP_VERSION,
@@ -878,10 +988,10 @@ app.post('/reload', async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get('/api/config', (req, res) => {
-  const sanitized = JSON.parse(JSON.stringify(config));
-  if (sanitized.unifi?.token) sanitized.unifi.token = '***REDACTED***';
-  if (sanitized.auto_lock?.shared_token) sanitized.auto_lock.shared_token = '***REDACTED***';
-  res.json(sanitized);
+  // Redact every secret-valued field (unifi token, webhook secret, auto-lock
+  // token, admin key, any alert secret), not just the two the UI happens to
+  // display. PUT strips the same placeholders back out on save.
+  res.json(redactSecrets(config));
 });
 
 // ---------------------------------------------------------------------------
@@ -894,13 +1004,28 @@ app.put('/api/config', async (req, res) => {
     return res.status(400).json({ error: 'Invalid config data' });
   }
 
+  // Reject malformed input before it is merged and persisted.
+  const validation = validateConfigUpdates(updates);
+  if (!validation.ok) {
+    logger.warn(`Rejected config update: ${validation.error}`);
+    return res.status(400).json({ error: validation.error });
+  }
+
   try {
-    // Read current config (with real token)
+    // Read current config (with real secrets)
     const current = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
 
-    // Drop redacted secrets so the UI echoing placeholders doesn't overwrite real values.
-    if (updates.unifi?.token === '***REDACTED***') delete updates.unifi.token;
-    if (updates.auto_lock?.shared_token === '***REDACTED***') delete updates.auto_lock.shared_token;
+    // Drop any secret still carrying the redaction placeholder, so the UI
+    // echoing a redacted GET back on save cannot clobber the real value.
+    stripRedactedPlaceholders(updates);
+
+    // Never let a save clear the admin key: an empty/whitespace value would
+    // disable auth on the next reload. Drop it so the stored key is kept.
+    if (updates.server && typeof updates.server === 'object'
+        && updates.server.admin_api_key !== undefined
+        && String(updates.server.admin_api_key).trim() === '') {
+      delete updates.server.admin_api_key;
+    }
 
     // Deep merge updates (only allow specific safe keys)
     const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog', 'auto_lock', 'auto_sync'];
@@ -931,7 +1056,7 @@ app.put('/api/config', async (req, res) => {
       }
     }
 
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(current, null, 2));
+    writeConfigFile(current);
     logger.info('Config saved to disk');
     if (configSync) configSync.markConfigApplied();
 
@@ -1155,6 +1280,17 @@ app.get('/api/test-connection', async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get('/api/discover', async (req, res) => {
+  // Cooldown: a full-subnet scan is expensive, so rate-limit it even for an
+  // authenticated admin (e.g. an impatient double-click or a stuck poller).
+  const now = Date.now();
+  const sinceLast = now - lastDiscoverAt;
+  if (sinceLast < DISCOVER_COOLDOWN_MS) {
+    const retryAfter = Math.ceil((DISCOVER_COOLDOWN_MS - sinceLast) / 1000);
+    res.setHeader('Retry-After', String(retryAfter));
+    return res.status(429).json({ error: 'Discovery ran recently, please wait', retry_after_seconds: retryAfter });
+  }
+  lastDiscoverAt = now;
+
   const net = require('net');
   const os = require('os');
   const https = require('https');
@@ -1336,7 +1472,16 @@ app.get('/auto-lock/:buttonId', async (req, res) => {
     return res.status(404).json({ success: false, message: 'Unknown button' });
   }
 
-  if (cfg.shared_token && !timingSafeCompare(req.query.token || '', cfg.shared_token)) {
+  // Fail secure: this endpoint drives doors and is not behind the admin-key
+  // middleware, so it must have its own token. ensureAutoLockToken() generates
+  // one at boot whenever buttons exist, so an empty token here should be
+  // unreachable; refuse anyway rather than act anonymously.
+  if (!cfg.shared_token || String(cfg.shared_token).length === 0) {
+    logger.warn(`Auto-lock: refused "${button.id}" from ${sourceIp} - no shared_token configured`);
+    return res.status(401).json({ success: false, message: 'Auto-lock token not configured' });
+  }
+
+  if (!timingSafeCompare(req.query.token || '', cfg.shared_token)) {
     logger.warn(`Auto-lock: bad token for "${button.id}" from ${sourceIp}`);
     return res.status(401).json({ success: false, message: 'Unauthorized' });
   }
@@ -1512,6 +1657,10 @@ async function reloadOrchestrator({
   try {
     const newConfig = loadConfig();
     const result = await reloadServices(newConfig);
+    // reloadServices reassigns the global config; make sure a reload can never
+    // leave the admin key empty (auth disabled) or auto-lock tokenless.
+    ensureAdminApiKey();
+    ensureAutoLockToken();
     const reasonSuffix = reason ? ` — reason: ${reason}` : '';
     broadcastEvent({
       type: eventType,
@@ -1600,8 +1749,9 @@ async function start() {
   logger.info(`Event source mode: ${config.event_source?.mode || 'alarm_manager'}`);
 
   // Close the "empty key disables auth" default before the server accepts
-  // requests, and warn if the webhook is unauthenticated.
+  // requests, ensure /auto-lock has a token, and warn if the webhook is open.
   ensureAdminApiKey();
+  ensureAutoLockToken();
   warnOnWebhookExposure();
 
   const port = config.server?.port || 3000;
