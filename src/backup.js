@@ -7,6 +7,8 @@ const BACKUP_PATTERN = /^config_\d{4}-\d{2}-\d{2}_\d{6}\.json$/;
 
 function ensureBackupDir(backupDir) {
   fs.mkdirSync(backupDir, { recursive: true });
+  // Backups contain config secrets, so keep the directory owner-only.
+  try { fs.chmodSync(backupDir, 0o700); } catch (e) { /* best effort on non-POSIX */ }
 }
 
 function formatTimestamp(date) {
@@ -26,6 +28,8 @@ function createBackup(configPath, backupDir) {
   const destPath = path.join(backupDir, filename);
 
   fs.copyFileSync(configPath, destPath);
+  // The backup carries config secrets; restrict it to the owner.
+  try { fs.chmodSync(destPath, 0o600); } catch (e) { /* best effort on non-POSIX */ }
 
   const stat = fs.statSync(destPath);
   return {
@@ -83,6 +87,8 @@ function restoreBackup(backupFilename, backupDir, configPath) {
   createBackup(configPath, backupDir);
 
   fs.copyFileSync(backupPath, configPath);
+  // Keep the live config owner-only after a restore.
+  try { fs.chmodSync(configPath, 0o600); } catch (e) { /* best effort on non-POSIX */ }
 
   return {
     restored: backupFilename,
