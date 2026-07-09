@@ -252,3 +252,19 @@ Site (Suite 105), WebSocket mode:
 - Retract latency: the BE469ZP is eventually-consistent; the verify timeout
   defaults to 12s. Prefer a schedule-aligned morning retract if badge-triggered
   retract feels slow (see the plan doc, section 4.3).
+- Endpoint auth posture: the new `/api/devices` and `/api/capture/*` routes sit
+  behind the same admin-key middleware as the rest of `/api`, which is a no-op
+  when `server.admin_api_key` is unset. Capture writes PII-bearing raw events to
+  disk while active (gitignored `config/captures/`). Set an admin key and only
+  run capture on a trusted-VLAN instance. Tightening the app-wide auth default is
+  tracked in the main code review, not changed here.
+
+## 10. Pre-merge review
+
+The whole add-on diff was put through a 5-dimension adversarial review
+(correctness, Z-Wave, integration safety, security, safety invariants) with
+every concrete finding independently verified. Confirmed findings were fixed
+(notification-type gating, opt-in fake lock, awaited shutdown, persistent driver
+error handler, per-rule debounce, first-telemetry seed, re-lock cooldown,
+idempotent wiring, gated tap); four weak claims were refuted and dropped. Suite:
+36 passing.
