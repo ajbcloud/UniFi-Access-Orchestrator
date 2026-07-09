@@ -173,13 +173,21 @@ drift check, because aggressive polling drains a battery lock. **[confirmed as b
 - Actor and door: `data.actor` / `_source.actor` (`id`, `name`/`display_name`); door at
   `data.location` / a `target[]` entry. **[confirmed]**
 
-> Note for implementers: the QIT AC2 site design uses the shorthand event names `access.entry` and
-> `access.exit` in its illustrative config. Those are not real UniFi event types. The wire reality is
-> a single `access.door.unlock` event whose direction lives in the log/WebSocket `_source.target[]`
-> (`door_entry_method: entry|exit`) and is absent from Alarm Manager webhooks. Do not code to
-> `access.entry`/`access.exit`; derive direction from the target array. This is why the site must run
-> in WebSocket mode, and why direction extraction is net-new middleware work (section 2): the current
-> rules engine reads actor/door/result from the target array but not `door_entry_method`.
+> Note for implementers (two clarifications that shape the build):
+> 1. The QIT AC2 site design uses shorthand event names `access.entry` / `access.exit` in its
+>    illustrative config. Those are not real UniFi event types. The wire reality is a single
+>    `access.door.unlock` event; direction, when present, lives in the log/WebSocket `_source.target[]`
+>    as `door_entry_method: entry|exit`. Do not code to `access.entry`/`access.exit`.
+> 2. This site's front door has ONE exterior (entry-facing) reader and exits are not credential-read
+>    (egress is IR REX, push-to-exit, thumbturn). So every credentialed `access.door.unlock` at the
+>    front door is by definition an ENTRY, and retract-on-entry and the interior cascade key on
+>    "front-door credential grant with result ACCESS" without needing the direction field at all.
+>    Direction only mattered for the abandoned exit-reader idea; it is no longer on the critical path.
+> The deadbolt LOCK is driven only by the deliberate lock-up gesture (Double-Badge Override or Lock
+> Now), so the one payload still to confirm is what that secured transition emits over the stream
+> (likely `access.door.lock`; capture to confirm, O-1). WebSocket mode remains the right transport
+> anyway: it carries the `ACCESS`/`BLOCKED` result and richer actor/target data, it should carry the
+> lock/secured event, and it avoids relying on the unsigned inbound `/webhook` surface.
 
 ### 4.2 Mapping table
 
@@ -187,7 +195,7 @@ drift check, because aggressive polling drains a battery lock. **[confirmed as b
 |---|---|---|---|---|
 | 1 | `access.door.unlock` at Front door | direction = `entry`, result = `ACCESS`, not self-triggered | Z-Wave: **unlock** (retract) the deadbolt | Latency-sensitive (section 4.3). Any authorized entry retracts. |
 | 2 | First-person-in at Front door | first authorized entry after arming, result = `ACCESS` | Z-Wave: **unlock** the deadbolt | No documented FPI event; **[verify on-site]** whether FPI is a distinct signal or simply the first `access.door.unlock`. Treat as behavior 1 until proven otherwise. |
-| 3 | `access.door.unlock` at Front door | direction = `exit`, result = `ACCESS`, not self-triggered | Z-Wave: **lock** the deadbolt | Any valid badge may lock (safe action). Depends on a credentialed exit signal existing (open question O-1). |
+| 3 | Deliberate lock-up gesture at Front door (Double-Badge Override, or Lock Now) | the front door transitions to **secured** (mag lock locked) | Z-Wave: **lock** the deadbolt | Exits are NOT credential-tracked. The only middleware lock trigger is the lock-up gesture; the Schlage physical button and its auto-lock timer are the real backstop. What event this emits over the WebSocket is the key capture (O-1). |
 | 4 | `access.door.unlock` at Front door | direction = `entry`, result = `ACCESS`, passes debounce and scope | UniFi: momentary **unlock** of the Interior door via `PUT /doors/:id/unlock` | Fires only on entry, never on exit. Debounced (section 5). |
 | - | Any event carrying the self-trigger marker or actor `unifi-access-orchestrator` | - | **Ignore** | Reuses existing `isSelfTriggered` (`src/rules-engine.js:729-741`); the middleware's own interior unlock must not loop. |
 | - | result = `BLOCKED`, or direction unknown, or door != Front | - | **No action**, log at info | Fail-safe: never actuate on a denied or ambiguous event. |
@@ -460,14 +468,15 @@ state. Verify the thumbturn-retracts-bolt behavior physically during commissioni
 
 ## 12. Risks and open questions
 
-- **O-1: confirm how a credentialed EXIT is produced at the front door.** The site design resolves the
-  intent: lock-on-exit keys on an exit-direction reader `ACCESS` event, with the Schlage physical lock
-  button and its auto-lock timer as the real backstop, so middleware lock-on-exit is a convenience, not
-  load-bearing. What remains is a bench/site capture: the door has one exterior reader plus IR REX,
-  push-to-exit, and a thumbturn, and egress needs no badge, so confirm whether you set that single
-  reader to Exit direction or add a paired reader, and capture the actual exit event (type, direction
-  field, result) before wiring behavior 3. If no credentialed exit is produced, the deadbolt
-  auto-lock and button already cover locking and behavior 3 is simply omitted.
+- **O-1: confirm what the lock-up gesture emits over the WebSocket.** Decision made: exits are not
+  credential-tracked; the only middleware deadbolt-lock trigger is the deliberate lock-up gesture
+  (Double-Badge Override at the reader, or Lock Now from the app), and the Schlage physical button plus
+  its auto-lock timer are the always-on backstop. So there is no exit-direction reader. The single
+  remaining capture is: what event does that secured transition (Double-Badge Override / Lock Now /
+  schedule end) produce on the notifications stream (does UniFi emit `access.door.lock` or a
+  notification, and what is its shape)? That event is the deadbolt-lock trigger. The capture mode
+  built in Phase 1 makes this a one-gesture check; if UniFi emits nothing usable, the deadbolt still
+  self-secures via its auto-lock timer and physical button, and middleware lock-on-gesture is omitted.
 - **O-2: the middleware-dependent entry path is scoped and backstopped; keep it that way.** The
   deadbolt is thrown only when the suite is unoccupied, so the dependency is limited to
   unoccupied-arrival entry, and the site design keeps the Schlage keypad code as the documented manual
