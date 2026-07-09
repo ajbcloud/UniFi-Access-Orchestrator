@@ -45,6 +45,11 @@ class FakeLock extends LockDriver {
     return this._snapshot();
   }
 
+  /** Synchronous snapshot (mirrors ZwaveLock.snapshot for getStatus callers). */
+  snapshot() {
+    return this._snapshot();
+  }
+
   async _apply(target, action, reason) {
     this.calls.push({ action, reason: reason || null });
     if (this.behavior.offline) {

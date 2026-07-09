@@ -31,6 +31,10 @@ const Resolver = require('./resolver');
 const RulesEngine = require('./rules-engine');
 const { createBackup, listBackups, restoreBackup, pruneBackups } = require('./backup');
 const ConfigSync = require('./config-sync');
+const CaptureSession = require('./capture');
+const DeadboltController = require('./deadbolt-controller');
+const FakeLock = require('./drivers/fake-lock');
+const { ZwaveLock } = require('./drivers/zwave-lock');
 const APP_VERSION = require('../package.json').version;
 
 // ---------------------------------------------------------------------------
@@ -55,6 +59,57 @@ let unifiClient = new UniFiClient(config);
 let resolver = new Resolver(config, unifiClient);
 let rulesEngine = new RulesEngine(config, unifiClient, resolver);
 let configSync = null;  // initialized in start() once Express + UniFi client are up
+
+// ---------------------------------------------------------------------------
+// Smart-deadbolt add-on (Phase 2). Entirely inert unless deadbolt_rules or
+// cascade_rules are configured, so existing deployments are unaffected.
+// ---------------------------------------------------------------------------
+const captureDir = process.env.CAPTURE_DIR || path.join(path.dirname(CONFIG_PATH), 'captures');
+const capture = new CaptureSession({ dir: captureDir });
+let lockDriver = null;
+let deadboltController = null;
+
+function buildDeadbolt() {
+  const dbCfg = config.deadbolt_rules;
+  const cascCfg = config.cascade_rules;
+  if (!dbCfg && !cascCfg) return; // add-on not configured
+  const zw = config.devices && config.devices.zwave;
+  if (dbCfg) {
+    if (zw && zw.enabled) {
+      const locks = zw.locks || {};
+      const lockId = dbCfg.lock_id || Object.keys(locks)[0];
+      const lockCfg = Object.assign(
+        { serial_path: zw.serial_path, cache_dir: zw.cache_dir },
+        locks[lockId] || {}
+      );
+      lockDriver = new ZwaveLock(lockCfg, { logger });
+    } else {
+      lockDriver = new FakeLock({ initial: 'locked' });
+      logger.warn('Deadbolt configured but devices.zwave.enabled is not true — using in-memory FakeLock (dev/dry-run).');
+    }
+  }
+  deadboltController = new DeadboltController(config, {
+    lockDriver,
+    getUnifiClient: () => unifiClient,
+    broadcaster: broadcastEvent,
+    logger,
+    onAlert: (a) => logger.warn(`ALERT ${a.type}: ${JSON.stringify(a)}`), // TODO: outbound notifier
+  });
+  logger.info(`Deadbolt add-on active (lock driver: ${lockDriver ? lockDriver.constructor.name : 'none'}, cascade rules: ${deadboltController.cascadeRules.length})`);
+}
+
+// Route every raw UniFi event to the capture recorder and the deadbolt
+// controller. Re-applied whenever the UniFi client is rebuilt (reload).
+function applyEventTaps() {
+  if (unifiClient && typeof unifiClient.setRawTap === 'function') {
+    unifiClient.setRawTap((e) => {
+      capture.add(e);
+      if (deadboltController) {
+        try { deadboltController.observe(e); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
+      }
+    });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Event history + SSE clients
@@ -249,6 +304,10 @@ app.post('/webhook', async (req, res) => {
   logger.debug(`Webhook payload: ${JSON.stringify(payload).substring(0, 500)}`);
   lastEventTime = Date.now();
   storeRawPayload('webhook', payload);
+  capture.add(payload);
+  if (deadboltController) {
+    try { deadboltController.observe(payload); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
+  }
 
   try {
     await rulesEngine.handleEvent(payload);
@@ -272,6 +331,8 @@ app.get('/health', (req, res) => {
     unifi: unifiClient.getStatus(),
     engine: rulesEngine.getStats(),
     auto_sync: configSync ? configSync.getState() : { enabled: false, interval_seconds: 0, last_run_at: null, last_change_detected_at: null, last_error: null },
+    deadbolt: deadboltController ? deadboltController.getStatus() : { enabled: false },
+    capture: capture.status(),
     memory_mb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 10) / 10
   });
 });
@@ -282,6 +343,38 @@ app.get('/health', (req, res) => {
 
 app.get('/api/debug/payloads', (req, res) => {
   res.json({ payloads: rawPayloads, count: rawPayloads.length });
+});
+
+// ---------------------------------------------------------------------------
+// Smart-deadbolt add-on endpoints (admin-gated via the /api middleware)
+// ---------------------------------------------------------------------------
+
+// Live deadbolt + lock state for the dashboard.
+app.get('/api/devices', async (req, res) => {
+  if (!deadboltController) return res.json({ enabled: false, devices: [] });
+  const status = deadboltController.getStatus();
+  let liveState = status.lock;
+  if (lockDriver && typeof lockDriver.getState === 'function') {
+    try { liveState = await lockDriver.getState(); } catch (e) { /* fall back to snapshot */ }
+  }
+  res.json({ enabled: true, deadbolt: status, lock_state: liveState });
+});
+
+// Labeled event capture: pin down undocumented payload shapes on-site.
+// Start a capture, perform ONE gesture (e.g. a Double-Badge Override), stop,
+// then GET the recorded events. Records ALL raw events, including telemetry.
+app.post('/api/capture/start', (req, res) => {
+  res.json(capture.start((req.body && req.body.label) || 'capture'));
+});
+app.post('/api/capture/stop', (req, res) => {
+  res.json(capture.stop());
+});
+app.post('/api/capture/label', (req, res) => {
+  res.json(capture.setLabel(req.body && req.body.label));
+});
+app.get('/api/capture', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
+  res.json({ status: capture.status(), events: capture.list(limit) });
 });
 
 // ---------------------------------------------------------------------------
@@ -1390,6 +1483,12 @@ async function reloadServices(newConfig) {
     rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
     patchEngineForBroadcast(rulesEngine);
     config = newConfig;
+    applyEventTaps(); // re-attach capture + deadbolt observers to the new client
+
+    // Note: the deadbolt lock driver and controller rules are intentionally NOT
+    // rebuilt here (avoids reconnecting the Z-Wave stick). The cascade tracks the
+    // new client via its getUnifiClient closure; deadbolt/cascade RULE changes
+    // require a service restart.
 
     const initOk = await unifiClient.initialize();
     if (initOk) {
@@ -1487,6 +1586,19 @@ async function start() {
   setInterval(runScheduledBackupCheck, CHECK_INTERVAL_MS);
   logger.info(`Config backup schedule: every ${backupIntervalDays} days (checked on startup + daily)`);
 
+  // Bring up the smart-deadbolt add-on (inert unless configured), then tap the
+  // event stream before the event source connects.
+  buildDeadbolt();
+  if (lockDriver) {
+    try {
+      await lockDriver.init();
+      logger.info('Deadbolt lock driver initialized');
+    } catch (err) {
+      logger.error(`Deadbolt lock driver init failed: ${err.message}. Deadbolt actions unavailable; cascade unlock is unaffected.`);
+    }
+  }
+  applyEventTaps();
+
   startEventSource();
   startWatchdog();
 
@@ -1553,8 +1665,8 @@ module.exports = { start, app, setWatchdogRestartCallback };
 // If run directly (node src/index.js), start immediately
 // If required by Electron, it will call start() when ready
 if (require.main === module) {
-  process.on('SIGTERM', () => { logger.info('SIGTERM'); if (configSync) configSync.stop(); unifiClient.shutdown(); process.exit(0); });
-  process.on('SIGINT', () => { logger.info('SIGINT'); if (configSync) configSync.stop(); unifiClient.shutdown(); process.exit(0); });
+  process.on('SIGTERM', () => { logger.info('SIGTERM'); if (configSync) configSync.stop(); if (lockDriver) lockDriver.shutdown(); unifiClient.shutdown(); process.exit(0); });
+  process.on('SIGINT', () => { logger.info('SIGINT'); if (configSync) configSync.stop(); if (lockDriver) lockDriver.shutdown(); unifiClient.shutdown(); process.exit(0); });
   process.on('uncaughtException', (err) => { logger.error(`Uncaught: ${err.message}\n${err.stack}`); });
   process.on('unhandledRejection', (reason) => { logger.error(`Unhandled rejection: ${reason}`); });
 
