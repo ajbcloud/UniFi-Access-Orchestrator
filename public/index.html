@@ -1532,6 +1532,7 @@ async function loadConfig() {
     renderZwaveSetup();
     loadSerialPorts();
     refreshZwaveDeadbolt();
+    renderDeadboltRules();
     populateSimForm();
     renderTestRules();
   } catch (e) {
@@ -1930,6 +1931,11 @@ function renderZwaveSetup() {
       <div id="zwavePairPanel" style="margin-top:10px"></div>
       <div id="zwaveDeadboltLive" style="margin-top:10px"></div>
     </div>
+
+    <div id="zwaveRulesBlock" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);display:none">
+      <div style="font-size:13px;font-weight:600;margin-bottom:6px">Deadbolt Automation</div>
+      <div id="zwaveRulesBody"></div>
+    </div>
   `;
 }
 
@@ -2092,6 +2098,141 @@ async function deadboltControl(action) {
     else toast(`Deadbolt ${action} failed: ${r.error || 'not verified'}`, 'error');
     refreshZwaveDeadbolt();
   } catch (e) { toast(`Control failed: ${e.message}`, 'error'); }
+}
+
+// ------------------------------------------------------------
+// Deadbolt automation rules (retract trigger + interior cascade).
+// Edits apply live: the server rebuilds the deadbolt controller on
+// save without touching the Z-Wave connection.
+// ------------------------------------------------------------
+
+function _getCascadeRules() {
+  return (configData?.cascade_rules?.rules || []).slice();
+}
+
+function renderDeadboltRules() {
+  const block = document.getElementById('zwaveRulesBlock');
+  const body = document.getElementById('zwaveRulesBody');
+  if (!block || !body) return;
+  const zwEnabled = configData?.devices?.zwave?.enabled === true;
+  const hasRules = !!(configData?.deadbolt_rules || configData?.cascade_rules);
+  if (!zwEnabled && !hasRules) { block.style.display = 'none'; return; }
+  block.style.display = '';
+
+  const trigger = configData?.deadbolt_rules?.trigger_door || '';
+  const rules = _getCascadeRules();
+
+  let html = `
+    <div style="margin-bottom:14px">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">
+        Retract on entry: when someone badges in at this door, the deadbolt retracts.
+        Leave unset to disable automatic retract.
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="deadboltTriggerDoor" style="min-width:220px;font-size:12px;padding:6px">
+          <option value="">-- No retract trigger --</option>
+          ${_doorOptions(trigger)}
+        </select>
+        <button class="btn btn-sm btn-primary" onclick="saveDeadboltTrigger()">Save Trigger</button>
+      </div>
+    </div>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">
+      Interior cascade: when an entry is granted at the trigger door, momentarily unlock these interior doors (UniFi unlock only, never a lock command).
+    </div>
+  `;
+
+  if (rules.length === 0) {
+    html += `<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">No cascade rules configured.</div>`;
+  } else {
+    rules.forEach((rule, idx) => {
+      html += `<div class="rule-card">
+        <div class="rule-actions">
+          <button class="delete" onclick="deleteCascadeRule(${idx})">Delete</button>
+        </div>
+        <div class="rule-sentence">
+          When <strong>${escapeHtml(rule.trigger_door)}</strong> grants entry, unlock
+          <span class="rule-doors-list">${escapeHtml((rule.unlock || []).join(', '))}</span>
+          <span style="font-size:11px;color:var(--text-muted)">(debounce ${escapeHtml(rule.debounce_seconds != null ? rule.debounce_seconds : 8)}s)</span>
+        </div>
+      </div>`;
+    });
+  }
+
+  html += `<div id="cascadeRuleFormContainer"></div>
+    <button class="btn btn-sm btn-secondary" onclick="showCascadeRuleForm()" style="margin-top:8px">Add Cascade Rule</button>`;
+  body.innerHTML = html;
+}
+
+function showCascadeRuleForm() {
+  const container = document.getElementById('cascadeRuleFormContainer');
+  if (!container) return;
+  const doors = doorsData?.discovered || doorsData?.configured || {};
+  const doorNames = Object.keys(doors).filter(d => !d.startsWith('_'));
+  const checkboxes = doorNames.map(n =>
+    `<label style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:12px">
+      <input type="checkbox" class="cascade-unlock-door" value="${escapeHtml(n)}"> ${escapeHtml(n)}
+    </label>`
+  ).join('');
+  container.innerHTML = `<div class="rule-form">
+    <div style="margin-bottom:8px">
+      <label class="form-label">Trigger door (entry granted here)</label>
+      <select id="cascadeTriggerDoor" style="font-size:12px;padding:6px">${_doorOptions('')}</select>
+    </div>
+    <div style="margin-bottom:8px">
+      <label class="form-label">Unlock these doors</label>
+      <div>${checkboxes || '<span style="font-size:12px;color:var(--text-muted)">No doors discovered yet.</span>'}</div>
+    </div>
+    <div style="margin-bottom:8px">
+      <label class="form-label">Debounce (seconds)</label>
+      <input type="number" id="cascadeDebounce" value="8" min="0" max="600" style="width:90px;font-size:12px;padding:6px">
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm btn-primary" onclick="saveCascadeRule()">Save Rule</button>
+      <button class="btn btn-sm btn-secondary" onclick="document.getElementById('cascadeRuleFormContainer').innerHTML=''">Cancel</button>
+    </div>
+  </div>`;
+}
+
+async function saveCascadeRule() {
+  const trigger = document.getElementById('cascadeTriggerDoor')?.value || '';
+  const unlock = Array.from(document.querySelectorAll('.cascade-unlock-door:checked')).map(c => c.value);
+  const debounce = parseInt(document.getElementById('cascadeDebounce')?.value, 10);
+  if (!trigger) { toast('Pick a trigger door', 'error'); return; }
+  if (unlock.length === 0) { toast('Pick at least one door to unlock', 'error'); return; }
+  const rules = _getCascadeRules();
+  rules.push({ trigger_door: trigger, unlock, debounce_seconds: Number.isFinite(debounce) ? debounce : 8 });
+  try {
+    await api('PUT', '/api/config', { cascade_rules: { rules } });
+    toast('Cascade rule saved (applies immediately)', 'success');
+    await loadConfig();
+  } catch (e) { toast(`Failed to save: ${e.message}`, 'error'); }
+}
+
+async function deleteCascadeRule(idx) {
+  const rules = _getCascadeRules();
+  const rule = rules[idx];
+  if (!rule) return;
+  if (!confirm(`Remove the cascade rule for "${rule.trigger_door}"?`)) return;
+  rules.splice(idx, 1);
+  try {
+    await api('PUT', '/api/config', { cascade_rules: { rules } });
+    toast('Cascade rule removed', 'success');
+    await loadConfig();
+  } catch (e) { toast(`Failed to save: ${e.message}`, 'error'); }
+}
+
+async function saveDeadboltTrigger() {
+  const door = document.getElementById('deadboltTriggerDoor')?.value || '';
+  const db = Object.assign({}, configData?.deadbolt_rules || {});
+  // The server deep-merges, so clearing must send an explicit empty string
+  // (an absent key would leave the old trigger in place). An empty trigger
+  // never matches a door, which disables the retract.
+  db.trigger_door = door;
+  try {
+    await api('PUT', '/api/config', { deadbolt_rules: db });
+    toast(door ? `Deadbolt retracts on entry at "${door}"` : 'Retract trigger disabled', 'success');
+    await loadConfig();
+  } catch (e) { toast(`Failed to save: ${e.message}`, 'error'); }
 }
 
 async function loadSerialPorts() {

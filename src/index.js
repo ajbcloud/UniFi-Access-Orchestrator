@@ -39,6 +39,7 @@ const { ZwaveLock } = require('./drivers/zwave-lock');
 const { ZwaveManager } = require('./drivers/zwave-manager');
 const { ZwavePairing } = require('./drivers/zwave-pairing');
 const { loadSecurityKeys, ensureSecurityKeys } = require('./drivers/zwave-keys');
+const { SustainedFlagMonitor } = require('./alert-monitors');
 const {
   redactSecrets,
   stripRedactedPlaceholders,
@@ -144,6 +145,42 @@ const zwavePairing = new ZwavePairing({
     await bringDeadboltOnline();
     logger.info(`Z-Wave: lock (node ${nodeId}) unpaired; deadbolt disabled until a lock is paired again`);
   },
+});
+
+// Sustained-outage alerting (delivery is still gated by alerts.enabled and the
+// alerts.on allowlist inside the notifier). A brief blip never alerts: the
+// condition must be continuously down for the grace period. Checks return
+// null when not applicable (no lock paired / not in websocket mode), which
+// resets the monitor silently. Started in start(); the timers are unref'd.
+function monitorAlert(type, detail) {
+  logger.warn(`ALERT ${type}: ${detail}`);
+  notifier.notify({ type, detail });
+  broadcastEvent({ type: `alert.${type}`, actor: 'Monitor', location: '-', action: detail, success: false });
+}
+const lockLinkMonitor = new SustainedFlagMonitor({
+  name: 'deadbolt-link',
+  logger,
+  graceSeconds: (config.alerts && config.alerts.offline_grace_seconds) || 60,
+  check: () => {
+    if (!lockDriver || typeof lockDriver.snapshot !== 'function') return null;
+    return !!lockDriver.snapshot().online;
+  },
+  onDown: (s) => monitorAlert('deadbolt_lock_offline', `deadbolt link down for ${s}s (stick unplugged, lock unreachable, or driver error)`),
+  onUp: (s) => monitorAlert('deadbolt_lock_online', `deadbolt link restored after ${s}s offline`),
+});
+const controllerLinkMonitor = new SustainedFlagMonitor({
+  name: 'controller-link',
+  logger,
+  graceSeconds: (config.alerts && config.alerts.offline_grace_seconds) || 60,
+  check: () => {
+    if ((config.event_source && config.event_source.mode) !== 'websocket') return null;
+    if (!unifiClient || typeof unifiClient.getStatus !== 'function') return null;
+    const st = unifiClient.getStatus();
+    if (!st || st.websocket_connected === undefined) return null;
+    return !!st.websocket_connected;
+  },
+  onDown: (s) => monitorAlert('controller_disconnected', `UniFi WebSocket down for ${s}s: no access events are arriving, so the deadbolt will not react to entries`),
+  onUp: (s) => monitorAlert('controller_reconnected', `UniFi WebSocket restored after ${s}s down`),
 });
 
 function buildDeadbolt() {
@@ -1282,7 +1319,7 @@ app.put('/api/config', async (req, res) => {
     }
 
     // Deep merge updates (only allow specific safe keys)
-    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog', 'auto_lock', 'auto_sync', 'devices'];
+    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog', 'auto_lock', 'auto_sync', 'devices', 'deadbolt_rules', 'cascade_rules', 'alerts'];
 
     // recursive merge for plain objects: source values override primitives/arrays
     function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
@@ -1930,10 +1967,41 @@ async function reloadOrchestrator({
   }
 }
 
+// Apply deadbolt_rules / cascade_rules edits live, REUSING the running lock
+// driver (no Z-Wave reconnect). Called from reloadServices when the rules
+// signature changed. Removing all rules detaches the controller; adding rules
+// when a paired lock exists but no driver was built yet takes the full
+// activation path (safe: the driver is not running, so nothing reconnects).
+async function maybeRebuildDeadboltRules(oldSig) {
+  const newSig = JSON.stringify([config.deadbolt_rules, config.cascade_rules]);
+  if (newSig === oldSig) return;
+  if (!config.deadbolt_rules && !config.cascade_rules) {
+    deadboltController = null;
+    applyEventTaps();
+    logger.info('Deadbolt rules removed: controller detached (lock driver untouched)');
+    return;
+  }
+  const zw = config.devices && config.devices.zwave;
+  if (!lockDriver && config.deadbolt_rules && zw && zw.enabled) {
+    await bringDeadboltOnline();
+    return;
+  }
+  deadboltController = new DeadboltController(config, {
+    lockDriver,
+    getUnifiClient: () => unifiClient,
+    broadcaster: broadcastEvent,
+    logger,
+    onAlert: (a) => { logger.warn(`ALERT ${a.type}: ${JSON.stringify(a)}`); notifier.notify(a); },
+  });
+  applyEventTaps();
+  logger.info(`Deadbolt rules updated live (cascade rules: ${deadboltController.cascadeRules.length}); lock driver untouched`);
+}
+
 async function reloadServices(newConfig) {
   const settingsChanged = controllerOrSourceChanged(config, newConfig);
   const degraded = isEventSourceDegraded();
   const fullReload = settingsChanged || degraded;
+  const oldRulesSig = JSON.stringify([config.deadbolt_rules, config.cascade_rules]);
 
   if (degraded && !settingsChanged) {
     logger.info('Reload: event source is degraded — escalating to full reconnect');
@@ -1950,12 +2018,13 @@ async function reloadServices(newConfig) {
     notifier = new Notifier(config.alerts || {}, { logger }); // pick up alert config changes
     applyEventTaps(); // re-attach capture + deadbolt observers to the new client
 
-    // Note: the deadbolt lock driver and controller rules are intentionally NOT
-    // rebuilt here (avoids reconnecting the Z-Wave stick). The cascade tracks the
-    // new client via its getUnifiClient closure; deadbolt/cascade RULE changes
-    // require a service restart. The shared zwaveManager and zwavePairing
-    // session likewise live outside this function by design, so a config
-    // reload can never tear down the driver or a pairing session mid-flight.
+    // Note: the deadbolt LOCK DRIVER is intentionally not rebuilt here (that
+    // would reconnect the Z-Wave stick); rule changes rebuild only the
+    // controller via maybeRebuildDeadboltRules below. The shared zwaveManager
+    // and zwavePairing session likewise live outside this function by design,
+    // so a config reload can never tear down the driver or a pairing session
+    // mid-flight.
+    await maybeRebuildDeadboltRules(oldRulesSig);
 
     const initOk = await unifiClient.initialize();
     if (initOk) {
@@ -1985,8 +2054,11 @@ async function reloadServices(newConfig) {
   resolver = new Resolver(newConfig, unifiClient);
   rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
   patchEngineForBroadcast(rulesEngine);
+  const alertsChanged = JSON.stringify(config.alerts || {}) !== JSON.stringify(newConfig.alerts || {});
   config = newConfig;
+  if (alertsChanged) notifier = new Notifier(config.alerts || {}, { logger }); // alert edits apply without a full reload
   startWatchdog();
+  await maybeRebuildDeadboltRules(oldRulesSig);
 
   if (mappingChanged) {
     // Re-sync in the background so the mapping takes effect immediately
@@ -2077,6 +2149,11 @@ async function start() {
 
   startEventSource();
   startWatchdog();
+
+  // Sustained-outage monitors (lock link + controller WebSocket). Checks
+  // no-op when not applicable; the notifier gates actual delivery.
+  lockLinkMonitor.start();
+  controllerLinkMonitor.start();
 
   // Start the periodic Config Sync job. Detects local config.json edits
   // and upstream UniFi controller drift (door/user/group changes) and
