@@ -127,6 +127,28 @@ test('validateConfigUpdates checks security_keys shape', () => {
   assert.strictEqual(validateConfigUpdates({ devices: { zwave: { security_keys: { s0_legacy: 42 } } } }).ok, false);
 });
 
+test('validateConfigUpdates checks cascade_rules shape', () => {
+  const good = { cascade_rules: { rules: [{ trigger_door: 'Front Door', unlock: ['Interior Door'], debounce_seconds: 8 }] } };
+  assert.strictEqual(validateConfigUpdates(good).ok, true);
+  assert.strictEqual(validateConfigUpdates({ cascade_rules: { rules: [{ trigger_door: 'Front Door', unlock: ['A'] }] } }).ok, true); // debounce optional
+  assert.strictEqual(validateConfigUpdates({ cascade_rules: [] }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ cascade_rules: { rules: 'nope' } }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ cascade_rules: { rules: [{ unlock: ['A'] }] } }).ok, false); // no trigger_door
+  assert.strictEqual(validateConfigUpdates({ cascade_rules: { rules: [{ trigger_door: '', unlock: ['A'] }] } }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ cascade_rules: { rules: [{ trigger_door: 'F', unlock: 'A' }] } }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ cascade_rules: { rules: [{ trigger_door: 'F', unlock: [], debounce_seconds: -1 }] } }).ok, false);
+});
+
+test('validateConfigUpdates checks deadbolt_rules and alerts shapes', () => {
+  assert.strictEqual(validateConfigUpdates({ deadbolt_rules: { lock_id: 'front_deadbolt', trigger_door: 'Front Door', relock_cooldown_seconds: 10 } }).ok, true);
+  assert.strictEqual(validateConfigUpdates({ deadbolt_rules: { trigger_door: '' } }).ok, true); // empty disables retract
+  assert.strictEqual(validateConfigUpdates({ deadbolt_rules: 'nope' }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ deadbolt_rules: { relock_cooldown_seconds: -5 } }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ alerts: { enabled: true, webhook_url: 'http://x', on: ['cascade_failed'] } }).ok, true);
+  assert.strictEqual(validateConfigUpdates({ alerts: { enabled: 'yes' } }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ alerts: { on: 'all' } }).ok, false);
+});
+
 test('validateConfigUpdates checks the devices.zwave shape', () => {
   assert.strictEqual(validateConfigUpdates({
     devices: { zwave: { enabled: true, serial_path: 'COM3', locks: { front_deadbolt: { node_id: 2 } } } },
