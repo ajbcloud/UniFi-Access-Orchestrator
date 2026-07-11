@@ -95,6 +95,15 @@
   "alerts": {
     "enabled": false,
     "webhook_url": "",
-    "on": ["deadbolt_retract_failed", "deadbolt_lock_failed", "cascade_failed"]
+    "offline_grace_seconds": 60,
+    "on": [
+      "deadbolt_retract_failed",
+      "deadbolt_lock_failed",
+      "cascade_failed",
+      "deadbolt_lock_offline",
+      "deadbolt_lock_online",
+      "controller_disconnected",
+      "controller_reconnected"
+    ]
   }
 }

@@ -111,6 +111,40 @@ function validateConfigUpdates(updates) {
     }
   }
 
+  if (updates.cascade_rules !== undefined) {
+    const cr = updates.cascade_rules;
+    if (!isPlainObject(cr)) return { ok: false, error: 'cascade_rules must be an object' };
+    if (cr.rules !== undefined) {
+      if (!Array.isArray(cr.rules)) return { ok: false, error: 'cascade_rules.rules must be an array' };
+      for (const [i, r] of cr.rules.entries()) {
+        if (!isPlainObject(r)) return { ok: false, error: `cascade_rules.rules[${i}] must be an object` };
+        if (typeof r.trigger_door !== 'string' || r.trigger_door.length === 0) return { ok: false, error: `cascade_rules.rules[${i}].trigger_door must be a non-empty string` };
+        if (!Array.isArray(r.unlock)) return { ok: false, error: `cascade_rules.rules[${i}].unlock must be an array of door names` };
+        if (r.debounce_seconds !== undefined && (typeof r.debounce_seconds !== 'number' || r.debounce_seconds < 0)) {
+          return { ok: false, error: `cascade_rules.rules[${i}].debounce_seconds must be a non-negative number` };
+        }
+      }
+    }
+  }
+
+  if (updates.deadbolt_rules !== undefined) {
+    const db = updates.deadbolt_rules;
+    if (!isPlainObject(db)) return { ok: false, error: 'deadbolt_rules must be an object' };
+    if (db.lock_id !== undefined && typeof db.lock_id !== 'string') return { ok: false, error: 'deadbolt_rules.lock_id must be a string' };
+    if (db.trigger_door !== undefined && typeof db.trigger_door !== 'string') return { ok: false, error: 'deadbolt_rules.trigger_door must be a string' };
+    if (db.relock_cooldown_seconds !== undefined && (typeof db.relock_cooldown_seconds !== 'number' || db.relock_cooldown_seconds < 0)) {
+      return { ok: false, error: 'deadbolt_rules.relock_cooldown_seconds must be a non-negative number' };
+    }
+  }
+
+  if (updates.alerts !== undefined) {
+    const al = updates.alerts;
+    if (!isPlainObject(al)) return { ok: false, error: 'alerts must be an object' };
+    if (al.enabled !== undefined && typeof al.enabled !== 'boolean') return { ok: false, error: 'alerts.enabled must be a boolean' };
+    if (al.webhook_url !== undefined && typeof al.webhook_url !== 'string') return { ok: false, error: 'alerts.webhook_url must be a string' };
+    if (al.on !== undefined && !Array.isArray(al.on)) return { ok: false, error: 'alerts.on must be an array' };
+  }
+
   if (updates.devices !== undefined) {
     if (!isPlainObject(updates.devices)) return { ok: false, error: 'devices must be an object' };
     const zw = updates.devices.zwave;

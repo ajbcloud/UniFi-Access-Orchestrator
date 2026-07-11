@@ -243,9 +243,10 @@ Site (Suite 105), WebSocket mode:
 
 ## 9. Known caveats
 
-- Deadbolt/cascade RULE changes require a service restart (a config reload
-  re-taps events and keeps the persistent lock connection but does not rebuild
-  the controller's rules). Controller/UniFi settings reload as before.
+- Deadbolt/cascade RULE changes now apply live: a config reload rebuilds the
+  deadbolt controller while REUSING the running lock driver (no Z-Wave
+  reconnect). The dashboard's Deadbolt Automation editor uses this path.
+  Changing devices.zwave (port, node) still goes through pairing or a restart.
 - The Z-Wave adapter's zwave-js API calls are written to the documented API but
   have not run against the live package; verify the option/method names for the
   pinned version (section 6.1) during bring-up.
