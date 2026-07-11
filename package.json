@@ -40,6 +40,13 @@
         "to": "config/config.example.json"
       }
     ],
+    "asarUnpack": [
+      "node_modules/@serialport/**",
+      "node_modules/@zwave-js/**",
+      "node_modules/zwave-js/**",
+      "**/*.node"
+    ],
+    "npmRebuild": true,
     "win": {
       "target": [
         "nsis"
@@ -99,5 +106,8 @@
   "devDependencies": {
     "electron": "43.1.0",
     "electron-builder": "26.15.3"
+  },
+  "optionalDependencies": {
+    "zwave-js": "15.25.3"
   }
 }

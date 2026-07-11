@@ -111,6 +111,17 @@ function validateConfigUpdates(updates) {
     }
   }
 
+  if (updates.devices !== undefined) {
+    if (!isPlainObject(updates.devices)) return { ok: false, error: 'devices must be an object' };
+    const zw = updates.devices.zwave;
+    if (zw !== undefined) {
+      if (!isPlainObject(zw)) return { ok: false, error: 'devices.zwave must be an object' };
+      if (zw.enabled !== undefined && typeof zw.enabled !== 'boolean') return { ok: false, error: 'devices.zwave.enabled must be a boolean' };
+      if (zw.serial_path !== undefined && typeof zw.serial_path !== 'string') return { ok: false, error: 'devices.zwave.serial_path must be a string' };
+      if (zw.locks !== undefined && !isPlainObject(zw.locks)) return { ok: false, error: 'devices.zwave.locks must be an object' };
+    }
+  }
+
   return { ok: true };
 }
 

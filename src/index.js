@@ -531,6 +531,37 @@ app.get('/api/devices', async (req, res) => {
   res.json({ enabled: true, deadbolt: status, lock_state: liveState });
 });
 
+// Serial-port discovery so the dashboard can offer a COM-port picker for the
+// Z-Wave stick. serialport ships with the bundled zwave-js; lazy-require it so
+// an install without the optional dependency (or a failed native build)
+// degrades to available:false instead of breaking the API.
+app.get('/api/deadbolt/serial-ports', async (req, res) => {
+  let SerialPort;
+  try {
+    ({ SerialPort } = require('serialport')); // eslint-disable-line global-require
+  } catch (err) {
+    return res.json({ available: false, ports: [], error: 'Z-Wave support is not installed in this build' });
+  }
+  try {
+    const ports = await SerialPort.list();
+    res.json({
+      available: true,
+      ports: ports.map((p) => ({
+        path: p.path,
+        manufacturer: p.manufacturer || null,
+        serial_number: p.serialNumber || null,
+        pnp_id: p.pnpId || null,
+        vendor_id: p.vendorId || null,
+        product_id: p.productId || null,
+        // Zooz ZST39 LR enumerates as a Silicon Labs CP210x (VID 10c4).
+        likely_zwave: /10c4/i.test(p.vendorId || '') || /silicon|cp210/i.test(`${p.manufacturer || ''} ${p.pnpId || ''}`),
+      })),
+    });
+  } catch (err) {
+    res.json({ available: true, ports: [], error: err.message });
+  }
+});
+
 // Labeled event capture: pin down undocumented payload shapes on-site.
 // Start a capture, perform ONE gesture (e.g. a Double-Badge Override), stop,
 // then GET the recorded events. Records ALL raw events, including telemetry.
@@ -1028,7 +1059,7 @@ app.put('/api/config', async (req, res) => {
     }
 
     // Deep merge updates (only allow specific safe keys)
-    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog', 'auto_lock', 'auto_sync'];
+    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog', 'auto_lock', 'auto_sync', 'devices'];
 
     // recursive merge for plain objects: source values override primitives/arrays
     function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }

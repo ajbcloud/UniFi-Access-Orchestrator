@@ -942,6 +942,14 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <div class="config-header">Event Source</div>
       <div class="config-body" id="configEventSource">Loading...</div>
     </div>
+
+    <div class="config-section">
+      <div class="config-header">
+        Smart Deadbolt (Z-Wave)
+        <button class="btn btn-sm btn-secondary" onclick="loadSerialPorts()">Refresh Ports</button>
+      </div>
+      <div class="config-body" id="configZwave">Loading...</div>
+    </div>
   </div>
 
     <!-- SETTINGS -->
@@ -1518,6 +1526,11 @@ async function loadConfig() {
       api('GET', '/api/groups/discovered').catch(() => ({ groups: [] }))
     ]);
     renderConfig();
+    // Rendered here (not inside renderConfig) because renderConfig returns
+    // early when no users are synced yet, and the Z-Wave transport setup must
+    // be reachable on a fresh install.
+    renderZwaveSetup();
+    loadSerialPorts();
     populateSimForm();
     renderTestRules();
   } catch (e) {
@@ -1882,6 +1895,88 @@ function renderConfig() {
     <button class="btn btn-primary" onclick="saveEventSource()" style="margin-top:12px">Save Event Source</button>
   `;
   document.getElementById('configEventSource').innerHTML = eventSourceHtml;
+}
+
+// Smart Deadbolt (Z-Wave) setup: pick the stick's serial/COM port and enable
+// the transport. Ports load from /api/deadbolt/serial-ports; the selection is
+// saved into devices.zwave via PUT /api/config. Pairing itself arrives in a
+// later phase; this section only prepares the transport.
+function renderZwaveSetup() {
+  const el = document.getElementById('configZwave');
+  if (!el) return;
+  const zw = configData?.devices?.zwave || {};
+  const enabled = zw.enabled === true;
+  el.innerHTML = `
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+      Plug the Z-Wave USB stick (e.g. Zooz ZST39) into this machine, pick its port below, and save.
+      Likely Z-Wave sticks are marked. Lock pairing is done after the port is set.
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select id="zwaveSerialPort" style="min-width:280px;font-size:12px;padding:6px">
+        <option value="">Scanning ports...</option>
+      </select>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+        <input type="checkbox" id="zwaveEnabled" ${enabled ? 'checked' : ''}> Enable Z-Wave deadbolt
+      </label>
+      <button class="btn btn-sm btn-primary" onclick="saveZwaveSetup()">Save</button>
+    </div>
+    <div id="zwaveSetupStatus" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
+  `;
+}
+
+async function loadSerialPorts() {
+  const sel = document.getElementById('zwaveSerialPort');
+  const status = document.getElementById('zwaveSetupStatus');
+  if (!sel) return;
+  try {
+    const r = await api('GET', '/api/deadbolt/serial-ports');
+    const saved = configData?.devices?.zwave?.serial_path || '';
+    sel.innerHTML = '';
+    if (!r.available) {
+      sel.innerHTML = `<option value="">${escapeHtml(r.error || 'Z-Wave support not installed')}</option>`;
+      if (status) status.textContent = 'This build does not include Z-Wave support.';
+      return;
+    }
+    const ports = r.ports || [];
+    if (ports.length === 0) {
+      sel.innerHTML = '<option value="">No serial ports found. Plug in the stick and refresh.</option>';
+    } else {
+      sel.innerHTML = '<option value="">-- Select the Z-Wave stick port --</option>' + ports.map(p =>
+        `<option value="${escapeHtml(p.path)}" ${p.path === saved ? 'selected' : ''}>${escapeHtml(p.path)}${p.likely_zwave ? ' (likely Z-Wave stick)' : ''}${p.manufacturer ? ' - ' + escapeHtml(p.manufacturer) : ''}</option>`
+      ).join('');
+    }
+    // Keep a saved path selectable even if it is not currently plugged in.
+    if (saved && !ports.some(p => p.path === saved)) {
+      sel.innerHTML += `<option value="${escapeHtml(saved)}" selected>${escapeHtml(saved)} (saved, not detected)</option>`;
+    }
+    if (status) status.textContent = r.error ? `Port scan warning: ${r.error}` : '';
+  } catch (e) {
+    sel.innerHTML = '<option value="">Port scan failed</option>';
+    if (status) status.textContent = `Failed to list ports: ${e.message}`;
+  }
+}
+
+async function saveZwaveSetup() {
+  const path = document.getElementById('zwaveSerialPort')?.value || '';
+  const enabled = !!document.getElementById('zwaveEnabled')?.checked;
+  const status = document.getElementById('zwaveSetupStatus');
+  if (enabled && !path) {
+    toast('Pick the stick\'s serial port before enabling', 'error');
+    return;
+  }
+  try {
+    // Merge on top of the existing zwave block so locks/node_id and other
+    // fields set by pairing are preserved.
+    const zw = Object.assign({}, configData?.devices?.zwave || {}, { serial_path: path, enabled });
+    await api('PUT', '/api/config', { devices: Object.assign({}, configData?.devices || {}, { zwave: zw }) });
+    toast('Z-Wave settings saved', 'success');
+    if (status) status.textContent = enabled
+      ? 'Saved. The service reloads automatically; pair the lock next.'
+      : 'Saved. Enable the transport once the stick is plugged in.';
+    await loadConfig();
+  } catch (e) {
+    toast(`Failed to save: ${e.message}`, 'error');
+  }
 }
 
 function toggleEventSourceFields() {

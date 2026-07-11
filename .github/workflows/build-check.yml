@@ -1,0 +1,65 @@
+name: Build Check
+# PR-time proof that the Windows app builds and the bundled Z-Wave native
+# serial module survives packaging (rebuilt for Electron's ABI and unpacked
+# from the asar). Build-only: nothing is uploaded or released.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src/**'
+      - 'electron/**'
+      - 'public/**'
+      - '.github/workflows/build-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+  ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+
+jobs:
+  windows-build-check:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/electron
+            ${{ github.workspace }}/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-electron-
+      - name: Install dependencies
+        run: bash scripts/ci-retry.sh npm ci
+        shell: bash
+      - name: Unit tests
+        run: npm test
+        shell: bash
+      - name: Build unpacked Windows app (no installer, no publish)
+        run: bash scripts/ci-retry.sh npx electron-builder --win dir
+        shell: bash
+      - name: Verify Z-Wave native module packaged correctly
+        shell: bash
+        run: |
+          set -e
+          APP="dist/win-unpacked/resources"
+          echo "--- resources ---"
+          ls -la "$APP"
+          UNPACKED="$APP/app.asar.unpacked/node_modules"
+          test -d "$UNPACKED/zwave-js" || { echo "::error::zwave-js missing from app.asar.unpacked"; exit 1; }
+          test -d "$UNPACKED/@zwave-js" || { echo "::error::@zwave-js packages missing from app.asar.unpacked"; exit 1; }
+          NODE_BIN=$(find "$UNPACKED/@serialport" -name '*.node' | head -1)
+          test -n "$NODE_BIN" || { echo "::error::No native .node serial binding found in app.asar.unpacked"; exit 1; }
+          echo "Found native serial binding: $NODE_BIN"
+          echo "Z-Wave packaging check passed."
