@@ -11,7 +11,7 @@ set -e
 APP_DIR="/opt/unifi-access-orchestrator"
 APP_USER="middleware"
 LOG_DIR="/var/log/unifi-access-orchestrator"
-NODE_VERSION="20"
+NODE_VERSION="22"
 
 echo "============================================"
 echo " UniFi Access Orchestrator - Pi Setup"

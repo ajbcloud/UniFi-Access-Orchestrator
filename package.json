@@ -4,7 +4,7 @@
   "description": "Multi-door unlock automation for UniFi Access with built-in admin dashboard.",
   "main": "electron/main.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "start": "electron .",
@@ -30,6 +30,7 @@
       "electron/**/*",
       "src/**/*",
       "public/**/*",
+      "assets/**/*",
       "config/config.example.json",
       "package.json"
     ],
@@ -96,7 +97,7 @@
     "ws": "^8.16.0"
   },
   "devDependencies": {
-    "electron": "^28.0.0",
-    "electron-builder": "^24.9.0"
+    "electron": "43.1.0",
+    "electron-builder": "26.15.3"
   }
 }
