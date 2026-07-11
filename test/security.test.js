@@ -103,6 +103,17 @@ test('validateConfigUpdates allows an empty object and unknown-but-safe keys', (
   assert.strictEqual(validateConfigUpdates({ logging: { level: 'debug' } }).ok, true);
 });
 
+test('validateConfigUpdates checks the devices.zwave shape', () => {
+  assert.strictEqual(validateConfigUpdates({
+    devices: { zwave: { enabled: true, serial_path: 'COM3', locks: { front_deadbolt: { node_id: 2 } } } },
+  }).ok, true);
+  assert.strictEqual(validateConfigUpdates({ devices: [] }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ devices: { zwave: 'nope' } }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ devices: { zwave: { enabled: 'yes' } } }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ devices: { zwave: { serial_path: 3 } } }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ devices: { zwave: { locks: [] } } }).ok, false);
+});
+
 // ---------------------------------------------------------------------------
 // ReplayGuard
 // ---------------------------------------------------------------------------
