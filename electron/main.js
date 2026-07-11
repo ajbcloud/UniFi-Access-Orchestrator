@@ -532,7 +532,11 @@ function getIconPath() {
     }
   }
 
-  return nativeImage.createFromBuffer(Buffer.alloc(16 * 16 * 4, 0), { width: 16, height: 16 });
+  // createFromBitmap is the correct API for a raw RGBA buffer. createFromBuffer
+  // expects ENCODED image data (PNG/JPEG) and yields an empty image for raw
+  // bytes on modern Electron, which left the tray icon blank whenever the
+  // packaged app fell through to this path.
+  return nativeImage.createFromBitmap(Buffer.alloc(16 * 16 * 4, 0), { width: 16, height: 16 });
 }
 
 // ---------------------------------------------------------------------------
