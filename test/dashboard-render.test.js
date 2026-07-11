@@ -68,3 +68,43 @@ test('deadbolt card hides when the add-on is disabled', () => {
   renderDeadbolt({ deadbolt: { enabled: false } });
   assert.strictEqual(els.deadboltCard.style.display, 'none');
 });
+
+// ---------------------------------------------------------------------------
+// Pairing panel renderer (pure function: status -> innerHTML)
+// ---------------------------------------------------------------------------
+
+function loadPairPanel() {
+  const src = extractFn('escapeHtml') + '\n' + extractFn('renderZwavePairPanel');
+  const factory = new Function(src + '; return renderZwavePairPanel;');
+  return factory();
+}
+
+test('pair panel renders every state', () => {
+  const render = loadPairPanel();
+  assert.strictEqual(render(null), '');
+  assert.strictEqual(render({ mode: null, state: 'idle' }), '');
+  assert.ok(render({ mode: 'include', state: 'starting', seconds_in_state: 3 }).includes('starting the Z-Wave controller'));
+  assert.ok(render({ mode: 'include', state: 'waiting_for_device', seconds_in_state: 9 }).includes('Schlage button'));
+  const dsk = render({ mode: 'include', state: 'dsk_pending', dsk: '-11111-22222' });
+  assert.ok(dsk.includes('-11111-22222'));
+  assert.ok(dsk.includes('zwavePinInput'));
+  assert.ok(render({ mode: 'include', state: 'provisioning', seconds_in_state: 2 }).includes('Securely joining'));
+  const done = render({ mode: 'include', state: 'done', node_id: 17, security: 'S2 Access Control' });
+  assert.ok(done.includes('Paired!') && done.includes('17'));
+  const undone = render({ mode: 'exclude', state: 'done', node_id: 17 });
+  assert.ok(undone.includes('Unpaired'));
+  const failed = render({ mode: 'include', state: 'failed', error: 'no device' });
+  assert.ok(failed.includes('failed') && failed.includes('no device') && failed.includes('startPairing()'));
+  assert.ok(render({ mode: 'exclude', state: 'failed', error: 'x' }).includes('startUnpair()'));
+  assert.ok(render({ mode: 'include', state: 'cancelled' }).includes('cancelled'));
+});
+
+test('pair panel escapes device-derived dsk and error strings (XSS)', () => {
+  const render = loadPairPanel();
+  const hostileDsk = render({ mode: 'include', state: 'dsk_pending', dsk: '"><img src=x onerror=alert(1)>' });
+  assert.ok(!hostileDsk.includes('<img'), 'raw <img must not appear in dsk');
+  assert.ok(hostileDsk.includes('&lt;img'));
+  const hostileErr = render({ mode: 'include', state: 'failed', error: '<script>alert(1)</script>' });
+  assert.ok(!hostileErr.includes('<script>'), 'raw script must not appear in error');
+  assert.ok(hostileErr.includes('&lt;script&gt;'));
+});

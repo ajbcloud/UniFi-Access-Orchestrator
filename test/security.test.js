@@ -103,6 +103,30 @@ test('validateConfigUpdates allows an empty object and unknown-but-safe keys', (
   assert.strictEqual(validateConfigUpdates({ logging: { level: 'debug' } }).ok, true);
 });
 
+test('Z-Wave security keys redact fully and survive a PUT round trip', () => {
+  const cfg = {
+    devices: { zwave: { serial_path: 'COM3', security_keys: {
+      s2_access_control: 'aa'.repeat(16), s2_authenticated: 'bb'.repeat(16),
+      s2_unauthenticated: 'cc'.repeat(16), s0_legacy: 'dd'.repeat(16),
+    } } },
+  };
+  const out = redactSecrets(cfg);
+  for (const v of Object.values(out.devices.zwave.security_keys)) {
+    assert.strictEqual(v, REDACTION_MARKER); // s0_legacy included (regex covers s0_)
+  }
+  assert.strictEqual(out.devices.zwave.serial_path, 'COM3');
+  // the UI echoing the redacted GET back cannot clobber the stored keys
+  stripRedactedPlaceholders(out);
+  assert.deepStrictEqual(out.devices.zwave.security_keys, {});
+});
+
+test('validateConfigUpdates checks security_keys shape', () => {
+  assert.strictEqual(validateConfigUpdates({ devices: { zwave: { security_keys: {} } } }).ok, true);
+  assert.strictEqual(validateConfigUpdates({ devices: { zwave: { security_keys: { s0_legacy: 'aa'.repeat(16) } } } }).ok, true);
+  assert.strictEqual(validateConfigUpdates({ devices: { zwave: { security_keys: [] } } }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ devices: { zwave: { security_keys: { s0_legacy: 42 } } } }).ok, false);
+});
+
 test('validateConfigUpdates checks the devices.zwave shape', () => {
   assert.strictEqual(validateConfigUpdates({
     devices: { zwave: { enabled: true, serial_path: 'COM3', locks: { front_deadbolt: { node_id: 2 } } } },

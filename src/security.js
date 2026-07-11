@@ -5,7 +5,7 @@ const crypto = require('crypto');
 
 // Matches config keys whose values are secrets and must never be returned to a
 // client or written to a log in cleartext.
-const SECRET_KEY_RX = /(token|secret|password|passphrase|api[_-]?key|private[_-]?key|s2_)/i;
+const SECRET_KEY_RX = /(token|secret|password|passphrase|api[_-]?key|private[_-]?key|s2_|s0_)/i;
 
 const REDACTION_MARKER = '***REDACTED***';
 
@@ -119,6 +119,12 @@ function validateConfigUpdates(updates) {
       if (zw.enabled !== undefined && typeof zw.enabled !== 'boolean') return { ok: false, error: 'devices.zwave.enabled must be a boolean' };
       if (zw.serial_path !== undefined && typeof zw.serial_path !== 'string') return { ok: false, error: 'devices.zwave.serial_path must be a string' };
       if (zw.locks !== undefined && !isPlainObject(zw.locks)) return { ok: false, error: 'devices.zwave.locks must be an object' };
+      if (zw.security_keys !== undefined) {
+        if (!isPlainObject(zw.security_keys)) return { ok: false, error: 'devices.zwave.security_keys must be an object' };
+        for (const [k, v] of Object.entries(zw.security_keys)) {
+          if (typeof v !== 'string') return { ok: false, error: `devices.zwave.security_keys.${k} must be a string` };
+        }
+      }
     }
   }
 

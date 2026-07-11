@@ -1,6 +1,8 @@
 'use strict';
 
 const { LockDriver, LockState } = require('./lock-driver');
+const { ZwaveManager } = require('./zwave-manager');
+const { loadSecurityKeys } = require('./zwave-keys');
 
 // Z-Wave Door Lock CC (0x62) target modes.
 const DOOR_LOCK_MODE = Object.freeze({ UNSECURED: 0x00, SECURED: 0xff });
@@ -42,11 +44,13 @@ function modeToState(mode) {
  * zwave-js is injected through `deps`, so this module is fully unit-testable
  * without the native package or hardware:
  *   - deps.node          : a ready ZWaveNode-like object (used in tests)
- *   - deps.driverFactory : (cfg) => Driver-like (production seam)
- * In production neither is passed and init() lazy-requires zwave-js. The
- * package is intentionally NOT a hard dependency in package.json so a client
- * without the deadbolt can npm install without a native build; install
- * zwave-js on the middleware host when the hardware is deployed.
+ *   - deps.manager       : a shared ZwaveManager owning the Driver (production;
+ *                          lets pairing and the lock share one serial port)
+ *   - deps.driverFactory : (serialPath, options) => Driver-like (test seam,
+ *                          wrapped in a private ZwaveManager)
+ * With none of these, a private manager is created and zwave-js is
+ * lazy-required on init(). The package is an optionalDependency so installs
+ * without the native build still run (the add-on just stays disabled).
  *
  * Verification model: the BE469ZP is documented as slow and eventually
  * consistent, so timeouts are generous. After a set we wait for a confirming
@@ -59,11 +63,29 @@ class ZwaveLock extends LockDriver {
     super();
     this.cfg = cfg;
     this.logger = deps.logger || console;
-    this._driverFactory = deps.driverFactory || null;
     this._injectedNode = deps.node || null;
+
+    // A shared manager (production) is owned by the caller; a private one
+    // (standalone/headless or the driverFactory test seam) is owned here and
+    // torn down on shutdown or on a failed init, so the port never leaks.
+    if (deps.manager) {
+      this._manager = deps.manager;
+      this._ownsManager = false;
+    } else {
+      this._manager = new ZwaveManager({
+        logger: this.logger,
+        driverFactory: deps.driverFactory || null,
+        loadKeys: () => {
+          const k = loadSecurityKeys({ security_keys: cfg.security_keys });
+          return { classic: k.classic, longRange: k.longRange };
+        },
+      });
+      this._ownsManager = true;
+    }
 
     this._driver = null;
     this._node = null;
+    this._onManagerError = null;
     this._state = { boltState: LockState.UNKNOWN, battery: null, online: false, lastSeen: null };
 
     this.nodeId = cfg.node_id;
@@ -79,20 +101,33 @@ class ZwaveLock extends LockDriver {
     if (this._injectedNode) {
       this._node = this._injectedNode;
     } else {
-      this._driver = await this._createDriver();
-      this._node = this._resolveNode(this._driver);
+      try {
+        this._driver = await this._manager.ensureStarted({
+          serial_path: this.cfg.serial_path,
+          cache_dir: this.cfg.cache_dir,
+        });
+        this._node = this._resolveNode(this._driver);
+        if (!this._node) throw new Error(`Z-Wave node ${this.nodeId} not found`);
+      } catch (err) {
+        // Port-leak fix: a private manager must not keep the serial port open
+        // after a failed init. A SHARED manager stays up (pairing may need the
+        // live controller precisely because the node does not exist yet).
+        if (this._ownsManager) {
+          try { await this._manager.stop(); } catch (e) { /* best effort */ }
+        }
+        this._driver = null;
+        throw err;
+      }
     }
     if (!this._node) throw new Error(`Z-Wave node ${this.nodeId} not found`);
     this._wireNode(this._node);
-    // Persistent driver-level error handler: without a listener a later 'error'
-    // would be an unhandled EventEmitter error and crash the process. Flip the
-    // link offline so /health and alerting reflect it; systemd restarts as the
-    // outer backstop (a full in-process reconnect is future work).
-    if (this._driver && typeof this._driver.on === 'function') {
-      this._driver.on('error', (err) => {
-        this.logger.warn && this.logger.warn(`Z-Wave driver error: ${err && err.message}`);
-        this._setOnline(false);
-      });
+    // Driver-level errors flow through the manager (which holds the persistent
+    // listener so the process never crashes on an unhandled 'error'); mirror
+    // them into this lock's online state. Handler stored so shutdown() can
+    // remove it and a rebuilt lock does not stack subscriptions.
+    if (!this._onManagerError) {
+      this._onManagerError = () => this._setOnline(false);
+      this._manager.on('driver-error', this._onManagerError);
     }
     this._state.online = true;
     try {
@@ -103,73 +138,35 @@ class ZwaveLock extends LockDriver {
     this.emit('online');
   }
 
-  async _createDriver() {
-    if (this._driverFactory) return this._driverFactory(this.cfg);
-    let ZWaveJS;
-    try {
-      // Lazy require: tests and non-deadbolt installs never load the native package.
-      ZWaveJS = require('zwave-js'); // eslint-disable-line global-require
-    } catch (err) {
-      throw new Error(
-        'zwave-js is not installed. Install it on the middleware host to drive the deadbolt ' +
-        '(npm install zwave-js@<confirmed version>), or run with the fake lock driver in dev.'
-      );
-    }
-    const keys = this._loadSecurityKeys();
-    const driver = new ZWaveJS.Driver(this.cfg.serial_path, {
-      securityKeys: keys.classic,
-      securityKeysLongRange: keys.longRange,
-      storage: this.cfg.cache_dir ? { cacheDir: this.cfg.cache_dir } : undefined,
-    });
-    await new Promise((resolve, reject) => {
-      const cleanup = () => {
-        driver.removeListener('driver ready', onReady);
-        driver.removeListener('error', onErr);
-      };
-      const onReady = () => { cleanup(); resolve(); };
-      const onErr = (e) => { cleanup(); reject(e); };
-      driver.once('driver ready', onReady);
-      driver.once('error', onErr);
-      Promise.resolve()
-        .then(() => driver.start())
-        .catch(onErr);
-    });
-    return driver;
-  }
-
   _resolveNode(driver) {
     const nodes = driver && driver.controller && driver.controller.nodes;
     if (!nodes) return null;
     return typeof nodes.get === 'function' ? nodes.get(this.nodeId) : nodes[this.nodeId];
   }
 
-  _loadSecurityKeys() {
-    const hex = (name) => {
-      const v = process.env[name];
-      return v ? Buffer.from(v, 'hex') : undefined;
-    };
-    return {
-      classic: {
-        S2_AccessControl: hex('ZWAVE_S2_ACCESS_CONTROL'),
-        S2_Authenticated: hex('ZWAVE_S2_AUTHENTICATED'),
-        S2_Unauthenticated: hex('ZWAVE_S2_UNAUTHENTICATED'),
-        S0_Legacy: hex('ZWAVE_S0_LEGACY'),
-      },
-      longRange: {
-        S2_AccessControl: hex('ZWAVE_LR_S2_ACCESS_CONTROL'),
-        S2_Authenticated: hex('ZWAVE_LR_S2_AUTHENTICATED'),
-      },
-    };
-  }
-
   _wireNode(node) {
     if (!node || typeof node.on !== 'function') return;
     if (this._wired) return; // idempotent: never stack duplicate listeners on re-init
     this._wired = true;
-    node.on('notification', (_endpoint, ccId, args) => this._onNotification(ccId, args || {}));
-    node.on('value updated', (_node, args) => this._onValueUpdated(args || {}));
-    node.on('dead', () => this._setOnline(false));
-    node.on('alive', () => this._setOnline(true));
+    // Handlers are stored so _unwireNode can remove them: a rebuilt lock
+    // (e.g. right after pairing) rebinds the SAME live node, and stacked
+    // listeners would double-fire every notification.
+    this._nodeHandlers = {
+      notification: (_endpoint, ccId, args) => this._onNotification(ccId, args || {}),
+      'value updated': (_node, args) => this._onValueUpdated(args || {}),
+      dead: () => this._setOnline(false),
+      alive: () => this._setOnline(true),
+    };
+    for (const [ev, fn] of Object.entries(this._nodeHandlers)) node.on(ev, fn);
+  }
+
+  _unwireNode() {
+    const node = this._node;
+    if (node && this._nodeHandlers && typeof node.removeListener === 'function') {
+      for (const [ev, fn] of Object.entries(this._nodeHandlers)) node.removeListener(ev, fn);
+    }
+    this._nodeHandlers = null;
+    this._wired = false;
   }
 
   _onNotification(ccId, args) {
@@ -298,10 +295,18 @@ class ZwaveLock extends LockDriver {
 
   async shutdown() {
     this._setOnline(false);
-    if (this._driver && typeof this._driver.destroy === 'function') {
-      try { await this._driver.destroy(); } catch (e) { /* ignore teardown errors */ }
+    this._unwireNode();
+    if (this._onManagerError) {
+      this._manager.removeListener('driver-error', this._onManagerError);
+      this._onManagerError = null;
+    }
+    // A shared manager belongs to the caller (pairing may still need the
+    // driver); only a privately-owned one is destroyed here.
+    if (this._ownsManager && this._manager.isRunning()) {
+      await this._manager.stop();
     }
     this._driver = null;
+    this._node = null;
   }
 }
 

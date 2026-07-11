@@ -64,6 +64,7 @@
       "dev_fake_lock": false,
       "serial_path": "/dev/serial/by-id/REPLACE-WITH-STABLE-PATH",
       "cache_dir": "",
+      "security_keys": {},
       "locks": {
         "front_deadbolt": {
           "node_id": 0,

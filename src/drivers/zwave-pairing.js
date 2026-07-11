@@ -1,0 +1,331 @@
+'use strict';
+
+// S2 InclusionStrategy.Security_S2 in zwave-js (verified against v15.25.3).
+// Hard-coded so this module never needs to require the native package.
+const INCLUSION_STRATEGY_SECURITY_S2 = 4;
+
+/**
+ * One-at-a-time Z-Wave pairing (inclusion) / unpairing (exclusion) session,
+ * driven by the dashboard through the /api/deadbolt/pair endpoints.
+ *
+ * States: idle -> starting -> waiting_for_device -> dsk_pending (include only)
+ *         -> provisioning -> done | failed | cancelled (terminal).
+ * Exclusion reuses the same slot with mode 'exclude' and no dsk/pin stages.
+ *
+ * Every terminal transition funnels through _teardown(): stage timer cleared,
+ * controller listeners removed, inclusion/exclusion stopped best-effort, any
+ * pending PIN promise resolved false, and the manager stopped ONLY when this
+ * session started it and no lock driver is bound to it. A live lock keeps its
+ * driver no matter how pairing ends.
+ *
+ * deps (all injectable for tests):
+ *   manager             ZwaveManager (shared with the lock driver)
+ *   logger              winston-like
+ *   getZwaveConfig      () => config.devices.zwave (live getter)
+ *   ensureKeysPersisted async () => {generated:boolean}; must persist any
+ *                       newly-generated keys BEFORE inclusion starts
+ *   onIncludeDone       async ({nodeId, securityClass}) => {}
+ *   onExcludeDone       async ({nodeId}) => {}
+ *   isLockBound         () => boolean (a lock driver currently uses the manager)
+ *   timeouts            per-stage ms overrides (tests use small values)
+ *   now                 () => ms epoch (injectable clock)
+ */
+class ZwavePairing {
+  constructor(deps = {}) {
+    this.manager = deps.manager;
+    this.logger = deps.logger || console;
+    this.getZwaveConfig = deps.getZwaveConfig || (() => ({}));
+    this.ensureKeysPersisted = deps.ensureKeysPersisted || (async () => ({ generated: false }));
+    this.onIncludeDone = deps.onIncludeDone || (async () => {});
+    this.onExcludeDone = deps.onExcludeDone || (async () => {});
+    this.isLockBound = deps.isLockBound || (() => false);
+    this.now = deps.now || (() => Date.now());
+    this.timeouts = Object.assign(
+      { starting: 30000, waiting: 120000, dsk: 240000, provisioning: 90000 },
+      deps.timeouts || {}
+    );
+
+    this._reset();
+  }
+
+  _reset() {
+    this.mode = null;             // 'include' | 'exclude'
+    this.state = 'idle';
+    this.stateSince = this.now();
+    this.dsk = null;              // partial DSK (PIN block withheld by zwave-js)
+    this.nodeId = null;
+    this.security = null;
+    this.error = null;
+    this.lastResult = null;       // 'done' | 'failed' | 'cancelled'
+    this._timer = null;
+    this._pinDeferred = null;
+    this._listeners = [];         // [{emitter, event, fn}]
+    this._startedManager = false;
+    this._keysGenerated = false;
+  }
+
+  isActive() {
+    return this.mode !== null && !['idle', 'done', 'failed', 'cancelled'].includes(this.state);
+  }
+
+  status() {
+    return {
+      active: this.isActive(),
+      mode: this.mode,
+      state: this.state,
+      seconds_in_state: Math.max(0, Math.floor((this.now() - this.stateSince) / 1000)),
+      dsk: this.state === 'dsk_pending' ? this.dsk : null,
+      node_id: this.nodeId,
+      security: this.security,
+      error: this.error,
+      last_result: this.lastResult,
+      keys_generated: this._keysGenerated,
+    };
+  }
+
+  _setState(state) {
+    this.state = state;
+    this.stateSince = this.now();
+  }
+
+  _stage(state, timeoutMs, onTimeout) {
+    this._setState(state);
+    clearTimeout(this._timer);
+    this._timer = setTimeout(() => {
+      Promise.resolve(onTimeout()).catch((e) =>
+        this.logger.warn && this.logger.warn(`pairing timeout handler error: ${e.message}`));
+    }, timeoutMs);
+    if (this._timer.unref) this._timer.unref();
+  }
+
+  _listen(emitter, event, fn) {
+    emitter.on(event, fn);
+    this._listeners.push({ emitter, event, fn });
+  }
+
+  async _teardown({ stopRadio = true, keepManager = false } = {}) {
+    clearTimeout(this._timer);
+    this._timer = null;
+    for (const { emitter, event, fn } of this._listeners) {
+      if (typeof emitter.removeListener === 'function') emitter.removeListener(event, fn);
+    }
+    this._listeners = [];
+    if (this._pinDeferred) {
+      const d = this._pinDeferred;
+      this._pinDeferred = null;
+      d.resolve(false);
+    }
+    const controller = this.manager && this.manager.controller;
+    if (stopRadio && controller) {
+      try {
+        if (this.mode === 'include' && typeof controller.stopInclusion === 'function') await controller.stopInclusion();
+        if (this.mode === 'exclude' && typeof controller.stopExclusion === 'function') await controller.stopExclusion();
+      } catch (e) { /* best effort */ }
+    }
+    // Stop the manager only if this session started it AND no lock uses it.
+    // keepManager: a successful include is about to activate the lock on this
+    // very driver, so leave it running for bringDeadboltOnline.
+    if (this._startedManager && !keepManager && !this.isLockBound()) {
+      try { await this.manager.stop(); } catch (e) { /* best effort */ }
+    }
+    this._startedManager = false;
+  }
+
+  async _fail(reason) {
+    if (!this.isActive()) return;
+    this.error = reason;
+    this.lastResult = 'failed';
+    this._setState('failed');
+    this.logger.warn && this.logger.warn(`Z-Wave ${this.mode} failed: ${reason}`);
+    await this._teardown();
+  }
+
+  async cancel(reason = 'cancelled by user') {
+    if (!this.isActive()) return { status: 'idle' };
+    this.error = null;
+    this.lastResult = 'cancelled';
+    this._setState('cancelled');
+    this.logger.info && this.logger.info(`Z-Wave ${this.mode} cancelled: ${reason}`);
+    await this._teardown();
+    return { status: 'cancelled' };
+  }
+
+  submitPin(pin) {
+    if (this.state !== 'dsk_pending' || !this._pinDeferred) {
+      const err = new Error('Not waiting for a PIN');
+      err.code = 'WRONG_STATE';
+      throw err;
+    }
+    if (!/^\d{5}$/.test(String(pin || ''))) {
+      const err = new Error('PIN must be exactly 5 digits');
+      err.code = 'BAD_PIN';
+      throw err;
+    }
+    const d = this._pinDeferred;
+    this._pinDeferred = null;
+    this._stage('provisioning', this.timeouts.provisioning,
+      () => this._fail('secure join timed out; move the stick closer to the lock and retry'));
+    d.resolve(String(pin));
+    return { state: this.state };
+  }
+
+  async startInclusion() {
+    this._assertCanStart();
+    this._reset();
+    this.mode = 'include';
+    this._stage('starting', this.timeouts.starting,
+      () => this._fail('the Z-Wave controller did not start in time'));
+
+    try {
+      // Keys MUST exist and be persisted before any radio work: if the app
+      // generated them now and crashed later, the paired lock would be
+      // unreachable on the next boot.
+      const kp = await this.ensureKeysPersisted();
+      this._keysGenerated = !!(kp && kp.generated);
+
+      const zw = this.getZwaveConfig() || {};
+      const wasRunning = this.manager.isRunning();
+      await this.manager.ensureStarted({ serial_path: zw.serial_path, cache_dir: zw.cache_dir });
+      this._startedManager = !wasRunning;
+
+      const controller = this.manager.controller;
+      if (!controller || typeof controller.beginInclusion !== 'function') {
+        throw new Error('Z-Wave controller unavailable');
+      }
+
+      this._listen(controller, 'inclusion started', () => {
+        this._stage('waiting_for_device', this.timeouts.waiting,
+          () => this._fail('no device entered inclusion mode; run the sequence on the lock and retry'));
+      });
+
+      this._listen(controller, 'node added', (node, result) => {
+        Promise.resolve(this._onNodeAdded(node, result)).catch((e) =>
+          this.logger.warn && this.logger.warn(`pairing node-added handler error: ${e.message}`));
+      });
+
+      const userCallbacks = {
+        grantSecurityClasses: async (requested) => requested,
+        validateDSKAndEnterPIN: (dsk) => {
+          this.dsk = dsk; // partial: zwave-js withholds the 5-digit PIN block
+          this._stage('dsk_pending', this.timeouts.dsk,
+            () => this._fail('PIN entry timed out'));
+          return new Promise((resolve) => { this._pinDeferred = { resolve }; });
+        },
+        abort: () => {
+          this._fail('inclusion aborted by the controller (validation timed out)');
+        },
+      };
+
+      const accepted = await controller.beginInclusion({
+        strategy: INCLUSION_STRATEGY_SECURITY_S2,
+        userCallbacks,
+      });
+      if (accepted === false) {
+        throw new Error('the controller is busy; wait a moment and try again');
+      }
+      // Some stacks emit 'inclusion started' before/after beginInclusion
+      // resolves; if it already fired, state moved on. Otherwise wait for it
+      // under the 'starting' timer.
+    } catch (err) {
+      await this._fail(err.message);
+      throw err;
+    }
+    return this.status();
+  }
+
+  async startExclusion() {
+    this._assertCanStart();
+    this._reset();
+    this.mode = 'exclude';
+    this._stage('starting', this.timeouts.starting,
+      () => this._fail('the Z-Wave controller did not start in time'));
+
+    try {
+      const zw = this.getZwaveConfig() || {};
+      const wasRunning = this.manager.isRunning();
+      await this.manager.ensureStarted({ serial_path: zw.serial_path, cache_dir: zw.cache_dir });
+      this._startedManager = !wasRunning;
+
+      const controller = this.manager.controller;
+      if (!controller || typeof controller.beginExclusion !== 'function') {
+        throw new Error('Z-Wave controller unavailable');
+      }
+
+      this._listen(controller, 'exclusion started', () => {
+        this._stage('waiting_for_device', this.timeouts.waiting,
+          () => this._fail('no device entered exclusion mode; run the sequence on the lock and retry'));
+      });
+
+      this._listen(controller, 'node removed', (node) => {
+        Promise.resolve(this._onNodeRemoved(node)).catch((e) =>
+          this.logger.warn && this.logger.warn(`pairing node-removed handler error: ${e.message}`));
+      });
+
+      const accepted = await controller.beginExclusion();
+      if (accepted === false) {
+        throw new Error('the controller is busy; wait a moment and try again');
+      }
+    } catch (err) {
+      await this._fail(err.message);
+      throw err;
+    }
+    return this.status();
+  }
+
+  async _onNodeAdded(node, result) {
+    if (!this.isActive()) return;
+    if (result && result.lowSecurity) {
+      // A BE469ZP joined without S2 cannot operate its Door Lock CC securely.
+      // Fail loud with the recovery path rather than reporting success.
+      this.nodeId = node && node.id;
+      await this._fail('the lock joined WITHOUT S2 security (usually a wrong PIN or weak signal). Unpair it, move the stick close to the lock, and pair again.');
+      return;
+    }
+    this.nodeId = node && node.id;
+    this.security = 'S2 Access Control';
+    this.lastResult = 'done';
+    this._setState('done');
+    this.logger.info && this.logger.info(`Z-Wave inclusion complete: node ${this.nodeId}`);
+    await this._teardown({ stopRadio: true, keepManager: true });
+    try {
+      await this.onIncludeDone({ nodeId: this.nodeId, securityClass: this.security });
+    } catch (err) {
+      // Paired on the radio but the app could not persist/activate: surface it.
+      this.lastResult = 'failed';
+      this.state = 'failed';
+      this.error = `paired as node ${this.nodeId} but activation failed: ${err.message}`;
+    }
+  }
+
+  async _onNodeRemoved(node) {
+    if (!this.isActive()) return;
+    this.nodeId = node && node.id;
+    this.lastResult = 'done';
+    this._setState('done');
+    this.logger.info && this.logger.info(`Z-Wave exclusion complete: node ${this.nodeId} removed`);
+    await this._teardown({ stopRadio: true });
+    try {
+      await this.onExcludeDone({ nodeId: this.nodeId });
+    } catch (err) {
+      this.lastResult = 'failed';
+      this.state = 'failed';
+      this.error = `node ${this.nodeId} removed but cleanup failed: ${err.message}`;
+    }
+  }
+
+  _assertCanStart() {
+    if (this.isActive()) {
+      const err = new Error('A pairing session is already active');
+      err.code = 'ACTIVE';
+      throw err;
+    }
+    const zw = this.getZwaveConfig() || {};
+    if (!zw.serial_path) {
+      const err = new Error('Set the Z-Wave serial port first (Configuration tab)');
+      err.code = 'NO_PORT';
+      throw err;
+    }
+  }
+}
+
+module.exports = { ZwavePairing, INCLUSION_STRATEGY_SECURITY_S2 };

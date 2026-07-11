@@ -474,6 +474,24 @@ The dashboard has four tabs:
 
 ---
 
+## Pairing the Smart Deadbolt (Z-Wave)
+
+The app can drive a Z-Wave deadbolt (tested design: Schlage BE469ZP over a Zooz ZST39 USB stick). Everything happens in the dashboard; no config editing is needed.
+
+1. Plug the Z-Wave USB stick into the machine running the app.
+2. Open **Configuration** and find **Smart Deadbolt (Z-Wave)**. Pick the stick's port from the dropdown (likely sticks are marked), tick **Enable Z-Wave deadbolt**, and Save.
+3. Click **Pair New Lock**. When the panel says it is waiting for the lock: on the Schlage keypad, enter the 6-digit programming code, press the Schlage button, then press **0**. Keep the lock within a few feet of the stick while pairing.
+4. The panel shows the lock's device ID and asks for the **5-digit PIN** printed on the label on the lock body (also on the box sticker). Type it and submit.
+5. After "Paired!", the deadbolt is active: the panel shows live bolt state, battery, and link, with **Test Lock** / **Test Unlock** buttons.
+
+To remove the lock, use **Unpair** (programming code, Schlage button, then **0** puts the lock in exclusion mode).
+
+Notes:
+- The app generates and stores Z-Wave security keys in its config file on first pairing. Back up the config, and never delete `devices.zwave.security_keys` after pairing, or the lock will need to be excluded and re-paired.
+- If pairing fails with a "joined WITHOUT S2 security" message, the PIN was likely mistyped or the signal was weak: run Unpair, move the stick close to the lock, and pair again.
+
+---
+
 ## Troubleshooting
 
 **"Cannot connect to Access Gateway"**
