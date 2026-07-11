@@ -1531,6 +1531,7 @@ async function loadConfig() {
     // be reachable on a fresh install.
     renderZwaveSetup();
     loadSerialPorts();
+    refreshZwaveDeadbolt();
     populateSimForm();
     renderTestRules();
   } catch (e) {
@@ -1921,7 +1922,176 @@ function renderZwaveSetup() {
       <button class="btn btn-sm btn-primary" onclick="saveZwaveSetup()">Save</button>
     </div>
     <div id="zwaveSetupStatus" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
+
+    <div id="zwaveDeadboltBlock" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+      <div style="font-size:13px;font-weight:600;margin-bottom:6px">Deadbolt</div>
+      <div id="zwaveDeadboltStatusLine" style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Loading...</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap" id="zwaveDeadboltButtons"></div>
+      <div id="zwavePairPanel" style="margin-top:10px"></div>
+      <div id="zwaveDeadboltLive" style="margin-top:10px"></div>
+    </div>
   `;
+}
+
+// Pure renderer for the pairing panel: pairing-status object -> innerHTML.
+// Kept side-effect free so the render test-suite can exercise every state,
+// including escaping of device-derived strings (dsk, error).
+function renderZwavePairPanel(st) {
+  if (!st || !st.mode || st.state === 'idle') return '';
+  const modeWord = st.mode === 'exclude' ? 'Unpair' : 'Pair';
+  const cancelBtn = '<button class="btn btn-sm btn-secondary" onclick="cancelPairing()">Cancel</button>';
+  const box = (inner, color) =>
+    `<div style="padding:12px;background:var(--bg-input);border:1px solid ${color || 'var(--border)'};border-radius:var(--radius);font-size:13px">${inner}</div>`;
+
+  switch (st.state) {
+    case 'starting':
+      return box(`<strong>${modeWord}:</strong> starting the Z-Wave controller... <span style="color:var(--text-muted)">(${st.seconds_in_state || 0}s)</span><div style="margin-top:8px">${cancelBtn}</div>`);
+    case 'waiting_for_device': {
+      const instr = st.mode === 'exclude'
+        ? 'On the lock: enter the 6-digit programming code, press the Schlage button, then press <strong>0</strong>.'
+        : 'On the lock: enter the 6-digit programming code, press the Schlage button, then press <strong>0</strong>. Keep the lock within a few feet of the USB stick during pairing.';
+      return box(`<strong>${modeWord}:</strong> waiting for the lock <span style="color:var(--text-muted)">(${st.seconds_in_state || 0}s)</span><div style="margin-top:6px">${instr}</div><div style="margin-top:8px">${cancelBtn}</div>`);
+    }
+    case 'dsk_pending':
+      return box(
+        `<strong>Found the lock.</strong> Device ID: <span style="font-family:var(--mono)">${escapeHtml(st.dsk || '')}</span>`
+        + `<div style="margin-top:6px">Type the 5-digit PIN printed on the label on the lock body (also on the box sticker):</div>`
+        + `<div style="display:flex;gap:8px;margin-top:8px;align-items:center">`
+        + `<input type="text" id="zwavePinInput" inputmode="numeric" maxlength="5" placeholder="12345" style="width:110px;font-size:14px;padding:6px;font-family:var(--mono)">`
+        + `<button class="btn btn-sm btn-primary" onclick="submitPairPin()">Submit PIN</button>${cancelBtn}</div>`
+      );
+    case 'provisioning':
+      return box(`<strong>Securely joining (S2)...</strong> this can take up to a minute. <span style="color:var(--text-muted)">(${st.seconds_in_state || 0}s)</span>`);
+    case 'done':
+      return box(
+        st.mode === 'exclude'
+          ? `<strong style="color:var(--green)">Unpaired.</strong> Node ${escapeHtml(st.node_id)} was removed. Pair a lock to use the deadbolt again.`
+          : `<strong style="color:var(--green)">Paired!</strong> The lock joined as node ${escapeHtml(st.node_id)} with ${escapeHtml(st.security || 'S2')}. The deadbolt is now active.`,
+        'var(--green)'
+      );
+    case 'failed':
+      return box(
+        `<strong style="color:var(--red)">${modeWord} failed:</strong> ${escapeHtml(st.error || 'unknown error')}`
+        + `<div style="margin-top:6px;font-size:12px;color:var(--text-muted)">If this lock was ever paired before, run Unpair (or factory reset it), move the stick close to the lock, and try again.</div>`
+        + `<div style="margin-top:8px"><button class="btn btn-sm btn-primary" onclick="${st.mode === 'exclude' ? 'startUnpair()' : 'startPairing()'}">Try Again</button></div>`,
+        'var(--red)'
+      );
+    case 'cancelled':
+      return box(`${modeWord} cancelled.`);
+    default:
+      return box(`${modeWord}: ${escapeHtml(st.state)}`);
+  }
+}
+
+let _pairPollTimer = null;
+
+async function refreshZwaveDeadbolt() {
+  const line = document.getElementById('zwaveDeadboltStatusLine');
+  const btns = document.getElementById('zwaveDeadboltButtons');
+  const live = document.getElementById('zwaveDeadboltLive');
+  if (!line || !btns) return;
+  try {
+    const r = await api('GET', '/api/devices');
+    const zw = r.zwave || {};
+    const pairingActive = !!zw.pairing_active;
+    if (!zw.configured) {
+      line.textContent = 'Set and save the serial port above, then pair the lock.';
+      btns.innerHTML = '';
+      if (live) live.innerHTML = '';
+      return;
+    }
+    if (zw.paired) {
+      line.textContent = `Lock paired (node ${zw.node_id}, "${zw.lock_id}").`;
+      btns.innerHTML = `
+        <button class="btn btn-sm btn-secondary" onclick="deadboltControl('lock')" ${pairingActive ? 'disabled' : ''}>Test Lock</button>
+        <button class="btn btn-sm btn-secondary" onclick="deadboltControl('unlock')" ${pairingActive ? 'disabled' : ''}>Test Unlock</button>
+        <button class="btn btn-sm btn-secondary" onclick="startUnpair()" ${pairingActive ? 'disabled' : ''}>Unpair</button>
+      `;
+      if (live) {
+        const ls = r.lock_state || {};
+        const bolt = ls.boltState || 'unknown';
+        const boltBadge = bolt === 'locked' ? 'success' : bolt === 'unlocked' ? 'warning' : bolt === 'jammed' ? 'error' : 'info';
+        live.innerHTML = `<div style="display:flex;gap:14px;align-items:center;font-size:12px">
+          <span>Bolt: <span class="badge ${boltBadge}">${escapeHtml(bolt)}</span></span>
+          <span>Battery: ${ls.battery == null ? 'n/a' : escapeHtml(ls.battery) + '%'}</span>
+          <span>Link: ${ls.online ? '<span style="color:var(--green)">online</span>' : '<span style="color:var(--red)">offline</span>'}</span>
+        </div>`;
+      }
+    } else {
+      line.textContent = 'No lock paired yet.';
+      btns.innerHTML = `<button class="btn btn-sm btn-primary" onclick="startPairing()" ${pairingActive ? 'disabled' : ''}>Pair New Lock</button>`;
+      if (live) live.innerHTML = '';
+    }
+    // Resume polling if a session is running (e.g. after a page reload).
+    if (pairingActive && !_pairPollTimer) pollPairingStatus();
+  } catch (e) {
+    line.textContent = 'Could not load deadbolt status.';
+  }
+}
+
+function pollPairingStatus() {
+  clearInterval(_pairPollTimer);
+  _pairPollTimer = setInterval(async () => {
+    try {
+      const st = await api('GET', '/api/deadbolt/pair/status');
+      const panel = document.getElementById('zwavePairPanel');
+      if (panel) panel.innerHTML = renderZwavePairPanel(st);
+      if (!st.active) {
+        clearInterval(_pairPollTimer);
+        _pairPollTimer = null;
+        // Terminal: refresh everything the session may have changed.
+        refreshZwaveDeadbolt();
+        if (st.last_result === 'done') { loadConfig(); fetchHealth(); }
+      }
+    } catch (e) { /* transient poll failure: keep trying until terminal */ }
+  }, 1500);
+}
+
+async function startPairing() {
+  try {
+    const r = await api('POST', '/api/deadbolt/pair/start');
+    if (r.error) { toast(r.error, 'error'); return; }
+    toast('Pairing started', 'info');
+    const panel = document.getElementById('zwavePairPanel');
+    if (panel) panel.innerHTML = renderZwavePairPanel({ mode: 'include', state: r.state || 'starting', seconds_in_state: 0 });
+    pollPairingStatus();
+    refreshZwaveDeadbolt();
+  } catch (e) { toast(`Pairing failed to start: ${e.message}`, 'error'); }
+}
+
+async function submitPairPin() {
+  const pin = document.getElementById('zwavePinInput')?.value?.trim() || '';
+  if (!/^\d{5}$/.test(pin)) { toast('The PIN is exactly 5 digits', 'error'); return; }
+  try {
+    const r = await api('POST', '/api/deadbolt/pair/pin', { pin });
+    if (r.error) { toast(r.error, 'error'); return; }
+  } catch (e) { toast(`Could not submit the PIN: ${e.message}`, 'error'); }
+}
+
+async function cancelPairing() {
+  try { await api('POST', '/api/deadbolt/pair/cancel'); } catch (e) { /* ignore */ }
+}
+
+async function startUnpair() {
+  const ok = confirm('Unpair the deadbolt?\n\nThe lock will be removed from the Z-Wave network and the app will stop controlling it until it is paired again.');
+  if (!ok) return;
+  try {
+    const r = await api('POST', '/api/deadbolt/unpair');
+    if (r.error) { toast(r.error, 'error'); return; }
+    toast('Unpairing started', 'info');
+    pollPairingStatus();
+  } catch (e) { toast(`Unpair failed to start: ${e.message}`, 'error'); }
+}
+
+async function deadboltControl(action) {
+  const ok = confirm(`Send a real ${action.toUpperCase()} command to the deadbolt?\n\nThe physical bolt will move.`);
+  if (!ok) return;
+  try {
+    const r = await api('POST', '/api/deadbolt/control', { action });
+    if (r.success) toast(`Deadbolt ${action} confirmed (bolt: ${r.boltState})`, 'success');
+    else toast(`Deadbolt ${action} failed: ${r.error || 'not verified'}`, 'error');
+    refreshZwaveDeadbolt();
+  } catch (e) { toast(`Control failed: ${e.message}`, 'error'); }
 }
 
 async function loadSerialPorts() {

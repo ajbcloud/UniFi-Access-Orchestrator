@@ -36,6 +36,9 @@ const Notifier = require('./notifier');
 const DeadboltController = require('./deadbolt-controller');
 const FakeLock = require('./drivers/fake-lock');
 const { ZwaveLock } = require('./drivers/zwave-lock');
+const { ZwaveManager } = require('./drivers/zwave-manager');
+const { ZwavePairing } = require('./drivers/zwave-pairing');
+const { loadSecurityKeys, ensureSecurityKeys } = require('./drivers/zwave-keys');
 const {
   redactSecrets,
   stripRedactedPlaceholders,
@@ -77,6 +80,72 @@ let notifier = new Notifier(config.alerts || {}, { logger });
 let lockDriver = null;
 let deadboltController = null;
 
+// Shared Z-Wave plumbing: ONE driver session per serial port, borrowed by both
+// the lock driver and the pairing flow so they never contend for the port.
+// Live getters keep these valid across config reloads.
+const zwaveManager = new ZwaveManager({
+  logger,
+  loadKeys: () => {
+    const k = loadSecurityKeys(config.devices && config.devices.zwave);
+    return { classic: k.classic, longRange: k.longRange };
+  },
+});
+const zwavePairing = new ZwavePairing({
+  manager: zwaveManager,
+  logger,
+  getZwaveConfig: () => config.devices && config.devices.zwave,
+  isLockBound: () => !!lockDriver && lockDriver instanceof ZwaveLock,
+  // Generate any missing S2 keys and persist them BEFORE inclusion, so a
+  // crash after pairing can never orphan the lock.
+  ensureKeysPersisted: async () => {
+    const { generated } = ensureSecurityKeys(config.devices && config.devices.zwave);
+    if (!generated) return { generated: false };
+    persistZwaveMutation((cfg) => {
+      cfg.devices = cfg.devices || {};
+      cfg.devices.zwave = cfg.devices.zwave || {};
+      cfg.devices.zwave.security_keys = Object.assign({}, cfg.devices.zwave.security_keys, generated);
+    });
+    logger.info('Z-Wave: generated and stored new S2 security keys (kept in config; do not delete after pairing)');
+    return { generated: true };
+  },
+  onIncludeDone: async ({ nodeId }) => {
+    persistZwaveMutation((cfg) => {
+      cfg.devices = cfg.devices || {};
+      const zw = cfg.devices.zwave = cfg.devices.zwave || {};
+      zw.locks = zw.locks || {};
+      const lockId = (cfg.deadbolt_rules && cfg.deadbolt_rules.lock_id)
+        || Object.keys(zw.locks)[0] || 'front_deadbolt';
+      zw.locks[lockId] = Object.assign(
+        { verify_timeout_ms: 12000, verify_retries: 1, poll_minutes: 20, low_battery_pct: 25 },
+        zw.locks[lockId],
+        { node_id: nodeId }
+      );
+      zw.enabled = true;
+      // buildDeadbolt() activates on deadbolt_rules; seed the minimal block so
+      // the freshly-paired lock is manageable (rules stay inert without a
+      // trigger_door, which the operator configures separately).
+      cfg.deadbolt_rules = Object.assign({ lock_id: lockId }, cfg.deadbolt_rules);
+    });
+    await bringDeadboltOnline();
+    logger.info(`Z-Wave: lock paired as node ${nodeId} and brought online`);
+  },
+  onExcludeDone: async ({ nodeId }) => {
+    const zw = config.devices && config.devices.zwave;
+    const locks = (zw && zw.locks) || {};
+    const lockId = Object.keys(locks).find((id) => locks[id] && locks[id].node_id === nodeId);
+    if (!lockId) {
+      logger.info(`Z-Wave: excluded node ${nodeId} (not the configured lock; nothing to clean up)`);
+      return;
+    }
+    persistZwaveMutation((cfg) => {
+      const zwc = cfg.devices && cfg.devices.zwave;
+      if (zwc && zwc.locks && zwc.locks[lockId]) zwc.locks[lockId].node_id = 0;
+    });
+    await bringDeadboltOnline();
+    logger.info(`Z-Wave: lock (node ${nodeId}) unpaired; deadbolt disabled until a lock is paired again`);
+  },
+});
+
 function buildDeadbolt() {
   const dbCfg = config.deadbolt_rules;
   const cascCfg = config.cascade_rules;
@@ -90,7 +159,14 @@ function buildDeadbolt() {
         { serial_path: zw.serial_path, cache_dir: zw.cache_dir },
         locks[lockId] || {}
       );
-      lockDriver = new ZwaveLock(lockCfg, { logger });
+      if (!lockCfg.node_id) {
+        // Enabled but nothing paired yet: normal mid-setup state, not an
+        // error. The dashboard's Pair flow fills in node_id and reactivates.
+        lockDriver = null;
+        logger.info('Deadbolt: Z-Wave is enabled but no lock is paired yet. Use Pair New Lock in the dashboard (Configuration tab).');
+      } else {
+        lockDriver = new ZwaveLock(lockCfg, { logger, manager: zwaveManager });
+      }
     } else if ((zw && zw.dev_fake_lock) || process.env.NODE_ENV === 'development') {
       // Fake lock is OPT-IN only. It ALWAYS reports success and drives no
       // hardware, so it must never be substituted silently in production.
@@ -111,6 +187,29 @@ function buildDeadbolt() {
     onAlert: (a) => { logger.warn(`ALERT ${a.type}: ${JSON.stringify(a)}`); notifier.notify(a); },
   });
   logger.info(`Deadbolt add-on active (lock driver: ${lockDriver ? lockDriver.constructor.name : 'none'}, cascade rules: ${deadboltController.cascadeRules.length})`);
+}
+
+// Rebuild and activate the deadbolt after pairing/unpairing WITHOUT an app
+// restart. The old lock is shut down first (which unbinds its node listeners
+// but leaves the SHARED driver running), then the controller is rebuilt from
+// the just-persisted config and the event taps re-applied.
+async function bringDeadboltOnline() {
+  if (lockDriver) {
+    try { await lockDriver.shutdown(); } catch (e) { logger.warn(`Deadbolt: old lock shutdown failed: ${e.message}`); }
+    lockDriver = null;
+  }
+  deadboltController = null;
+  buildDeadbolt();
+  if (lockDriver) {
+    try {
+      await lockDriver.init();
+      logger.info('Deadbolt lock driver initialized');
+    } catch (err) {
+      logger.error(`Deadbolt lock driver failed to initialize: ${err.message}`);
+      notifier.notify({ type: 'deadbolt_no_transport', detail: `lock driver init failed after pairing: ${err.message}` });
+    }
+  }
+  applyEventTaps();
 }
 
 // Route every raw UniFi event to the capture recorder and the deadbolt
@@ -302,6 +401,24 @@ function writeConfigFile(obj) {
   const tmp = `${CONFIG_PATH}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, CONFIG_PATH);
+}
+
+// The ONLY persistence path the pairing flow uses. Applies the mutation to the
+// on-disk config (read fresh so concurrent PUT edits are not clobbered), writes
+// atomically at 0600, marks the change as self-applied so ConfigSync never
+// fires a reload mid-pairing, and mirrors the mutation into the in-memory
+// config so getters and /api/config agree immediately.
+function persistZwaveMutation(mutator) {
+  let diskConfig;
+  try {
+    diskConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+  } catch (e) {
+    diskConfig = JSON.parse(JSON.stringify(config));
+  }
+  mutator(diskConfig);
+  writeConfigFile(diskConfig);
+  if (configSync && typeof configSync.markConfigApplied === 'function') configSync.markConfigApplied();
+  mutator(config);
 }
 
 // True only when the request carries the configured admin key (header, or the
@@ -520,15 +637,114 @@ app.get('/api/debug/payloads', (req, res) => {
 // Smart-deadbolt add-on endpoints (admin-gated via the /api middleware)
 // ---------------------------------------------------------------------------
 
+// Summary of the Z-Wave transport/pairing state for the dashboard. Never
+// includes key material or the DSK.
+function zwaveSummary() {
+  const zw = (config.devices && config.devices.zwave) || {};
+  const locks = zw.locks || {};
+  const lockId = (config.deadbolt_rules && config.deadbolt_rules.lock_id)
+    || Object.keys(locks)[0] || 'front_deadbolt';
+  const nodeId = (locks[lockId] && locks[lockId].node_id) || 0;
+  return {
+    configured: !!zw.serial_path,
+    enabled: zw.enabled === true,
+    lock_id: lockId,
+    node_id: nodeId,
+    paired: nodeId > 0,
+    manager_running: zwaveManager.isRunning(),
+    pairing_active: zwavePairing.isActive(),
+  };
+}
+
 // Live deadbolt + lock state for the dashboard.
 app.get('/api/devices', async (req, res) => {
-  if (!deadboltController) return res.json({ enabled: false, devices: [] });
+  const zwave = zwaveSummary();
+  if (!deadboltController) return res.json({ enabled: false, devices: [], zwave });
   const status = deadboltController.getStatus();
   let liveState = status.lock;
   if (lockDriver && typeof lockDriver.getState === 'function') {
     try { liveState = await lockDriver.getState(); } catch (e) { /* fall back to snapshot */ }
   }
-  res.json({ enabled: true, deadbolt: status, lock_state: liveState });
+  res.json({ enabled: true, deadbolt: status, lock_state: liveState, zwave });
+});
+
+// ---------------------------------------------------------------------------
+// In-app S2 pairing (one session at a time). The operator flow lives in the
+// dashboard; these endpoints just drive the ZwavePairing state machine.
+// PIN, DSK and key material are never logged.
+// ---------------------------------------------------------------------------
+
+function pairingErrorStatus(err) {
+  if (err.code === 'ACTIVE') return 409;
+  if (err.code === 'NO_PORT') return 400;
+  if (err.code === 'BAD_PIN') return 400;
+  if (err.code === 'WRONG_STATE') return 409;
+  if (/not installed/i.test(err.message || '')) return 503;
+  return 500;
+}
+
+app.post('/api/deadbolt/pair/start', async (req, res) => {
+  try {
+    const status = await zwavePairing.startInclusion();
+    res.json({ status: 'started', mode: 'include', state: status.state, keys_generated: status.keys_generated });
+  } catch (err) {
+    res.status(pairingErrorStatus(err)).json({ error: err.message, state: zwavePairing.state });
+  }
+});
+
+app.get('/api/deadbolt/pair/status', (req, res) => {
+  res.json(zwavePairing.status());
+});
+
+app.post('/api/deadbolt/pair/pin', (req, res) => {
+  try {
+    const r = zwavePairing.submitPin(req.body && req.body.pin);
+    res.json({ status: 'ok', state: r.state });
+  } catch (err) {
+    res.status(pairingErrorStatus(err)).json({ error: err.message, state: zwavePairing.state });
+  }
+});
+
+app.post('/api/deadbolt/pair/cancel', async (req, res) => {
+  const r = await zwavePairing.cancel();
+  res.json({ status: r.status, state: zwavePairing.state });
+});
+
+app.post('/api/deadbolt/unpair', async (req, res) => {
+  try {
+    const status = await zwavePairing.startExclusion();
+    res.json({ status: 'started', mode: 'exclude', state: status.state });
+  } catch (err) {
+    res.status(pairingErrorStatus(err)).json({ error: err.message, state: zwavePairing.state });
+  }
+});
+
+// Manual test of the paired deadbolt from the dashboard. Uses the same
+// verified lock()/unlock() the automation uses; UniFi is never involved.
+app.post('/api/deadbolt/control', async (req, res) => {
+  const action = req.body && req.body.action;
+  if (action !== 'lock' && action !== 'unlock') {
+    return res.status(400).json({ error: 'action must be "lock" or "unlock"' });
+  }
+  if (zwavePairing.isActive()) {
+    return res.status(409).json({ error: 'A pairing session is in progress' });
+  }
+  if (!lockDriver) {
+    return res.status(503).json({ error: 'No lock driver is active (pair a lock first)' });
+  }
+  try {
+    const result = await (action === 'lock' ? lockDriver.lock('manual_test') : lockDriver.unlock('manual_test'));
+    broadcastEvent({
+      type: 'deadbolt.manual_test',
+      actor: 'GUI Admin',
+      location: 'Deadbolt',
+      action: `Test ${action}`,
+      success: !!(result && result.success),
+    });
+    res.json({ action, success: !!(result && result.success), boltState: result && result.boltState, error: (result && result.error) || null });
+  } catch (err) {
+    res.status(500).json({ action, success: false, error: err.message });
+  }
 });
 
 // Serial-port discovery so the dashboard can offer a COM-port picker for the
@@ -1040,6 +1256,13 @@ app.put('/api/config', async (req, res) => {
   if (!validation.ok) {
     logger.warn(`Rejected config update: ${validation.error}`);
     return res.status(400).json({ error: validation.error });
+  }
+
+  // Z-Wave settings are frozen while a pairing session runs: the session
+  // persists node_id/keys itself, and a concurrent rewrite of devices.zwave
+  // could clobber them or switch the serial port mid-inclusion.
+  if (zwavePairing.isActive() && updates.devices && updates.devices.zwave !== undefined) {
+    return res.status(409).json({ error: 'A pairing session is in progress. Finish or cancel it before changing Z-Wave settings.' });
   }
 
   try {
@@ -1730,7 +1953,9 @@ async function reloadServices(newConfig) {
     // Note: the deadbolt lock driver and controller rules are intentionally NOT
     // rebuilt here (avoids reconnecting the Z-Wave stick). The cascade tracks the
     // new client via its getUnifiClient closure; deadbolt/cascade RULE changes
-    // require a service restart.
+    // require a service restart. The shared zwaveManager and zwavePairing
+    // session likewise live outside this function by design, so a config
+    // reload can never tear down the driver or a pairing session mid-flight.
 
     const initOk = await unifiClient.initialize();
     if (initOk) {
@@ -1920,9 +2145,24 @@ if (require.main === module) {
     logger.info(sig);
     if (configSync) configSync.stop();
     try {
-      // Await the Z-Wave driver teardown (bounded) so destroy() can complete.
+      // Stop an active pairing session first (bounded) so the stick is not
+      // left in inclusion mode across a restart.
+      if (zwavePairing.isActive()) await Promise.race([
+        zwavePairing.cancel('shutdown'),
+        new Promise((r) => setTimeout(r, 2000)),
+      ]);
+    } catch (e) { /* ignore teardown errors */ }
+    try {
+      // Await the Z-Wave lock teardown (bounded) so listeners unbind cleanly.
       if (lockDriver) await Promise.race([
         Promise.resolve(lockDriver.shutdown()),
+        new Promise((r) => setTimeout(r, 3000)),
+      ]);
+    } catch (e) { /* ignore teardown errors */ }
+    try {
+      // The shared driver session is owned here; destroy it last (bounded).
+      if (zwaveManager.isRunning()) await Promise.race([
+        zwaveManager.stop(),
         new Promise((r) => setTimeout(r, 3000)),
       ]);
     } catch (e) { /* ignore teardown errors */ }
