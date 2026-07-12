@@ -40,14 +40,16 @@ test('computeWizardAutoOpen opens only for a genuine fresh install', () => {
   // fresh: no host, no wizard state -> open
   assert.strictEqual(fn({ unifi: {} }), true);
   assert.strictEqual(fn({ unifi: { host: '' } }), true);
-  assert.strictEqual(fn({ unifi: { host: '192.168.1.1' } }), true, 'placeholder host counts as unset');
 
   // skipped / completed -> never
   assert.strictEqual(fn({ unifi: {}, setup_wizard: { skipped: true } }), false);
   assert.strictEqual(fn({ unifi: {}, setup_wizard: { completed: true } }), false);
 
-  // legacy upgrade: real host, no setup_wizard key -> already set up, no open
+  // legacy upgrade: real host, no setup_wizard key -> already set up, no open.
+  // A gateway genuinely at 192.168.1.1 counts as configured (no placeholder
+  // special-case), so an upgraded install there is not interrupted.
   assert.strictEqual(fn({ unifi: { host: '10.1.10.5' } }), false);
+  assert.strictEqual(fn({ unifi: { host: '192.168.1.1' } }), false, 'a real configured host, not a placeholder');
 
   // resume: host still empty, wizard started but not finished -> open
   assert.strictEqual(fn({ unifi: { host: '' }, setup_wizard: { last_step: 'groups' } }), true);

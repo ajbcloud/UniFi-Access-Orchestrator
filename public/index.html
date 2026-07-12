@@ -3685,7 +3685,7 @@ function computeWizardAutoOpen(config) {
   if (!config || typeof config !== 'object') return false;
   const unifi = (config.unifi && typeof config.unifi === 'object') ? config.unifi : {};
   const host = typeof unifi.host === 'string' ? unifi.host.trim() : '';
-  const hostSet = host !== '' && host !== '192.168.1.1';
+  const hostSet = host !== '';
   const sw = (config.setup_wizard && typeof config.setup_wizard === 'object') ? config.setup_wizard : {};
   if (sw.completed === true || sw.skipped === true) return false;
   return !hostSet;
@@ -3852,7 +3852,7 @@ function showSetupWizard(startStep) {
 
   const unifi = (configData && configData.unifi) || {};
   const host = typeof unifi.host === 'string' ? unifi.host.trim() : '';
-  const hostSet = host !== '' && host !== '192.168.1.1';
+  const hostSet = host !== '';
   if (hostSet) {
     const hostEl = document.getElementById('setupHost'); if (hostEl) hostEl.value = host;
     const portEl = document.getElementById('setupPort'); if (portEl) portEl.value = unifi.port || 12445;
@@ -4007,6 +4007,15 @@ async function wizardNext() {
       if (el) el.innerHTML = '<span style="color:var(--yellow)">Please test the connection first, or choose Skip for now.</span>';
       return;
     }
+    // The test may have passed earlier; guard against the host having been
+    // cleared since, which would otherwise persist an empty host and tear down
+    // the working controller connection on the server reload.
+    const hostEl = document.getElementById('setupHost');
+    if (!hostEl || hostEl.value.trim() === '') {
+      const el = document.getElementById('setupStatus');
+      if (el) el.innerHTML = '<span style="color:var(--yellow)">Please enter the controller address before continuing.</span>';
+      return;
+    }
     // Persist the latest field values (idempotent; the token is left untouched
     // when the field is blank so a saved token is never wiped).
     try { await persistConnection(); } catch (e) { /* test already proved reachability */ }
@@ -4045,8 +4054,11 @@ async function persistConnection() {
   const serverPort = spEl ? spEl.value.trim() : '';
   const body = {
     server: { port: parseInt(serverPort, 10) || 3000, host: '0.0.0.0' },
-    unifi: { host, port: parseInt(port, 10) || 12445, verify_ssl: false, user_sync_interval_minutes: 5 }
+    unifi: { port: parseInt(port, 10) || 12445, verify_ssl: false, user_sync_interval_minutes: 5 }
   };
+  // Omit a blank host so a stored, working host is never overwritten with '',
+  // which would trigger a full reload against an empty controller address.
+  if (host) body.unifi.host = host;
   if (token) body.unifi.token = token; // never overwrite a stored token with blank
   await api('PUT', '/api/config', body);
 }
