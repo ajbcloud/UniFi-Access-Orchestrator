@@ -13,6 +13,7 @@ Built for multi-tenant commercial buildings where different tenants need differe
 - [Option A: Windows Desktop App](#option-a-windows-desktop-app)
 - [Option B: Linux / Raspberry Pi](#option-b-linux--raspberry-pi)
 - [Configuring Unlock Rules](#configuring-unlock-rules)
+- [Visual Designer](#visual-designer)
 - [Setting Up Alarm Manager Webhooks](#setting-up-alarm-manager-webhooks)
 - [Testing Your Setup](#testing-your-setup)
 - [Dashboard Guide](#dashboard-guide)
@@ -374,6 +375,26 @@ After editing config, apply the changes:
 - **Dashboard:** Click the **Reload Service** button on the Configuration tab
 - **Command line:** `sudo systemctl restart unifi-access-orchestrator`
 - **API:** `curl -X POST http://DEVICE_IP:3000/reload`
+
+---
+
+## Visual Designer
+
+If you prefer to see your automation as a diagram instead of a list of forms, open the **Visual Designer** tab. It draws every rule as a node graph and stays in sync with the Configuration tab both ways: anything you build in the designer fills in the matching manual fields, and anything you change on the Configuration tab redraws here. Both surfaces edit the same `config.json`, so there is only one source of truth.
+
+**What the graph shows**
+
+- **Trigger doors** (left) feed into **user/visitor groups** (middle), which unlock **target doors** (right).
+- The **Smart Deadbolt** node appears when the Z-Wave add-on is set up, wired to its retract trigger.
+- Edge colors map to rule types: blue for access (NFC / PIN / face / mobile), purple for visitor (doorbell / buzz-in), teal for the deadbolt cascade, and orange for the deadbolt retract.
+
+**Building rules**
+
+- **Draw a connection:** drag from a node's right-hand dot onto another node. Trigger door to group starts an access rule, group to door adds an unlocked door, trigger door to another door creates a deadbolt cascade, and trigger door to the deadbolt sets the retract trigger.
+- **Add from the panel:** use the buttons on the right to add an access, visitor, or cascade rule, or to set the deadbolt trigger.
+- **Edit or delete:** click any node to list the rules that touch it, or click an edge to open that rule. Change the group, trigger door, delay, or unlocked doors and click **Save**. Every save applies immediately, exactly like the manual forms.
+
+Use the on-canvas controls to zoom, **Fit** the whole graph to the view, or **Arrange** to auto-lay-out the nodes. Node positions you drag are remembered on that machine.
 
 ---
 

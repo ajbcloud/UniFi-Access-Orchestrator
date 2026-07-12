@@ -946,6 +946,136 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   .rule-form .form-row { flex-direction: column; align-items: flex-start; }
   .rule-form select { width: 100%; }
 }
+
+/* ============================================================
+   Visual Designer (node-based flow editor)
+   ============================================================ */
+.fd-wrap { display: flex; gap: 16px; height: calc(100vh - 210px); min-height: 460px; }
+.fd-canvas {
+  position: relative;
+  flex: 1;
+  background: var(--bg-input);
+  background-image:
+    radial-gradient(circle, var(--border) 1px, transparent 1px);
+  background-size: 22px 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+}
+.fd-world { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+.fd-edges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+.fd-edges .fd-edge-hit { stroke: transparent; stroke-width: 16; fill: none; pointer-events: stroke; cursor: pointer; }
+.fd-edges .fd-edge { pointer-events: none; transition: stroke-opacity .12s, stroke-width .12s; }
+.fd-nodes, .fd-labels { position: absolute; top: 0; left: 0; }
+.fd-node {
+  position: absolute;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,.28);
+  cursor: grab;
+  user-select: none;
+}
+.fd-node:hover { border-color: var(--accent); }
+.fd-node.fd-sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--blue-dim), 0 2px 10px rgba(0,0,0,.35); }
+.fd-node.fd-door { border-left-color: #0070f3; }
+.fd-node.fd-group { border-left-color: #a855f7; }
+.fd-node.fd-deadbolt { border-left-color: #f97316; }
+.fd-node-role { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-muted); }
+.fd-node-label { font-size: 13px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fd-handle {
+  position: absolute;
+  width: 12px; height: 12px;
+  background: var(--bg-primary);
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: crosshair;
+  z-index: 2;
+}
+.fd-handle:hover { background: var(--accent); }
+.fd-out { right: -7px; }
+.fd-in { left: -7px; border-color: var(--text-muted); cursor: default; }
+.fd-elabel {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  background: var(--bg-secondary);
+  border: 1px solid;
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.fd-controls {
+  position: absolute;
+  left: 12px; bottom: 12px;
+  display: flex; gap: 6px;
+  z-index: 5;
+}
+.fd-controls button {
+  width: 30px; height: 30px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  color: var(--text-primary);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+.fd-controls button:hover { border-color: var(--accent); color: var(--accent); }
+.fd-controls button.fd-wide { width: auto; padding: 0 10px; font-size: 12px; }
+.fd-empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); font-size: 13px; text-align: center; padding: 24px;
+  pointer-events: none;
+}
+.fd-panel {
+  width: 320px; flex: 0 0 320px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  overflow-y: auto;
+}
+.fd-panel-title { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+.fd-sublabel { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-muted); margin: 14px 0 6px; }
+.fd-hint { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 12px; }
+.fd-add { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.fd-add button { width: 100%; }
+.fd-legend { border-top: 1px solid var(--border); padding-top: 12px; }
+.fd-legend-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.fd-swatch { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 12px; }
+.fd-field { margin-bottom: 12px; }
+.fd-field select, .fd-field input { width: 100%; }
+.fd-checks { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
+.fd-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+.fd-check.on { color: var(--text-primary); }
+.fd-form-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.btn.btn-danger { background: var(--red-dim); color: var(--red); border-color: transparent; }
+.btn.btn-danger:hover { background: var(--red); color: #fff; }
+.fd-rulechip {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text-primary); border-radius: 6px; padding: 7px 10px;
+  font-size: 12px; cursor: pointer; margin-bottom: 6px; text-align: left;
+}
+.fd-rulechip:hover { border-color: var(--accent); }
+@media (max-width: 900px) {
+  .fd-wrap { flex-direction: column; height: auto; }
+  .fd-canvas { height: 60vh; }
+  .fd-panel { width: 100%; flex: 1 1 auto; }
+}
 </style>
 <script>
 // Apply the saved theme before first paint so there is no flash of the wrong
@@ -982,6 +1112,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <div class="tab active" data-page="dashboard">Dashboard</div>
   <div class="tab" data-page="events">Live Events</div>
   <div class="tab" data-page="config">Configuration</div>
+  <div class="tab" data-page="designer">Visual Designer</div>
   <div class="tab" data-page="settings">Settings</div>
   <div class="tab" data-page="tools">Test Tools</div>
 </div>
@@ -1331,6 +1462,34 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     </div>
   </div>
 
+  <!-- VISUAL DESIGNER -->
+  <div id="designer" class="page">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div>
+        <div style="font-size:15px;font-weight:600">Visual Designer</div>
+        <div style="font-size:12px;color:var(--text-muted)">Build cascading door rules and the deadbolt add-on visually. Changes here fill in the Configuration tab, and vice versa.</div>
+      </div>
+      <button class="btn btn-sm btn-secondary" onclick="if(window.openDesigner)window.openDesigner()">Refresh</button>
+    </div>
+    <div class="fd-wrap">
+      <div class="fd-canvas" id="fdCanvas">
+        <div class="fd-world" id="fdWorld">
+          <svg class="fd-edges" id="fdEdges" xmlns="http://www.w3.org/2000/svg"></svg>
+          <div class="fd-labels" id="fdLabels"></div>
+          <div class="fd-nodes" id="fdNodes"></div>
+        </div>
+        <div class="fd-empty" id="fdEmpty" style="display:none">No rules yet. Use the panel on the right to add an access, visitor, or cascade rule, or drag between nodes to wire one.</div>
+        <div class="fd-controls">
+          <button id="fdZoomIn" title="Zoom in">+</button>
+          <button id="fdZoomOut" title="Zoom out">&minus;</button>
+          <button id="fdFit" class="fd-wide" title="Fit to view">Fit</button>
+          <button id="fdArrange" class="fd-wide" title="Auto arrange">Arrange</button>
+        </div>
+      </div>
+      <div class="fd-panel" id="fdPanel"></div>
+    </div>
+  </div>
+
     <!-- SETTINGS -->
     <div id="settings" class="page">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -1615,6 +1774,10 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.page === 'settings') {
       loadSettings();
       loadBackups();
+    }
+    // (Re)draw the visual designer when its tab is opened
+    if (tab.dataset.page === 'designer' && window.openDesigner) {
+      window.openDesigner();
     }
   });
 });
@@ -2037,6 +2200,10 @@ async function loadConfig() {
       api('GET', '/api/groups/discovered').catch(() => ({ groups: [] }))
     ]);
     renderConfig();
+    // Keep the visual designer in sync with manual edits (shared source of
+    // truth). Guarded and placed right after renderConfig so an unrelated
+    // render error below can never skip it. The designer is non-critical.
+    if (typeof renderDesigner === 'function') { try { renderDesigner(); } catch (e) { /* designer optional */ } }
     // Rendered here (not inside renderConfig) because renderConfig returns
     // early when no users are synced yet, and the Z-Wave transport setup must
     // be reachable on a fresh install.
@@ -4621,6 +4788,818 @@ async function saveSetup() {
 })();
 
 setInterval(fetchHealth, 10000);
+</script>
+<script>
+// ============================================================
+// Visual Designer (node-based, bidirectional with manual config)
+//
+// A dependency-free, React-Flow-style canvas that renders the door
+// automation graph from `configData` and writes edits back through the
+// same save helpers the manual forms use. Because both surfaces share
+// `configData` + PUT /api/config + loadConfig(), a manual edit re-draws
+// the canvas and a canvas edit fills in the manual fields. One source of
+// truth, two ways to edit it.
+//
+// Graph model (forward projection of config -> nodes/edges):
+//   Access rule  {group,trigger,unlock[],delay}   trigger --badge-->  group --unlock--> door
+//   Visitor rule {group,trigger,unlock[],delay}   trigger --buzz-->   group --unlock--> door
+//   Cascade rule {trigger_door,unlock[],debounce} trigger --cascade--> door
+//   Deadbolt     deadbolt_rules.trigger_door       trigger --retract--> deadbolt
+//
+// Every edge carries its owning rule identity (ruleType + ruleIndex), so
+// clicking an edge selects that exact rule for editing even when a group
+// node is shared across several rules.
+// ============================================================
+(function () {
+  'use strict';
+
+  const NODE_W = 184;
+  const NODE_H = 56;
+  const GRID = 6000;
+  const COL_GAP = 300;
+  const ROW_GAP = 92;
+  const ORIGIN = 48;
+  const LS_KEY = 'fd_positions_v1';
+
+  const EDGE_COLOR = {
+    access: '#0070f3',
+    visitor: '#a855f7',
+    cascade: '#14b8a6',
+    retract: '#f97316',
+  };
+  const EDGE_VERB = {
+    access: 'badge',
+    visitor: 'buzz-in',
+    cascade: 'cascade',
+    retract: 'retract',
+  };
+
+  const FD = {
+    inited: false,
+    nodes: [],
+    byId: {},
+    edges: [],
+    scale: 1,
+    tx: ORIGIN,
+    ty: ORIGIN,
+    sel: null,        // {ruleType, ruleIndex} | {node:id} | null
+    positions: {},    // persisted node positions keyed by node id
+    mode: 'palette',  // 'palette' | 'edit' | 'new'
+    newType: null,    // rule type when mode === 'new'
+    prefill: null,    // {group,trigger,unlock[],delay,debounce} for a new rule
+    edgeEls: {},      // edge id -> {hit, path, label}
+    nodeEls: {},      // node id -> element
+    drag: null,       // active node drag
+    pan: null,        // active canvas pan
+    conn: null,       // active connection drag
+  };
+
+  // ---- config accessors (reuse the manual UI's globals) ----
+  const G = (name) => (typeof window[name] === 'function' ? window[name] : null);
+  function accessRules() { const f = G('_getAccessRules'); return f ? f() : []; }
+  function visitorRules() { const f = G('_getVisitorRules'); return f ? f() : []; }
+  function cascadeRules() { const f = G('_getCascadeRules'); return f ? f() : []; }
+  function esc(s) { const f = G('escapeHtml'); return f ? f(String(s == null ? '' : s)) : String(s == null ? '' : s); }
+  function notify(m, t) { const f = G('toast'); if (f) f(m, t); }
+
+  function allDoors() {
+    const f = G('_getAllDoors');
+    if (f) return f();
+    const d = (doorsData && (doorsData.discovered || doorsData.configured)) || {};
+    return Object.keys(d).filter((k) => !k.startsWith('_'));
+  }
+
+  function allGroups() {
+    const s = new Set();
+    const f = G('_getDiscoveredGroupNames');
+    if (f) f().forEach((g) => s.add(g));
+    accessRules().forEach((r) => r.group && s.add(r.group));
+    visitorRules().forEach((r) => r.group && s.add(r.group));
+    const map = (configData && configData.resolver && configData.resolver.unifi_group_to_group) || {};
+    Object.values(map).forEach((v) => v && s.add(v));
+    return Array.from(s).sort();
+  }
+
+  function deadboltVisible() {
+    const cfg = configData || {};
+    const db = cfg.deadbolt_rules || null;
+    const zw = (cfg.devices && cfg.devices.zwave) || {};
+    return !!(db || zw.enabled || (zw.locks && Object.keys(zw.locks).length) || cascadeRules().length);
+  }
+
+  // ---- position persistence ----
+  function loadPositions() {
+    try { FD.positions = JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {}; }
+    catch (e) { FD.positions = {}; }
+  }
+  function savePositions() {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(FD.positions)); } catch (e) { /* storage optional */ }
+  }
+
+  // ---- forward projection: config -> nodes + edges ----
+  function buildModel() {
+    const nodes = [];
+    const byId = {};
+    const edges = [];
+
+    function ensureNode(kind, key, label) {
+      const id = kind + ':' + key;
+      if (byId[id]) return byId[id];
+      const n = { id, kind, key, label: label || key, roles: {} };
+      byId[id] = n;
+      nodes.push(n);
+      return n;
+    }
+    function addEdge(from, to, ruleType, ruleIndex, verb, meta) {
+      const id = ruleType + ':' + ruleIndex + ':' + from.id + '>' + to.id;
+      edges.push({ id, from: from.id, to: to.id, ruleType, ruleIndex, verb, meta: meta || {} });
+    }
+
+    accessRules().forEach((r, i) => {
+      if (!r || !r.group || !r.trigger) return;
+      const t = ensureNode('door', r.trigger); t.roles.trigger = true;
+      const g = ensureNode('group', r.group);
+      const delay = r.delay || 0;
+      addEdge(t, g, 'access', i, delay > 0 ? 'badge / ' + delay + 's' : 'badge');
+      (r.unlock || []).forEach((d) => {
+        const dd = ensureNode('door', d); dd.roles.target = true;
+        addEdge(g, dd, 'access', i, 'unlock');
+      });
+    });
+
+    visitorRules().forEach((r, i) => {
+      if (!r || !r.group || !r.trigger) return;
+      const t = ensureNode('door', r.trigger); t.roles.trigger = true;
+      const g = ensureNode('group', r.group);
+      const delay = r.delay || 0;
+      addEdge(t, g, 'visitor', i, delay > 0 ? 'buzz-in / ' + delay + 's' : 'buzz-in');
+      (r.unlock || []).forEach((d) => {
+        const dd = ensureNode('door', d); dd.roles.target = true;
+        addEdge(g, dd, 'visitor', i, 'unlock');
+      });
+    });
+
+    cascadeRules().forEach((r, i) => {
+      if (!r || !r.trigger_door) return;
+      const t = ensureNode('door', r.trigger_door); t.roles.trigger = true;
+      const deb = r.debounce_seconds == null ? 8 : r.debounce_seconds;
+      (r.unlock || []).forEach((d) => {
+        const dd = ensureNode('door', d); dd.roles.target = true;
+        addEdge(t, dd, 'cascade', i, 'cascade / ' + deb + 's');
+      });
+    });
+
+    if (deadboltVisible()) {
+      const db = ensureNode('deadbolt', 'deadbolt', 'Smart Deadbolt');
+      const trig = (configData && configData.deadbolt_rules && configData.deadbolt_rules.trigger_door) || '';
+      if (trig) {
+        const t = ensureNode('door', trig); t.roles.trigger = true;
+        addEdge(t, db, 'retract', 0, 'retract');
+      }
+    }
+
+    FD.nodes = nodes;
+    FD.byId = byId;
+    FD.edges = edges;
+    layout();
+  }
+
+  // Layered left-to-right layout: triggers | groups | targets+deadbolt.
+  // Stored (dragged) positions win; only fresh nodes get auto-placed.
+  function layout() {
+    const cols = { 0: [], 1: [], 2: [] };
+    FD.nodes.forEach((n) => {
+      let c;
+      if (n.kind === 'group') c = 1;
+      else if (n.kind === 'deadbolt') c = 2;
+      else c = n.roles.trigger ? 0 : 2;
+      n.col = c;
+      cols[c].push(n);
+    });
+    Object.keys(cols).forEach((c) => {
+      cols[c].forEach((n, i) => {
+        const saved = FD.positions[n.id];
+        if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+          n.x = saved.x; n.y = saved.y;
+        } else {
+          n.x = ORIGIN + Number(c) * COL_GAP;
+          n.y = ORIGIN + i * ROW_GAP;
+        }
+      });
+    });
+  }
+
+  // ---- geometry ----
+  function outPt(n) { return { x: n.x + NODE_W, y: n.y + NODE_H / 2 }; }
+  function inPt(n) { return { x: n.x, y: n.y + NODE_H / 2 }; }
+  function bezier(x1, y1, x2, y2) {
+    const dx = Math.max(40, Math.abs(x2 - x1) * 0.45);
+    return 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + dx) + ' ' + y1 + ', ' + (x2 - dx) + ' ' + y2 + ', ' + x2 + ' ' + y2;
+  }
+  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+  // ---- DOM refs ----
+  let canvasEl, worldEl, svgEl, nodeLayer, labelLayer, panelEl, emptyEl;
+
+  function applyTransform() {
+    worldEl.style.transform = 'translate(' + FD.tx + 'px,' + FD.ty + 'px) scale(' + FD.scale + ')';
+  }
+
+  // ---- rendering ----
+  function draw() {
+    // Edges layer (SVG). Two paths per edge: a fat transparent hit target
+    // and the visible curve, plus a positioned label div.
+    let defs = '<defs>';
+    Object.keys(EDGE_COLOR).forEach((k) => {
+      defs += '<marker id="fd-arrow-' + k + '" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
+        + '<path d="M0 0 L10 5 L0 10 z" fill="' + EDGE_COLOR[k] + '"/></marker>';
+    });
+    defs += '</defs>';
+
+    const selRule = FD.sel && FD.sel.ruleType ? FD.sel : null;
+    const hasSel = !!selRule;
+    let paths = '';
+    FD.edges.forEach((e) => {
+      const a = FD.byId[e.from], b = FD.byId[e.to];
+      if (!a || !b) return;
+      const p = outPt(a), q = inPt(b);
+      const d = bezier(p.x, p.y, q.x, q.y);
+      const on = hasSel && selRule.ruleType === e.ruleType && selRule.ruleIndex === e.ruleIndex;
+      const col = EDGE_COLOR[e.ruleType] || '#8b8f9a';
+      const op = hasSel ? (on ? 1 : 0.18) : 0.9;
+      const w = on ? 3 : 2;
+      paths += '<path class="fd-edge-hit" data-edge="' + esc(e.id) + '" d="' + d + '" />';
+      paths += '<path class="fd-edge" data-edge="' + esc(e.id) + '" d="' + d + '" fill="none" stroke="' + col + '" stroke-width="' + w + '" stroke-opacity="' + op + '" marker-end="url(#fd-arrow-' + e.ruleType + ')" />';
+    });
+    svgEl.innerHTML = defs + paths;
+
+    // Node layer
+    let nodesHtml = '';
+    FD.nodes.forEach((n) => {
+      const nodeSel = FD.sel && FD.sel.node === n.id;
+      const roleTxt = n.kind === 'door'
+        ? (n.roles.trigger && n.roles.target ? 'Door' : n.roles.trigger ? 'Trigger' : 'Unlocks')
+        : n.kind === 'group' ? 'Group' : 'Deadbolt';
+      nodesHtml += '<div class="fd-node fd-' + n.kind + (nodeSel ? ' fd-sel' : '') + '" data-node="' + esc(n.id) + '" '
+        + 'style="left:' + n.x + 'px;top:' + n.y + 'px;width:' + NODE_W + 'px;height:' + NODE_H + 'px">'
+        + '<span class="fd-in fd-handle" data-handle="in" data-node="' + esc(n.id) + '"></span>'
+        + '<div class="fd-node-role">' + esc(roleTxt) + '</div>'
+        + '<div class="fd-node-label" title="' + esc(n.label) + '">' + esc(n.label) + '</div>'
+        + (n.kind === 'deadbolt' ? '' : '<span class="fd-out fd-handle" data-handle="out" data-node="' + esc(n.id) + '"></span>')
+        + '</div>';
+    });
+    nodeLayer.innerHTML = nodesHtml;
+
+    // Edge labels (positioned near curve midpoints, non-interactive)
+    let labels = '';
+    FD.edges.forEach((e) => {
+      if (!e.verb) return;
+      const a = FD.byId[e.from], b = FD.byId[e.to];
+      if (!a || !b) return;
+      const p = outPt(a), q = inPt(b);
+      const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
+      const on = hasSel && selRule && selRule.ruleType === e.ruleType && selRule.ruleIndex === e.ruleIndex;
+      const op = hasSel ? (on ? 1 : 0.15) : 0.85;
+      labels += '<div class="fd-elabel" style="left:' + mx + 'px;top:' + my + 'px;opacity:' + op + ';border-color:' + (EDGE_COLOR[e.ruleType] || '#555') + '">' + esc(e.verb) + '</div>';
+    });
+    labelLayer.innerHTML = labels;
+
+    if (emptyEl) emptyEl.style.display = FD.nodes.length ? 'none' : 'flex';
+
+    wireNodeEvents();
+    applyTransform();
+  }
+
+  // Recompute only edge/label geometry (used during node drag) without
+  // rebuilding node DOM, so drag stays smooth. Select only the classed edge
+  // paths (in document order: hit, visible, hit, visible ...) so the marker
+  // paths inside <defs> never shift the index.
+  function redrawEdges() {
+    const paths = svgEl.querySelectorAll('path.fd-edge-hit, path.fd-edge');
+    const labels = labelLayer.children;
+    let pi = 0, li = 0;
+    FD.edges.forEach((e) => {
+      const a = FD.byId[e.from], b = FD.byId[e.to];
+      if (!a || !b) return;
+      const p = outPt(a), q = inPt(b);
+      const d = bezier(p.x, p.y, q.x, q.y);
+      if (paths[pi]) paths[pi].setAttribute('d', d);
+      pi++;
+      if (paths[pi]) paths[pi].setAttribute('d', d);
+      pi++;
+      if (e.verb && labels[li]) {
+        const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
+        labels[li].style.left = mx + 'px';
+        labels[li].style.top = my + 'px';
+        li++;
+      }
+    });
+  }
+
+  function wireNodeEvents() {
+    nodeLayer.querySelectorAll('.fd-node').forEach((el) => {
+      const id = el.getAttribute('data-node');
+      el.addEventListener('pointerdown', (ev) => onNodePointerDown(ev, id, el));
+    });
+    nodeLayer.querySelectorAll('.fd-handle').forEach((h) => {
+      h.addEventListener('pointerdown', (ev) => onHandlePointerDown(ev, h.getAttribute('data-node')));
+    });
+  }
+
+  // ---- coordinate helpers ----
+  function toWorld(clientX, clientY) {
+    const rect = canvasEl.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - FD.tx) / FD.scale,
+      y: (clientY - rect.top - FD.ty) / FD.scale,
+    };
+  }
+
+  // ---- interaction: pan ----
+  function onCanvasPointerDown(ev) {
+    if (ev.target.closest('.fd-node')) return;      // node handles its own drag
+    FD.pan = { sx: ev.clientX, sy: ev.clientY, tx: FD.tx, ty: FD.ty, moved: false };
+    canvasEl.setPointerCapture(ev.pointerId);
+    canvasEl.style.cursor = 'grabbing';
+  }
+  function onCanvasPointerMove(ev) {
+    if (FD.pan) {
+      FD.tx = FD.pan.tx + (ev.clientX - FD.pan.sx);
+      FD.ty = FD.pan.ty + (ev.clientY - FD.pan.sy);
+      FD.pan.moved = true;
+      applyTransform();
+    }
+    if (FD.conn) updateTempConn(ev);
+  }
+  function onCanvasPointerUp(ev) {
+    if (FD.pan) {
+      const wasClick = !FD.pan.moved;
+      FD.pan = null;
+      canvasEl.style.cursor = '';
+      if (wasClick && !ev.target.closest('.fd-node') && !ev.target.closest('[data-edge]')) {
+        select(null);
+      }
+    }
+    if (FD.conn) finishConn(ev);
+  }
+
+  // ---- interaction: node drag / select ----
+  function onNodePointerDown(ev, id, el) {
+    if (ev.target.closest('.fd-handle')) return;    // handle starts a connection
+    ev.stopPropagation();
+    const n = FD.byId[id];
+    if (!n) return;
+    const w = toWorld(ev.clientX, ev.clientY);
+    FD.drag = { id, ox: w.x - n.x, oy: w.y - n.y, moved: false };
+    el.setPointerCapture(ev.pointerId);
+    const move = (e) => {
+      const wp = toWorld(e.clientX, e.clientY);
+      n.x = wp.x - FD.drag.ox;
+      n.y = wp.y - FD.drag.oy;
+      FD.drag.moved = true;
+      el.style.left = n.x + 'px';
+      el.style.top = n.y + 'px';
+      redrawEdges();
+    };
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      if (FD.drag && FD.drag.moved) {
+        FD.positions[id] = { x: n.x, y: n.y };
+        savePositions();
+      } else {
+        select({ node: id });
+      }
+      FD.drag = null;
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+  }
+
+  // ---- interaction: connect-to-create ----
+  function onHandlePointerDown(ev, id) {
+    ev.stopPropagation();
+    ev.preventDefault();
+    const n = FD.byId[id];
+    if (!n) return;
+    const p = outPt(n);
+    FD.conn = { fromId: id, x1: p.x, y1: p.y };
+    const tmp = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    tmp.setAttribute('id', 'fd-temp-edge');
+    tmp.setAttribute('fill', 'none');
+    tmp.setAttribute('stroke', '#8b8f9a');
+    tmp.setAttribute('stroke-width', '2');
+    tmp.setAttribute('stroke-dasharray', '5 4');
+    svgEl.appendChild(tmp);
+    canvasEl.setPointerCapture(ev.pointerId);
+  }
+  function updateTempConn(ev) {
+    const w = toWorld(ev.clientX, ev.clientY);
+    const tmp = document.getElementById('fd-temp-edge');
+    if (tmp) tmp.setAttribute('d', bezier(FD.conn.x1, FD.conn.y1, w.x, w.y));
+  }
+  function finishConn(ev) {
+    const tmp = document.getElementById('fd-temp-edge');
+    if (tmp) tmp.remove();
+    const conn = FD.conn;
+    FD.conn = null;
+    const targetEl = document.elementFromPoint(ev.clientX, ev.clientY);
+    const nodeEl = targetEl && targetEl.closest('.fd-node');
+    if (!nodeEl) return;
+    const toId = nodeEl.getAttribute('data-node');
+    if (!toId || toId === conn.fromId) return;
+    applyConnection(FD.byId[conn.fromId], FD.byId[toId]);
+  }
+
+  // Map a drawn connection to a config operation, mirroring the semantics
+  // of the manual rule builders.
+  function applyConnection(from, to) {
+    if (!from || !to) return;
+    // trigger door -> deadbolt : set the retract trigger (complete action)
+    if (from.kind === 'door' && to.kind === 'deadbolt') {
+      doSaveDeadboltTrigger(from.key);
+      return;
+    }
+    // trigger door -> group : start a new access rule (needs unlock doors)
+    if (from.kind === 'door' && to.kind === 'group') {
+      openNew('access', { group: to.key, trigger: from.key, unlock: [], delay: 0 });
+      return;
+    }
+    // group -> door : add that door to a rule for this group
+    if (from.kind === 'group' && to.kind === 'door') {
+      addDoorToGroup(from.key, to.key);
+      return;
+    }
+    // trigger door -> door : start a cascade rule
+    if (from.kind === 'door' && to.kind === 'door') {
+      openNew('cascade', { trigger_door: from.key, unlock: [to.key], debounce: 8 });
+      return;
+    }
+    notify('That connection has no matching rule type', 'error');
+  }
+
+  function addDoorToGroup(group, door) {
+    const acc = accessRules();
+    const matches = acc.map((r, i) => ({ r, i })).filter((x) => x.r.group === group);
+    if (matches.length === 1) {
+      const rule = Object.assign({}, matches[0].r);
+      rule.unlock = Array.from(new Set([...(rule.unlock || []), door]));
+      acc[matches[0].i] = rule;
+      doSaveAccess(acc, 'Added "' + door + '" to ' + group);
+    } else if (matches.length === 0) {
+      openNew('access', { group, trigger: '', unlock: [door], delay: 0 });
+    } else {
+      // Ambiguous: several triggers for this group. Let the user pick in a form.
+      openNew('access', { group, trigger: '', unlock: [door], delay: 0 });
+      notify('This group has multiple rules. Pick the trigger door to add "' + door + '" to.', 'info');
+    }
+  }
+
+  // ---- selection ----
+  function select(sel) {
+    FD.sel = sel;
+    if (sel && sel.ruleType) { FD.mode = 'edit'; }
+    else if (sel && sel.node) { FD.mode = 'node'; }
+    else { FD.mode = 'palette'; }
+    draw();
+    renderPanel();
+  }
+
+  function openNew(type, prefill) {
+    FD.sel = null;
+    FD.mode = 'new';
+    FD.newType = type;
+    FD.prefill = prefill || {};
+    draw();
+    renderPanel();
+  }
+
+  // ---- edge click (delegated) ----
+  function onSvgClick(ev) {
+    const path = ev.target.closest('[data-edge]');
+    if (!path) return;
+    const id = path.getAttribute('data-edge');
+    const e = FD.edges.find((x) => x.id === id);
+    if (e) select({ ruleType: e.ruleType, ruleIndex: e.ruleIndex });
+  }
+
+  // ============================================================
+  // Properties panel (reverse direction: edits -> config)
+  // ============================================================
+  function renderPanel() {
+    if (!panelEl) return;
+    if (FD.mode === 'edit' && FD.sel && FD.sel.ruleType) return renderRuleForm(FD.sel.ruleType, FD.sel.ruleIndex);
+    if (FD.mode === 'new') return renderRuleForm(FD.newType, null);
+    if (FD.mode === 'node' && FD.sel && FD.sel.node) return renderNodePanel(FD.sel.node);
+    return renderPalette();
+  }
+
+  function renderPalette() {
+    panelEl.innerHTML = ''
+      + '<div class="fd-panel-title">Design</div>'
+      + '<div class="fd-hint">Drag from a node\'s right dot onto another node to wire a rule, or add one below. Every change here fills in the matching manual fields on the Configuration tab.</div>'
+      + '<div class="fd-add">'
+      + '<button class="btn btn-sm btn-primary" data-add="access">+ Access rule</button>'
+      + '<button class="btn btn-sm btn-primary" data-add="visitor">+ Visitor rule</button>'
+      + '<button class="btn btn-sm btn-secondary" data-add="cascade">+ Cascade rule</button>'
+      + '<button class="btn btn-sm btn-secondary" data-add="retract">Set deadbolt trigger</button>'
+      + '</div>'
+      + '<div class="fd-legend">'
+      + legendRow('access', 'Access (NFC / PIN / face / mobile)')
+      + legendRow('visitor', 'Visitor (doorbell / buzz-in)')
+      + legendRow('cascade', 'Cascade (deadbolt add-on)')
+      + legendRow('retract', 'Deadbolt retract')
+      + '</div>';
+    panelEl.querySelectorAll('[data-add]').forEach((b) => {
+      b.addEventListener('click', () => openNew(b.getAttribute('data-add'), {}));
+    });
+  }
+  function legendRow(kind, text) {
+    return '<div class="fd-legend-row"><span class="fd-swatch" style="background:' + EDGE_COLOR[kind] + '"></span>' + esc(text) + '</div>';
+  }
+
+  function renderNodePanel(id) {
+    const n = FD.byId[id];
+    if (!n) { renderPalette(); return; }
+    const related = FD.edges.filter((e) => e.from === id || e.to === id);
+    const seen = {};
+    let list = '';
+    related.forEach((e) => {
+      const key = e.ruleType + ':' + e.ruleIndex;
+      if (seen[key]) return;
+      seen[key] = true;
+      list += '<button class="fd-rulechip" data-rt="' + e.ruleType + '" data-ri="' + e.ruleIndex + '">'
+        + '<span class="fd-swatch" style="background:' + EDGE_COLOR[e.ruleType] + '"></span>'
+        + esc(ruleSummary(e.ruleType, e.ruleIndex)) + '</button>';
+    });
+    panelEl.innerHTML = ''
+      + '<div class="fd-panel-title">' + esc(n.label) + '</div>'
+      + '<div class="fd-hint">' + (n.kind === 'door' ? 'Door' : n.kind === 'group' ? 'User / visitor group' : 'Z-Wave smart deadbolt') + '</div>'
+      + (list ? '<div class="fd-sublabel">Rules on this node</div>' + list : '<div class="fd-hint">No rules touch this node yet.</div>')
+      + '<div style="margin-top:14px"><button class="btn btn-sm btn-secondary" data-back>Back</button></div>';
+    panelEl.querySelectorAll('.fd-rulechip').forEach((b) => {
+      b.addEventListener('click', () => select({ ruleType: b.getAttribute('data-rt'), ruleIndex: Number(b.getAttribute('data-ri')) }));
+    });
+    panelEl.querySelector('[data-back]').addEventListener('click', () => select(null));
+  }
+
+  function ruleSummary(type, idx) {
+    if (type === 'access') { const r = accessRules()[idx] || {}; return r.group + ' @ ' + r.trigger; }
+    if (type === 'visitor') { const r = visitorRules()[idx] || {}; return r.group + ' @ ' + r.trigger; }
+    if (type === 'cascade') { const r = cascadeRules()[idx] || {}; return (r.trigger_door || '?') + ' cascade'; }
+    if (type === 'retract') { return 'Deadbolt retract'; }
+    return type;
+  }
+
+  // Unified rule form for create + edit. idx === null means create.
+  function renderRuleForm(type, idx) {
+    const editing = idx !== null && idx !== undefined;
+    const pf = FD.prefill || {};
+    let rule = {};
+    if (type === 'access') rule = editing ? (accessRules()[idx] || {}) : { group: pf.group || '', trigger: pf.trigger || '', unlock: pf.unlock || [], delay: pf.delay || 0 };
+    if (type === 'visitor') rule = editing ? (visitorRules()[idx] || {}) : { group: pf.group || '', trigger: pf.trigger || '', unlock: pf.unlock || [], delay: pf.delay || 0 };
+    if (type === 'cascade') rule = editing ? (cascadeRules()[idx] || {}) : { trigger_door: pf.trigger_door || '', unlock: pf.unlock || [], debounce_seconds: pf.debounce == null ? 8 : pf.debounce };
+    if (type === 'retract') rule = { trigger_door: (configData && configData.deadbolt_rules && configData.deadbolt_rules.trigger_door) || '' };
+
+    // Include any door/group the rule already references, so a stale discovery
+    // list can never drop a value that is genuinely in use.
+    const doors = Array.from(new Set([].concat(allDoors(), rule.trigger, rule.trigger_door, rule.unlock || []).filter(Boolean)));
+    const groups = Array.from(new Set([].concat(allGroups(), rule.group).filter(Boolean)));
+    const title = (editing ? 'Edit ' : 'New ') + labelFor(type);
+
+    let body = '';
+    if (type === 'access' || type === 'visitor') {
+      const verb = type === 'access' ? 'badges in at' : 'is buzzed in at';
+      body += field('Group',
+        select_(groups, rule.group, 'fdGroup', '-- select group --'));
+      body += field('Trigger door (' + verb + ')',
+        select_(doors, rule.trigger, 'fdTrigger', '-- select door --'));
+      body += field('Delay before unlock (seconds)',
+        '<input type="number" id="fdDelay" min="0" max="600" value="' + Number(rule.delay || 0) + '">');
+      body += field('Unlock these doors', doorChecklist(doors, rule.unlock || []));
+    } else if (type === 'cascade') {
+      body += field('Trigger door (entry granted here)',
+        select_(doors, rule.trigger_door, 'fdTrigger', '-- select door --'));
+      body += field('Debounce (seconds)',
+        '<input type="number" id="fdDebounce" min="0" max="600" value="' + Number(rule.debounce_seconds == null ? 8 : rule.debounce_seconds) + '">');
+      body += field('Unlock these doors', doorChecklist(doors, rule.unlock || []));
+    } else if (type === 'retract') {
+      body += '<div class="fd-hint">When an entry is granted at this door, the deadbolt retracts. Clear it to disable automatic retract.</div>';
+      body += field('Retract trigger door',
+        select_(doors, rule.trigger_door, 'fdTrigger', '-- no retract trigger --'));
+    }
+
+    panelEl.innerHTML = ''
+      + '<div class="fd-panel-title">' + esc(title) + '</div>'
+      + '<div class="fd-form">' + body + '</div>'
+      + '<div class="fd-form-actions">'
+      + '<button class="btn btn-sm btn-primary" data-save>Save</button>'
+      + (editing ? '<button class="btn btn-sm btn-danger" data-del>Delete</button>' : '')
+      + '<button class="btn btn-sm btn-secondary" data-cancel>Cancel</button>'
+      + '</div>';
+
+    panelEl.querySelector('[data-save]').addEventListener('click', () => saveRuleForm(type, idx));
+    if (editing) panelEl.querySelector('[data-del]').addEventListener('click', () => deleteRule(type, idx));
+    panelEl.querySelector('[data-cancel]').addEventListener('click', () => select(null));
+  }
+
+  function labelFor(type) {
+    return type === 'access' ? 'access rule' : type === 'visitor' ? 'visitor rule' : type === 'cascade' ? 'cascade rule' : 'deadbolt trigger';
+  }
+  function field(label, inner) {
+    return '<div class="fd-field"><label class="form-label">' + esc(label) + '</label>' + inner + '</div>';
+  }
+  function select_(items, selected, id, placeholder) {
+    let h = '<select id="' + id + '">';
+    h += '<option value="">' + esc(placeholder || '-- select --') + '</option>';
+    items.forEach((it) => { h += '<option value="' + esc(it) + '"' + (it === selected ? ' selected' : '') + '>' + esc(it) + '</option>'; });
+    h += '</select>';
+    return h;
+  }
+  function doorChecklist(doors, selected) {
+    if (!doors.length) return '<div class="fd-hint">No doors discovered yet. Rediscover doors on the Configuration tab.</div>';
+    const sel = new Set(selected);
+    return '<div class="fd-checks">' + doors.map((d) =>
+      '<label class="fd-check' + (sel.has(d) ? ' on' : '') + '"><input type="checkbox" class="fd-door" value="' + esc(d) + '"' + (sel.has(d) ? ' checked' : '') + '>' + esc(d) + '</label>'
+    ).join('') + '</div>';
+  }
+
+  function readChecked() {
+    return Array.from(panelEl.querySelectorAll('.fd-door:checked')).map((c) => c.value);
+  }
+
+  async function saveRuleForm(type, idx) {
+    const editing = idx !== null && idx !== undefined;
+    if (type === 'retract') {
+      const door = (panelEl.querySelector('#fdTrigger') || {}).value || '';
+      return doSaveDeadboltTrigger(door);
+    }
+    if (type === 'cascade') {
+      const trigger = (panelEl.querySelector('#fdTrigger') || {}).value || '';
+      const unlock = readChecked();
+      const debRaw = parseInt((panelEl.querySelector('#fdDebounce') || {}).value, 10);
+      if (!trigger) return notify('Pick a trigger door', 'error');
+      if (!unlock.length) return notify('Pick at least one door to unlock', 'error');
+      const rules = cascadeRules();
+      const rule = { trigger_door: trigger, unlock, debounce_seconds: Number.isFinite(debRaw) ? debRaw : 8 };
+      if (editing) rules[idx] = rule; else rules.push(rule);
+      return doSaveCascade(rules, 'Cascade rule saved');
+    }
+    // access / visitor
+    const group = (panelEl.querySelector('#fdGroup') || {}).value || '';
+    const trigger = (panelEl.querySelector('#fdTrigger') || {}).value || '';
+    const delay = parseInt((panelEl.querySelector('#fdDelay') || {}).value || '0', 10) || 0;
+    const unlock = readChecked();
+    if (!group) return notify('Pick a group', 'error');
+    if (!trigger) return notify('Pick a trigger door', 'error');
+    if (!unlock.length) return notify('Pick at least one door to unlock', 'error');
+    const rule = { group, trigger, unlock, delay };
+    if (type === 'access') {
+      const rules = accessRules();
+      if (editing) rules[idx] = rule; else rules.push(rule);
+      return doSaveAccess(rules, 'Access rule saved');
+    } else {
+      const rules = visitorRules();
+      if (editing) rules[idx] = rule; else rules.push(rule);
+      return doSaveVisitor(rules, 'Visitor rule saved');
+    }
+  }
+
+  async function deleteRule(type, idx) {
+    if (!confirm('Delete this ' + labelFor(type) + '?')) return;
+    if (type === 'access') { const r = accessRules(); r.splice(idx, 1); return doSaveAccess(r, 'Rule deleted'); }
+    if (type === 'visitor') { const r = visitorRules(); r.splice(idx, 1); return doSaveVisitor(r, 'Rule deleted'); }
+    if (type === 'cascade') { const r = cascadeRules(); r.splice(idx, 1); return doSaveCascade(r, 'Rule deleted'); }
+    if (type === 'retract') { return doSaveDeadboltTrigger(''); }
+  }
+
+  // ---- persistence (routes through the same helpers the manual UI uses) ----
+  async function reloadAndRedraw() {
+    FD.sel = null; FD.mode = 'palette';
+    if (G('loadConfig')) await window.loadConfig();  // re-renders manual forms AND this designer
+    else { buildModel(); draw(); renderPanel(); }
+  }
+  async function doSaveAccess(rules, msg) {
+    try { await window._saveAccessRules(rules); notify(msg + ' (manual fields updated)', 'success'); await reloadAndRedraw(); }
+    catch (e) { notify('Save failed: ' + e.message, 'error'); }
+  }
+  async function doSaveVisitor(rules, msg) {
+    try { await window._saveVisitorRules(rules); notify(msg + ' (manual fields updated)', 'success'); await reloadAndRedraw(); }
+    catch (e) { notify('Save failed: ' + e.message, 'error'); }
+  }
+  async function doSaveCascade(rules, msg) {
+    try { await window.api('PUT', '/api/config', { cascade_rules: { rules } }); notify(msg + ' (manual fields updated)', 'success'); await reloadAndRedraw(); }
+    catch (e) { notify('Save failed: ' + e.message, 'error'); }
+  }
+  async function doSaveDeadboltTrigger(door) {
+    try {
+      const db = Object.assign({}, (configData && configData.deadbolt_rules) || {});
+      db.trigger_door = door;
+      await window.api('PUT', '/api/config', { deadbolt_rules: db });
+      notify(door ? 'Deadbolt retracts on entry at "' + door + '"' : 'Retract trigger disabled', 'success');
+      await reloadAndRedraw();
+    } catch (e) { notify('Save failed: ' + e.message, 'error'); }
+  }
+
+  // ---- zoom / fit controls ----
+  function zoomAt(clientX, clientY, factor) {
+    const rect = canvasEl.getBoundingClientRect();
+    const mx = clientX - rect.left, my = clientY - rect.top;
+    const wx = (mx - FD.tx) / FD.scale, wy = (my - FD.ty) / FD.scale;
+    FD.scale = clamp(FD.scale * factor, 0.3, 2.5);
+    FD.tx = mx - wx * FD.scale;
+    FD.ty = my - wy * FD.scale;
+    applyTransform();
+  }
+  function fit() {
+    if (!FD.nodes.length) { FD.scale = 1; FD.tx = ORIGIN; FD.ty = ORIGIN; applyTransform(); return; }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    FD.nodes.forEach((n) => {
+      minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + NODE_W); maxY = Math.max(maxY, n.y + NODE_H);
+    });
+    const pad = 60;
+    const rect = canvasEl.getBoundingClientRect();
+    const w = maxX - minX + pad * 2, h = maxY - minY + pad * 2;
+    const s = clamp(Math.min(rect.width / w, rect.height / h), 0.3, 1.4);
+    FD.scale = s;
+    FD.tx = (rect.width - (maxX + minX) * s) / 2;
+    FD.ty = (rect.height - (maxY + minY) * s) / 2;
+    applyTransform();
+  }
+  function autoArrange() {
+    FD.nodes.forEach((n) => { delete FD.positions[n.id]; });
+    savePositions();
+    layout();
+    draw();
+    fit();
+  }
+
+  // ---- init ----
+  function init() {
+    canvasEl = document.getElementById('fdCanvas');
+    if (!canvasEl) return;
+    worldEl = document.getElementById('fdWorld');
+    svgEl = document.getElementById('fdEdges');
+    nodeLayer = document.getElementById('fdNodes');
+    labelLayer = document.getElementById('fdLabels');
+    panelEl = document.getElementById('fdPanel');
+    emptyEl = document.getElementById('fdEmpty');
+    if (!worldEl || !svgEl || !nodeLayer || !labelLayer || !panelEl) return;
+
+    svgEl.setAttribute('viewBox', '0 0 ' + GRID + ' ' + GRID);
+    svgEl.setAttribute('width', GRID);
+    svgEl.setAttribute('height', GRID);
+
+    loadPositions();
+
+    canvasEl.addEventListener('pointerdown', onCanvasPointerDown);
+    document.addEventListener('pointermove', onCanvasPointerMove);
+    document.addEventListener('pointerup', onCanvasPointerUp);
+    canvasEl.addEventListener('wheel', (ev) => { ev.preventDefault(); zoomAt(ev.clientX, ev.clientY, ev.deltaY < 0 ? 1.1 : 0.9); }, { passive: false });
+    svgEl.addEventListener('click', onSvgClick);
+
+    const zi = document.getElementById('fdZoomIn'); if (zi) zi.addEventListener('click', () => { const r = canvasEl.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1.2); });
+    const zo = document.getElementById('fdZoomOut'); if (zo) zo.addEventListener('click', () => { const r = canvasEl.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, 0.8); });
+    const zf = document.getElementById('fdFit'); if (zf) zf.addEventListener('click', fit);
+    const za = document.getElementById('fdArrange'); if (za) za.addEventListener('click', autoArrange);
+
+    document.addEventListener('keydown', (ev) => {
+      const dp = document.getElementById('designer');
+      if (!dp || !dp.classList.contains('active')) return;
+      const tag = (ev.target && ev.target.tagName) || '';
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+      if ((ev.key === 'Delete' || ev.key === 'Backspace') && FD.sel && FD.sel.ruleType) {
+        deleteRule(FD.sel.ruleType, FD.sel.ruleIndex);
+      } else if (ev.key === 'Escape') {
+        select(null);
+      }
+    });
+
+    FD.inited = true;
+  }
+
+  // Public entry: rebuild from current config. Safe to call anytime;
+  // no-op until init has run and config is loaded.
+  let firstShow = true;
+  window.renderDesigner = function () {
+    if (!FD.inited) init();
+    if (!FD.inited) return;
+    if (!configData) return;
+    buildModel();
+    draw();
+    renderPanel();
+  };
+  // Called by the tab handler when the Designer tab is opened.
+  window.openDesigner = function () {
+    if (!FD.inited) init();
+    window.renderDesigner();
+    if (firstShow) { firstShow = false; setTimeout(fit, 30); }
+  };
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
 </script>
 </body>
 </html>
