@@ -145,8 +145,9 @@ test('buildWizardEventChoice preselects the current mode and lists all modes', (
   // exactly the current mode is checked
   assert.match(out, /value="api_webhook" checked/);
   assert.ok(!/value="alarm_manager" checked/.test(out));
-  // default when nothing supplied
-  assert.match(build(), /value="alarm_manager" checked/);
+  // default when nothing supplied is websocket
+  assert.match(build(), /value="websocket" checked/);
+  assert.ok(!/value="alarm_manager" checked/.test(build()));
 });
 
 // ---------------------------------------------------------------------------

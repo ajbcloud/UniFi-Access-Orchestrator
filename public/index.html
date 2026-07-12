@@ -2190,22 +2190,23 @@ function renderConfig() {
 
   // Event Source Config
   const es = configData?.event_source || {};
+  const esMode = es.mode || 'websocket'; // websocket is the default when unset
   const eventSourceHtml = `
     <div style="margin-bottom:12px">
       <label class="form-label">Event Source Mode</label>
       <select id="eventSourceMode" style="font-size:12px;padding:6px" onchange="toggleEventSourceFields()">
-        <option value="alarm_manager" ${es.mode === 'alarm_manager' ? 'selected' : ''}>Alarm Manager (internal event capture)</option>
-        <option value="api_webhook" ${es.mode === 'api_webhook' ? 'selected' : ''}>API Webhook (external POST to /webhook)</option>
-        <option value="websocket" ${es.mode === 'websocket' ? 'selected' : ''}>WebSocket (real-time notifications)</option>
+        <option value="websocket" ${esMode === 'websocket' ? 'selected' : ''}>WebSocket (real-time notifications)</option>
+        <option value="alarm_manager" ${esMode === 'alarm_manager' ? 'selected' : ''}>Alarm Manager (internal event capture)</option>
+        <option value="api_webhook" ${esMode === 'api_webhook' ? 'selected' : ''}>API Webhook (external POST to /webhook)</option>
       </select>
     </div>
-    <div id="webhookFields" style="display:${es.mode === 'api_webhook' ? 'block' : 'none'};margin-bottom:12px">
+    <div id="webhookFields" style="display:${esMode === 'api_webhook' ? 'block' : 'none'};margin-bottom:12px">
       <div style="padding:12px;background:var(--bg-input);border-radius:var(--radius);border:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--text-secondary)">
         Send POST requests with JSON body to: <strong style="color:var(--text-primary)">http://your-server:3000/webhook</strong>
         <div style="margin-top:8px">Optional: Add header X-Orchestrator-Signature: sha256=&lt;HMAC&gt; for authentication</div>
       </div>
     </div>
-    <div id="websocketFields" style="display:${es.mode === 'websocket' ? 'block' : 'none'};margin-bottom:12px">
+    <div id="websocketFields" style="display:${esMode === 'websocket' ? 'block' : 'none'};margin-bottom:12px">
       <label class="form-label">Reconnect Interval (seconds)</label>
       <input type="number" id="wsReconnectInterval" value="${es.websocket?.reconnect_interval_seconds || 5}" min="1" max="60" style="font-size:12px;padding:6px" placeholder="5">
     </div>
@@ -3800,11 +3801,11 @@ function buildGroupMappingRows(rawGroups, resolverMap) {
 // Plain-language event-source picker for the wizard. Option ids/labels are
 // authored constants; only the caller-supplied selection is compared.
 function buildWizardEventChoice(currentMode) {
-  const mode = currentMode || 'alarm_manager';
+  const mode = currentMode || 'websocket';
   const opts = [
-    { id: 'alarm_manager', label: 'Alarm Manager (recommended)', desc: 'The app sets up an alarm rule on your controller and receives events automatically. Best for most installs.' },
-    { id: 'api_webhook', label: 'API Webhook', desc: 'The controller posts events to this app over a webhook you configure manually. Use this if Alarm Manager is not available.' },
-    { id: 'websocket', label: 'WebSocket (advanced)', desc: 'Subscribe to the controller event stream directly. Requires a compatible controller.' }
+    { id: 'websocket', label: 'WebSocket (default)', desc: 'Subscribe to the controller event stream directly for real-time notifications. This is the default.' },
+    { id: 'alarm_manager', label: 'Alarm Manager', desc: 'The app sets up an alarm rule on your controller and receives events from it. Use this if WebSocket is not available.' },
+    { id: 'api_webhook', label: 'API Webhook', desc: 'The controller posts events to this app over a webhook you configure manually.' }
   ];
   const rows = opts.map((o) => {
     const checked = o.id === mode ? ' checked' : '';
@@ -4189,13 +4190,13 @@ function renderWizardRuleStep() {
 function renderWizardEventsStep() {
   const el = document.getElementById('wizEventChoice');
   if (!el) return;
-  const mode = (configData && configData.event_source && configData.event_source.mode) || 'alarm_manager';
+  const mode = (configData && configData.event_source && configData.event_source.mode) || 'websocket';
   el.innerHTML = buildWizardEventChoice(mode);
 }
 
 async function saveWizardEventMode() {
   const picked = document.querySelector('input[name="wizEventMode"]:checked');
-  const mode = picked ? picked.value : 'alarm_manager';
+  const mode = picked ? picked.value : 'websocket';
   try {
     await api('PUT', '/api/config', { event_source: { mode } });
     if (configData && typeof configData === 'object') {

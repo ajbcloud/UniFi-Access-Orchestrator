@@ -8,6 +8,7 @@
 const { app, BrowserWindow, Tray, Menu, dialog, shell, nativeImage, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const updater = require('./updater');
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -60,7 +61,7 @@ function ensureConfig() {
       const defaultConfig = {
         server: { port: 3000, host: '0.0.0.0' },
         unifi: { host: '', port: 12445, token: '', verify_ssl: false, user_sync_interval_minutes: 5 },
-        event_source: { mode: 'alarm_manager' },
+        event_source: { mode: 'websocket' },
         resolver: { strategy_order: ['api_group', 'manual'], unifi_group_to_group: {}, manual_overrides: {} },
         doors: {},
         unlock_rules: { trigger_location: '', group_actions: {}, default_action: { unlock: [] } },
@@ -462,6 +463,11 @@ function createAppMenu() {
         },
         { type: 'separator' },
         {
+          label: 'Check for Updates...',
+          click: () => { updater.checkForUpdatesManual(); }
+        },
+        { type: 'separator' },
+        {
           label: 'GitHub Repository',
           click: () => { shell.openExternal('https://github.com/ajbcloud/UniFi-Access-Orchestrator'); }
         },
@@ -635,6 +641,13 @@ app.on('ready', async () => {
   createWindow();
   createTray();
   startHealthWatchdog();
+
+  // Check GitHub for a newer release and offer an in-app restart-to-install.
+  // No-op in an unpackaged dev run.
+  updater.initAutoUpdater({
+    getMainWindow: () => mainWindow,
+    setQuitting: () => { isQuitting = true; }
+  });
 
   if (!configExists) {
     console.log('First run detected. Config created at:', getConfigPath());
