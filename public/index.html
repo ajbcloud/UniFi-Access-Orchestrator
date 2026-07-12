@@ -579,6 +579,31 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .help-blurb ul { margin: 8px 0 0 20px; }
 .help-blurb li { margin-bottom: 3px; }
 
+/* Admin API key dialog (in-page replacement for window.prompt, which Electron
+   does not implement). Shown only when the desktop bridge cannot supply the
+   key, i.e. remote-browser access or a degraded install. */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 300;
+  align-items: center;
+  justify-content: center;
+}
+.modal-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 22px;
+  width: 420px;
+  max-width: calc(100vw - 40px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+.modal-card h3 { font-size: 15px; margin-bottom: 8px; }
+.modal-card p { font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; line-height: 1.5; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+
 .rule-form {
   background: var(--bg-primary);
   border: 1px solid var(--accent);
@@ -699,7 +724,10 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <span>Connecting...</span>
     </div>
   </div>
-  <div style="font-size:12px;color:var(--text-muted)" id="uptimeDisplay"></div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <div style="font-size:12px;color:var(--text-muted)" id="uptimeDisplay"></div>
+    <button class="btn btn-sm btn-secondary" id="headerSetupBtn" onclick="showSetupWizard()" title="Controller connection and setup">&#9881; Setup</button>
+  </div>
 </div>
 
 <div class="tabs" id="tabBar">
@@ -1150,6 +1178,24 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 
 <div class="toast-container" id="toastContainer"></div>
 
+<!-- Admin API key dialog: in-page replacement for window.prompt, which is
+     unsupported in Electron. The desktop app supplies the key via the preload
+     bridge and never shows this; remote browsers enter the key here. -->
+<div class="modal-overlay" id="apiKeyModal">
+  <div class="modal-card">
+    <h3>Admin API key required</h3>
+    <p>This dashboard is protected by an admin API key. Find it in
+       <strong>config.json</strong> under <strong>server.admin_api_key</strong>
+       (File menu, Open Config File in the desktop app), or in the service
+       startup log. It only needs to be entered once per browser.</p>
+    <input type="password" id="apiKeyModalInput" placeholder="Paste the admin API key" autocomplete="off" style="width:100%;font-family:var(--mono)">
+    <div class="modal-actions">
+      <button class="btn btn-sm btn-secondary" id="apiKeyModalCancel">Cancel</button>
+      <button class="btn btn-sm btn-primary" id="apiKeyModalSave">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ============================================================
 // State
@@ -1194,11 +1240,67 @@ function toast(message, type = 'info') {
 // ============================================================
 // API helpers
 // ============================================================
+// In the packaged desktop app, the Electron preload exposes
+// window.orchestratorDesktop.getAdminApiKey(), which hands the dashboard the
+// server's auto-generated admin key so it NEVER prompts. Remote browsers have
+// no bridge and use the in-page key dialog below (window.prompt is not
+// implemented in Electron renderers, so it must not be used here).
 function getApiKey() {
-  try { return localStorage.getItem('adminApiKey') || ''; } catch (e) { return ''; }
+  try {
+    const stored = localStorage.getItem('adminApiKey');
+    if (stored) return stored;
+  } catch (e) { /* storage disabled */ }
+  try {
+    if (window.orchestratorDesktop && typeof window.orchestratorDesktop.getAdminApiKey === 'function') {
+      return window.orchestratorDesktop.getAdminApiKey() || '';
+    }
+  } catch (e) { /* bridge unavailable */ }
+  return '';
 }
 function setApiKey(k) {
   try { if (k) localStorage.setItem('adminApiKey', k); } catch (e) { /* storage disabled */ }
+}
+
+// Single-flight in-page dialog for the admin API key. All concurrent 401s
+// share ONE modal and one promise; Enter or Save resolves the trimmed key,
+// Escape or Cancel resolves null. Handlers are assigned as element properties
+// so the extractFn test harness can drive them without a real DOM.
+let _apiKeyPrompt = null;
+function promptForApiKey() {
+  if (_apiKeyPrompt) return _apiKeyPrompt.promise;
+  const modal = document.getElementById('apiKeyModal');
+  const input = document.getElementById('apiKeyModalInput');
+  const saveBtn = document.getElementById('apiKeyModalSave');
+  const cancelBtn = document.getElementById('apiKeyModalCancel');
+  if (!modal || !input || !saveBtn || !cancelBtn) return Promise.resolve(null);
+
+  let settle;
+  const promise = new Promise((resolve) => { settle = resolve; });
+  _apiKeyPrompt = { promise };
+
+  const finish = (value) => {
+    modal.style.display = 'none';
+    input.value = '';
+    input.onkeydown = null;
+    saveBtn.onclick = null;
+    cancelBtn.onclick = null;
+    _apiKeyPrompt = null;
+    settle(value);
+  };
+
+  saveBtn.onclick = () => {
+    const v = (input.value || '').trim();
+    finish(v || null);
+  };
+  cancelBtn.onclick = () => finish(null);
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') saveBtn.onclick();
+    else if (e.key === 'Escape') finish(null);
+  };
+
+  modal.style.display = 'flex';
+  try { input.focus(); } catch (e) { /* mock DOM */ }
+  return promise;
 }
 
 async function api(method, path, body, _retried) {
@@ -1208,12 +1310,24 @@ async function api(method, path, body, _retried) {
   const opts = { method, headers };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
-  // If the server now requires a key, prompt once and retry so enabling auth
-  // does not silently break the dashboard.
+  // If the server requires a key we do not have (or ours went stale), recover
+  // once: the desktop bridge is asked for a fresh key first (self-heals a
+  // stale localStorage copy silently), then the in-page dialog. The _retried
+  // flag keeps the retry to exactly one attempt.
   if (res.status === 401 && !_retried) {
-    const entered = window.prompt('Admin API key required. Enter the key shown in the service config or startup log:');
+    let fresh = '';
+    try {
+      if (window.orchestratorDesktop && typeof window.orchestratorDesktop.getAdminApiKey === 'function') {
+        fresh = window.orchestratorDesktop.getAdminApiKey() || '';
+      }
+    } catch (e) { /* bridge unavailable */ }
+    if (fresh && fresh !== key) {
+      setApiKey(fresh);
+      return api(method, path, body, true);
+    }
+    const entered = await promptForApiKey();
     if (entered) {
-      setApiKey(entered.trim());
+      setApiKey(entered);
       return api(method, path, body, true);
     }
   }
@@ -3336,15 +3450,35 @@ function renderMarkdown(md) {
 // Setup Wizard (first run)
 // ============================================================
 async function checkFirstRun() {
+  // The in-process server may still be settling right after the window opens,
+  // so retry briefly. Only a response that actually carries a unifi object is
+  // authoritative: an {error:'Unauthorized'} body (user cancelled the key
+  // dialog) must not be misread as "unconfigured".
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const config = await api('GET', '/api/config');
+      if (config && typeof config.unifi === 'object' && config.unifi !== null) {
+        if (!config.unifi.host || config.unifi.host === '' || config.unifi.host === '192.168.1.1') {
+          showSetupWizard();
+          return true;
+        }
+        return false;
+      }
+    } catch (e) {
+      // Server might not be up yet
+    }
+    await new Promise((r) => setTimeout(r, 700));
+  }
+  // Could not read config at all. In the desktop app the shell knows whether
+  // this is a true first run; land on Welcome in that case (the wizard's own
+  // calls will succeed once the server settles).
   try {
-    const config = await api('GET', '/api/config');
-    if (!config.unifi?.host || config.unifi.host === '' || config.unifi.host === '192.168.1.1') {
+    if (window.orchestratorDesktop && typeof window.orchestratorDesktop.isFirstRun === 'function'
+        && window.orchestratorDesktop.isFirstRun()) {
       showSetupWizard();
       return true;
     }
-  } catch (e) {
-    // Server might not be up yet
-  }
+  } catch (e) { /* bridge unavailable */ }
   return false;
 }
 
@@ -3484,7 +3618,7 @@ async function runDiscovery() {
     }
   } catch (e) {
     statusEl.innerHTML = `
-      <div style="font-size:13px;color:var(--red);margin-bottom:8px">Scan failed: ${e.message}</div>
+      <div style="font-size:13px;color:var(--red);margin-bottom:8px">Scan failed: ${escapeHtml(e.message)}</div>
       <button class="btn btn-sm btn-secondary" onclick="runDiscovery()">Try Again</button>
     `;
   }

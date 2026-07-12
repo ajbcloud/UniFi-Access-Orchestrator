@@ -5,7 +5,7 @@
  * middleware lifecycle, and platform-specific behaviors.
  */
 
-const { app, BrowserWindow, Tray, Menu, dialog, shell, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, shell, nativeImage, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -112,6 +112,33 @@ function menuApiCall(urlPath, method, onSuccess) {
 }
 
 // ---------------------------------------------------------------------------
+// Renderer bridge (answers electron/preload.js over synchronous IPC)
+//
+// The dashboard authenticates to its own local server with the admin API key
+// the server generates on first boot. The SPA cannot fetch the key over HTTP
+// (it is both required and redacted by the API), so the preload asks main,
+// and main reads config.json FRESH on every call so reloads, backup restores,
+// and the Reset Configuration relaunch always hand out the current key.
+// Every path must set event.returnValue: an unanswered sync IPC would hang
+// the renderer.
+// ---------------------------------------------------------------------------
+
+let wasFirstRun = false;
+
+ipcMain.on('orchestrator:get-admin-api-key', (event) => {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(getConfigPath(), 'utf-8'));
+    event.returnValue = (cfg.server && cfg.server.admin_api_key) || '';
+  } catch (e) {
+    event.returnValue = '';
+  }
+});
+
+ipcMain.on('orchestrator:is-first-run', (event) => {
+  event.returnValue = wasFirstRun;
+});
+
+// ---------------------------------------------------------------------------
 // Orchestrator lifecycle
 // ---------------------------------------------------------------------------
 
@@ -202,7 +229,8 @@ function createWindow() {
     autoHideMenuBar: false,
     webPreferences: {
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js')
     }
   });
 
@@ -592,6 +620,7 @@ function startHealthWatchdog() {
 
 app.on('ready', async () => {
   const configExists = ensureConfig();
+  wasFirstRun = !configExists; // exposed to the renderer via the preload bridge
 
   createAppMenu();
   await startOrchestrator();
