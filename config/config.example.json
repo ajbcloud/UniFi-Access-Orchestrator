@@ -12,7 +12,7 @@
     "user_sync_interval_minutes": 5
   },
   "event_source": {
-    "mode": "alarm_manager",
+    "mode": "websocket",
     "api_webhook": {
       "endpoint_url": "",
       "endpoint_name": "Access Orchestrator",
