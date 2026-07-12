@@ -1588,16 +1588,20 @@ function updateStatus(online) {
     pill.querySelector('span').textContent = 'Offline';
     return;
   }
+  // Mapping kept identical to the Electron window title (startHealthWatchdog in
+  // electron/main.js): only a truly connected controller reads Online. An
+  // unknown/undefined state (for example no controller configured yet) reads
+  // Disconnected, so the pill and the window title never contradict.
   const cs = healthData?.unifi?.connection_state;
-  if (cs === 'reconnecting' || cs === 'connecting') {
-    pill.className = 'status-pill reconnecting';
-    pill.querySelector('span').textContent = 'Reconnecting';
-  } else if (cs === 'disconnected') {
-    pill.className = 'status-pill offline';
-    pill.querySelector('span').textContent = 'Disconnected';
-  } else {
+  if (cs === 'connected') {
     pill.className = 'status-pill online';
     pill.querySelector('span').textContent = 'Online';
+  } else if (cs === 'reconnecting' || cs === 'connecting') {
+    pill.className = 'status-pill reconnecting';
+    pill.querySelector('span').textContent = 'Reconnecting';
+  } else {
+    pill.className = 'status-pill offline';
+    pill.querySelector('span').textContent = 'Disconnected';
   }
 }
 
@@ -2301,6 +2305,45 @@ function renderZwavePairPanel(st) {
 }
 
 let _pairPollTimer = null;
+let _lastPairPanelHtml = null;
+
+// Update the pairing panel without destroying an in-progress PIN entry. The
+// status poll fires every 1.5s; rewriting the panel innerHTML on every tick was
+// recreating #zwavePinInput (blanking its value and stealing focus) while the
+// user was still typing the S2 PIN during dsk_pending. Skip the write when the
+// rendered HTML has not changed (the dsk_pending panel is static across ticks),
+// and if a write is unavoidable, carry the input's value, caret, and focus
+// across it.
+function setPairPanel(html) {
+  const panel = document.getElementById('zwavePairPanel');
+  if (!panel) return;
+  if (html === _lastPairPanelHtml) return;
+  const input = document.getElementById('zwavePinInput');
+  const hadFocus = !!input && document.activeElement === input;
+  const prevValue = input ? input.value : null;
+  const selStart = input ? input.selectionStart : null;
+  const selEnd = input ? input.selectionEnd : null;
+  panel.innerHTML = html;
+  _lastPairPanelHtml = html;
+  if (prevValue != null) {
+    const next = document.getElementById('zwavePinInput');
+    if (next) {
+      next.value = prevValue;
+      if (hadFocus) {
+        next.focus();
+        try { next.setSelectionRange(selStart, selEnd); } catch (e) { /* non-text input */ }
+      }
+    }
+  }
+}
+
+// Disable/enable the deadbolt action buttons so a click gives immediate
+// feedback and cannot be double-fired. refreshZwaveDeadbolt re-renders this
+// button row from live state, so it restores the correct enabled state.
+function _setDeadboltButtonsBusy(busy) {
+  const btns = document.getElementById('zwaveDeadboltButtons');
+  if (btns) btns.querySelectorAll('button').forEach((b) => { b.disabled = !!busy; });
+}
 
 async function refreshZwaveDeadbolt() {
   const line = document.getElementById('zwaveDeadboltStatusLine');
@@ -2351,8 +2394,7 @@ function pollPairingStatus() {
   _pairPollTimer = setInterval(async () => {
     try {
       const st = await api('GET', '/api/deadbolt/pair/status');
-      const panel = document.getElementById('zwavePairPanel');
-      if (panel) panel.innerHTML = renderZwavePairPanel(st);
+      setPairPanel(renderZwavePairPanel(st));
       if (!st.active) {
         clearInterval(_pairPollTimer);
         _pairPollTimer = null;
@@ -2365,20 +2407,30 @@ function pollPairingStatus() {
 }
 
 async function startPairing() {
+  // Immediate feedback: starting the Z-Wave controller can take a few seconds,
+  // so disable the buttons and paint a working panel the instant the user
+  // clicks, instead of leaving a dead-looking button.
+  _setDeadboltButtonsBusy(true);
+  _lastPairPanelHtml = null; // fresh session: always paint the first panel
+  setPairPanel(renderZwavePairPanel({ mode: 'include', state: 'starting', seconds_in_state: 0 }));
   try {
     const r = await api('POST', '/api/deadbolt/pair/start');
-    if (r.error) { toast(r.error, 'error'); return; }
+    if (r.error) { toast(r.error, 'error'); _lastPairPanelHtml = null; setPairPanel(''); refreshZwaveDeadbolt(); return; }
     toast('Pairing started', 'info');
-    const panel = document.getElementById('zwavePairPanel');
-    if (panel) panel.innerHTML = renderZwavePairPanel({ mode: 'include', state: r.state || 'starting', seconds_in_state: 0 });
+    setPairPanel(renderZwavePairPanel({ mode: 'include', state: r.state || 'starting', seconds_in_state: 0 }));
     pollPairingStatus();
     refreshZwaveDeadbolt();
-  } catch (e) { toast(`Pairing failed to start: ${e.message}`, 'error'); }
+  } catch (e) {
+    toast(`Pairing failed to start: ${e.message}`, 'error');
+    _lastPairPanelHtml = null; setPairPanel(''); // clear the provisional panel
+    refreshZwaveDeadbolt(); // re-enable the buttons
+  }
 }
 
 async function submitPairPin() {
   const pin = document.getElementById('zwavePinInput')?.value?.trim() || '';
   if (!/^\d{5}$/.test(pin)) { toast('The PIN is exactly 5 digits', 'error'); return; }
+  toast('Submitting PIN...', 'info'); // immediate feedback; the panel advances on the next poll
   try {
     const r = await api('POST', '/api/deadbolt/pair/pin', { pin });
     if (r.error) { toast(r.error, 'error'); return; }
@@ -2392,23 +2444,33 @@ async function cancelPairing() {
 async function startUnpair() {
   const ok = confirm('Unpair the deadbolt?\n\nThe lock will be removed from the Z-Wave network and the app will stop controlling it until it is paired again.');
   if (!ok) return;
+  // Immediate feedback before the controller responds.
+  _setDeadboltButtonsBusy(true);
+  _lastPairPanelHtml = null; // fresh session: always paint the first panel
+  setPairPanel(renderZwavePairPanel({ mode: 'exclude', state: 'starting', seconds_in_state: 0 }));
   try {
     const r = await api('POST', '/api/deadbolt/unpair');
-    if (r.error) { toast(r.error, 'error'); return; }
+    if (r.error) { toast(r.error, 'error'); _lastPairPanelHtml = null; setPairPanel(''); refreshZwaveDeadbolt(); return; }
     toast('Unpairing started', 'info');
     pollPairingStatus();
-  } catch (e) { toast(`Unpair failed to start: ${e.message}`, 'error'); }
+  } catch (e) {
+    toast(`Unpair failed to start: ${e.message}`, 'error');
+    _lastPairPanelHtml = null; setPairPanel('');
+    refreshZwaveDeadbolt();
+  }
 }
 
 async function deadboltControl(action) {
   const ok = confirm(`Send a real ${action.toUpperCase()} command to the deadbolt?\n\nThe physical bolt will move.`);
   if (!ok) return;
+  _setDeadboltButtonsBusy(true);
+  toast(`Sending ${action} to the deadbolt...`, 'info'); // immediate feedback
   try {
     const r = await api('POST', '/api/deadbolt/control', { action });
     if (r.success) toast(`Deadbolt ${action} confirmed (bolt: ${r.boltState})`, 'success');
     else toast(`Deadbolt ${action} failed: ${r.error || 'not verified'}`, 'error');
     refreshZwaveDeadbolt();
-  } catch (e) { toast(`Control failed: ${e.message}`, 'error'); }
+  } catch (e) { toast(`Control failed: ${e.message}`, 'error'); refreshZwaveDeadbolt(); }
 }
 
 // ------------------------------------------------------------
