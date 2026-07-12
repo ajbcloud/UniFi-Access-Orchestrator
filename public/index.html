@@ -5,29 +5,157 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>UniFi Access Orchestrator</title>
 <style>
+/* -------------------------------------------------------------------------
+   Theme system (ColorKit palette)
+   -------------------------------------------------------------------------
+   Raw palette:
+     Tennis Ball    #D4FF3B   Haunted Forest #052B15   Chrome    #E0E0E0
+     Green Goddess  #79A88A   Peachy Pinky   #FF715B    + white / black
+
+   Light mode is built on the Chrome background; dark mode on Haunted Forest.
+   Every surface, text and accent below is a tint or shade of those five
+   colors so both themes read as one system. Light is the default; the dark
+   block applies when the user picks it (html[data-theme="dark"]) or when the
+   system prefers dark and no explicit choice is stored.
+   ------------------------------------------------------------------------- */
 :root {
-  --bg-primary: #111318;
-  --bg-secondary: #1a1d24;
-  --bg-card: #1e2129;
-  --bg-hover: #252830;
-  --bg-input: #14161b;
-  --border: #2a2d36;
-  --border-light: #353842;
-  --text-primary: #e4e6eb;
-  --text-secondary: #8b8f9a;
-  --text-muted: #5c5f6a;
-  --accent: #0070f3;
-  --accent-hover: #1a7fff;
-  --green: #22c55e;
-  --green-dim: rgba(34,197,94,0.15);
-  --yellow: #eab308;
-  --yellow-dim: rgba(234,179,8,0.15);
-  --red: #ef4444;
-  --red-dim: rgba(239,68,68,0.15);
-  --blue-dim: rgba(0,112,243,0.15);
+  /* Raw palette references */
+  --pal-tennis: #D4FF3B;
+  --pal-forest: #052B15;
+  --pal-chrome: #E0E0E0;
+  --pal-goddess: #79A88A;
+  --pal-peach: #FF715B;
+
+  /* ---- Light theme (Chrome background) ---- */
+  --bg-primary: #E0E0E0;
+  --bg-secondary: #ECEEEA;
+  --bg-card: #FFFFFF;
+  --bg-elev: #F3F5F1;
+  --bg-hover: #E7EAE4;
+  --bg-input: #F6F8F4;
+  --border: #C6CDC5;
+  --border-light: #D7DDD5;
+  --text-primary: #06210F;
+  --text-secondary: #3A5347;
+  --text-muted: #5B6E62;
+
+  --accent: #1C6B3F;
+  --accent-hover: #145730;
+  --accent-dim: rgba(28,107,63,0.14);
+  --on-accent: #FFFFFF;
+
+  --green: #2E7D4F;
+  --green-dim: rgba(46,125,79,0.15);
+  --on-success: #FFFFFF;
+
+  --yellow: #8A5E10;
+  --yellow-dim: rgba(138,94,16,0.15);
+
+  --red: #CF3A2A;
+  --red-hover: #B22E20;
+  --red-dim: rgba(207,58,42,0.14);
+  --on-danger: #FFFFFF;
+
+  --sage: #4E7D64;
+  --sage-dim: rgba(78,125,100,0.16);
+
+  --blue-dim: rgba(28,107,63,0.14); /* legacy alias -> accent tint */
+
+  --overlay: rgba(5,43,21,0.45);
+  --shadow: rgba(5,43,21,0.18);
+
   --radius: 8px;
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  --font-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+
+  color-scheme: light;
+}
+
+/* ---- Dark theme (Haunted Forest background) ---- */
+:root[data-theme="dark"] {
+  --bg-primary: #052B15;
+  --bg-secondary: #0A3721;
+  --bg-card: #0C3D26;
+  --bg-elev: #114A2E;
+  --bg-hover: #14512F;
+  --bg-input: #04220F;
+  --border: #1D5335;
+  --border-light: #2B6A45;
+  --text-primary: #E9F1EA;
+  --text-secondary: #A6C6B2;
+  --text-muted: #6E9179;
+
+  --accent: #D4FF3B;
+  --accent-hover: #E3FF70;
+  --accent-dim: rgba(212,255,59,0.14);
+  --on-accent: #052B15;
+
+  --green: #79A88A;
+  --green-dim: rgba(121,168,138,0.18);
+  --on-success: #052B15;
+
+  --yellow: #E3B341;
+  --yellow-dim: rgba(227,179,65,0.16);
+
+  --red: #FF715B;
+  --red-hover: #FF8C79;
+  --red-dim: rgba(255,113,91,0.16);
+  --on-danger: #052B15;
+
+  --sage: #79A88A;
+  --sage-dim: rgba(121,168,138,0.16);
+
+  --blue-dim: rgba(212,255,59,0.12);
+
+  --overlay: rgba(0,0,0,0.6);
+  --shadow: rgba(0,0,0,0.5);
+
+  color-scheme: dark;
+}
+
+/* Follow the system when the user has not made an explicit choice */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg-primary: #052B15;
+    --bg-secondary: #0A3721;
+    --bg-card: #0C3D26;
+    --bg-elev: #114A2E;
+    --bg-hover: #14512F;
+    --bg-input: #04220F;
+    --border: #1D5335;
+    --border-light: #2B6A45;
+    --text-primary: #E9F1EA;
+    --text-secondary: #A6C6B2;
+    --text-muted: #6E9179;
+
+    --accent: #D4FF3B;
+    --accent-hover: #E3FF70;
+    --accent-dim: rgba(212,255,59,0.14);
+    --on-accent: #052B15;
+
+    --green: #79A88A;
+    --green-dim: rgba(121,168,138,0.18);
+    --on-success: #052B15;
+
+    --yellow: #E3B341;
+    --yellow-dim: rgba(227,179,65,0.16);
+
+    --red: #FF715B;
+    --red-hover: #FF8C79;
+    --red-dim: rgba(255,113,91,0.16);
+    --on-danger: #052B15;
+
+    --sage: #79A88A;
+    --sage-dim: rgba(121,168,138,0.16);
+
+    --blue-dim: rgba(212,255,59,0.12);
+
+    --overlay: rgba(0,0,0,0.6);
+    --shadow: rgba(0,0,0,0.5);
+
+    color-scheme: dark;
+  }
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -39,6 +167,7 @@ body {
   font-size: 14px;
   line-height: 1.5;
   min-height: 100vh;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 /* Header */
@@ -78,7 +207,7 @@ body {
 
 .status-pill.online { background: var(--green-dim); color: var(--green); }
 .status-pill.offline { background: var(--red-dim); color: var(--red); }
-.status-pill.reconnecting { background: rgba(245,166,35,0.15); color: #f5a623; }
+.status-pill.reconnecting { background: var(--yellow-dim); color: var(--yellow); }
 
 .status-dot {
   width: 6px; height: 6px;
@@ -250,7 +379,7 @@ select, input[type="text"], input[type="number"] {
 
 select:focus, input:focus { border-color: var(--accent); }
 
-select { cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238b8f9a'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
+select { cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%236a7d72'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
 
 .btn {
   display: inline-flex;
@@ -266,12 +395,12 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   transition: all 0.15s;
 }
 
-.btn-primary { background: var(--accent); color: white; }
+.btn-primary { background: var(--accent); color: var(--on-accent); }
 .btn-primary:hover { background: var(--accent-hover); }
 .btn-secondary { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border); }
 .btn-secondary:hover { background: var(--border); }
-.btn-danger { background: var(--red); color: white; }
-.btn-danger:hover { background: #dc2626; }
+.btn-danger { background: var(--red); color: var(--on-danger); }
+.btn-danger:hover { background: var(--red-hover); }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -330,9 +459,9 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   max-width: 360px;
 }
 
-.toast.success { background: var(--green); color: white; }
-.toast.error { background: var(--red); color: white; }
-.toast.info { background: var(--accent); color: white; }
+.toast.success { background: var(--green); color: var(--on-success); }
+.toast.error { background: var(--red); color: var(--on-danger); }
+.toast.info { background: var(--accent); color: var(--on-accent); }
 
 @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
@@ -441,8 +570,8 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   margin-right: 8px;
   vertical-align: middle;
 }
-.test-rule-type-badge.access { background: rgba(59,130,246,0.15); color: var(--accent); }
-.test-rule-type-badge.visitor { background: rgba(168,85,247,0.15); color: #a855f7; }
+.test-rule-type-badge.access { background: var(--accent-dim); color: var(--accent); }
+.test-rule-type-badge.visitor { background: var(--sage-dim); color: var(--sage); }
 
 .test-rule-actions {
   display: flex;
@@ -464,7 +593,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   font-family: var(--font);
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M3 4.5L6 8l3-3.5H3z'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236a7d72' d='M3 4.5L6 8l3-3.5H3z'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 8px center;
 }
@@ -520,7 +649,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .compare-diff table { width: 100%; border-collapse: collapse; }
 .compare-diff th { text-align: left; padding: 4px 8px; background: var(--bg-elev); color: var(--text-secondary); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
 .compare-diff td { padding: 3px 8px; border-top: 1px solid var(--border); vertical-align: top; word-break: break-all; }
-.compare-diff tr.row-diff td { background: rgba(251, 191, 36, 0.08); }
+.compare-diff tr.row-diff td { background: var(--yellow-dim); }
 .compare-diff tr.row-diff td:first-child { color: var(--yellow); font-weight: 600; }
 .compare-diff tr.row-only-sim td:nth-child(3) { color: var(--text-muted); font-style: italic; }
 .compare-diff tr.row-only-real td:nth-child(2) { color: var(--text-muted); font-style: italic; }
@@ -565,8 +694,8 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .compare-diff { color: var(--yellow); }
 
 .help-blurb {
-  background: var(--blue-dim);
-  border: 1px solid rgba(0,112,243,0.3);
+  background: var(--accent-dim);
+  border: 1px solid var(--border-light);
   border-radius: var(--radius);
   padding: 12px 14px;
   margin-bottom: 14px;
@@ -619,9 +748,9 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   background: var(--bg-input);
   color: var(--text-muted);
 }
-.wizard-steps .wstep.done .wdot { background: var(--green); border-color: var(--green); color: #06210f; }
+.wizard-steps .wstep.done .wdot { background: var(--green); border-color: var(--green); color: var(--on-success); }
 .wizard-steps .wstep.active { color: var(--text-primary); }
-.wizard-steps .wstep.active .wdot { background: var(--accent); border-color: var(--accent); color: #fff; }
+.wizard-steps .wstep.active .wdot { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .wizard-steps .wstep.clickable { cursor: pointer; }
 .wizard-steps .wstep.clickable:hover { color: var(--text-primary); }
 
@@ -679,7 +808,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   pointer-events: none;
   transition: opacity 0.12s ease;
   z-index: 200;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 6px 20px var(--shadow);
 }
 .tip[data-tip]:hover::after,
 .tip[data-tip]:focus-visible::after { opacity: 1; }
@@ -691,7 +820,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   display: none;
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--overlay);
   z-index: 300;
   align-items: center;
   justify-content: center;
@@ -703,7 +832,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   padding: 22px;
   width: 420px;
   max-width: calc(100vw - 40px);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 40px var(--shadow);
 }
 .modal-card h3 { font-size: 15px; margin-bottom: 8px; }
 .modal-card p { font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; line-height: 1.5; }
@@ -818,6 +947,19 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   .rule-form select { width: 100%; }
 }
 </style>
+<script>
+// Apply the saved theme before first paint so there is no flash of the wrong
+// palette. When nothing is stored we leave data-theme unset and let the
+// prefers-color-scheme media query decide.
+(function () {
+  try {
+    var t = localStorage.getItem('uao-theme');
+    if (t === 'light' || t === 'dark') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+</script>
 </head>
 <body>
 
@@ -831,6 +973,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   </div>
   <div style="display:flex;align-items:center;gap:12px">
     <div style="font-size:12px;color:var(--text-muted)" id="uptimeDisplay"></div>
+    <button class="btn btn-sm btn-secondary" id="themeToggle" onclick="toggleTheme()" title="Switch color theme" aria-label="Switch color theme">&#127769; Theme</button>
     <button class="btn btn-sm btn-secondary" id="headerSetupBtn" onclick="showSetupWizard()" title="Controller connection and setup">&#9881; Setup</button>
   </div>
 </div>
@@ -1416,6 +1559,48 @@ let groupsData = null;
 let autoscroll = true;
 let eventSource = null;
 let eventsReceived = false;
+
+// ============================================================
+// Theme (light = Chrome background, dark = Haunted Forest)
+// ============================================================
+// The effective theme is the explicit choice on <html> when present, otherwise
+// whatever the operating system prefers. The toggle stores an explicit choice
+// so it survives reloads and overrides the system default.
+function currentTheme() {
+  const explicit = document.documentElement.getAttribute('data-theme');
+  if (explicit === 'light' || explicit === 'dark') return explicit;
+  return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+    ? 'dark' : 'light';
+}
+
+function applyThemeButton() {
+  const btn = document.getElementById('themeToggle');
+  if (!btn) return;
+  const dark = currentTheme() === 'dark';
+  // Offer the mode you would switch to: a sun while dark, a moon while light.
+  btn.innerHTML = dark ? '☀️ Light' : '🌙 Dark';
+  btn.title = dark ? 'Switch to light theme' : 'Switch to dark theme';
+}
+
+function toggleTheme() {
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('uao-theme', next); } catch (e) {}
+  applyThemeButton();
+}
+
+// Keep the button label in sync with the system preference while the user is
+// still on the default (no explicit choice stored).
+if (window.matchMedia) {
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  const onSchemeChange = () => {
+    if (!document.documentElement.getAttribute('data-theme')) applyThemeButton();
+  };
+  if (mq.addEventListener) mq.addEventListener('change', onSchemeChange);
+  else if (mq.addListener) mq.addListener(onSchemeChange);
+}
+
+applyThemeButton();
 
 // ============================================================
 // Tab navigation
