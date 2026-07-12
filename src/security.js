@@ -145,6 +145,14 @@ function validateConfigUpdates(updates) {
     if (al.on !== undefined && !Array.isArray(al.on)) return { ok: false, error: 'alerts.on must be an array' };
   }
 
+  if (updates.setup_wizard !== undefined) {
+    const sw = updates.setup_wizard;
+    if (!isPlainObject(sw)) return { ok: false, error: 'setup_wizard must be an object' };
+    if (sw.completed !== undefined && typeof sw.completed !== 'boolean') return { ok: false, error: 'setup_wizard.completed must be a boolean' };
+    if (sw.skipped !== undefined && typeof sw.skipped !== 'boolean') return { ok: false, error: 'setup_wizard.skipped must be a boolean' };
+    if (sw.last_step !== undefined && typeof sw.last_step !== 'string') return { ok: false, error: 'setup_wizard.last_step must be a string' };
+  }
+
   if (updates.devices !== undefined) {
     if (!isPlainObject(updates.devices)) return { ok: false, error: 'devices must be an object' };
     const zw = updates.devices.zwave;

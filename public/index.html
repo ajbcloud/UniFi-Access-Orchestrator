@@ -579,6 +579,111 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .help-blurb ul { margin: 8px 0 0 20px; }
 .help-blurb li { margin-bottom: 3px; }
 
+/* Guided setup wizard: a header, a clickable stepper, per-step sections that
+   toggle with .active, a bottom nav bar, and a small tooltip primitive. Uses
+   only existing theme variables so it inherits light/dark automatically. */
+.wizard-shell { max-width: 660px; margin: 32px auto; }
+.wizard-head { text-align: center; margin-bottom: 22px; }
+.wizard-head .wizard-emoji { font-size: 38px; margin-bottom: 10px; }
+.wizard-head h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+.wizard-head p { color: var(--text-secondary); font-size: 14px; }
+
+.wizard-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 22px;
+}
+.wizard-steps .wstep {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  border-radius: 999px;
+  cursor: default;
+}
+.wizard-steps .wstep .wdot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-muted);
+}
+.wizard-steps .wstep.done .wdot { background: var(--green); border-color: var(--green); color: #06210f; }
+.wizard-steps .wstep.active { color: var(--text-primary); }
+.wizard-steps .wstep.active .wdot { background: var(--accent); border-color: var(--accent); color: #fff; }
+.wizard-steps .wstep.clickable { cursor: pointer; }
+.wizard-steps .wstep.clickable:hover { color: var(--text-primary); }
+
+.wizard-step { display: none; }
+.wizard-step.active { display: block; }
+
+.wizard-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.wizard-nav .spacer { flex: 1; }
+
+/* Inline tooltip: a small "?" badge that reveals its authored data-tip text on
+   hover or keyboard focus. Strings are authored in this file, never
+   user-supplied, so there is no escaping concern. */
+.tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: help;
+  vertical-align: middle;
+}
+.tip[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: 135%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 260px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  z-index: 200;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+.tip[data-tip]:hover::after,
+.tip[data-tip]:focus-visible::after { opacity: 1; }
+
 /* Admin API key dialog (in-page replacement for window.prompt, which Electron
    does not implement). Shown only when the desktop bridge cannot supply the
    key, i.e. remote-browser access or a degraded install. */
@@ -740,80 +845,183 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 
 <div class="main">
 
-  <!-- SETUP WIZARD (shown on first run when config is empty) -->
+  <!-- SETUP WIZARD (guided first-run flow; also reachable any time via the
+       header Setup button, the tray, and the app menu) -->
   <div id="setup" class="page" style="display:none">
-    <div style="max-width:600px;margin:40px auto">
-      <div style="text-align:center;margin-bottom:32px">
-        <div style="font-size:40px;margin-bottom:12px">&#x1F513;</div>
-        <div style="font-size:22px;font-weight:700;margin-bottom:8px">Welcome to UniFi Access Orchestrator</div>
-        <div style="color:var(--text-secondary)">Let's find your controller and get connected.</div>
+    <div class="wizard-shell">
+      <div class="wizard-head">
+        <div class="wizard-emoji">&#x1F513;</div>
+        <h1 id="wizardTitle">Welcome to UniFi Access Orchestrator</h1>
+        <p id="wizardSubtitle">Let's find your controller and set up your first automation.</p>
       </div>
 
-      <!-- Step 1: Discovery -->
-      <div class="card" id="setupStep1">
-        <div class="card-title">Step 1: Find Your Controller</div>
-        <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
-          We'll scan your local network for UniFi controllers.
-        </div>
+      <div class="wizard-steps" id="wizardStepper"></div>
 
-        <div id="discoveryStatus" style="margin-bottom:16px">
-          <button class="btn btn-primary" onclick="runDiscovery()" id="discoverBtn">
-            Scan Network
-          </button>
-        </div>
-
-        <div id="discoveryResults" style="display:none">
-          <div id="discoveryList"></div>
-        </div>
-
-        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
-          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Or enter the IP address manually:</div>
-          <input type="text" id="setupHost" placeholder="e.g. 192.168.1.1 or 10.1.10.1">
-        </div>
-      </div>
-
-      <!-- Step 2: API Token -->
-      <div class="card" style="margin-top:16px" id="setupStep2">
-        <div class="card-title">Step 2: API Token</div>
-        <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
-          Generate a token in the UniFi Access portal at:<br>
-          <strong>Access > Settings > General > Advanced > API Token</strong>
-        </div>
-
-        <div class="form-group" style="margin-bottom:0">
-          <input type="text" id="setupToken" placeholder="Paste your API token here">
-        </div>
-      </div>
-
-      <!-- Step 3: Connect -->
-      <div class="card" style="margin-top:16px">
-        <div class="card-title">Step 3: Connect</div>
-
-        <div style="margin-bottom:16px">
-          <div style="font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none" onclick="document.getElementById('advancedSettings').style.display = document.getElementById('advancedSettings').style.display === 'none' ? 'block' : 'none'">
-            &#9654; Advanced Settings
+      <!-- STEP: welcome -->
+      <section class="wizard-step" data-step="welcome">
+        <div class="card">
+          <div class="card-title">What this wizard does</div>
+          <div style="font-size:13px;color:var(--text-secondary);line-height:1.6">
+            In a few short steps we'll connect to your UniFi Access controller,
+            confirm it can see your doors and users, and help you create your
+            first automation rule. Every step has a short explanation, and you
+            can leave at any point with <strong>Skip for now</strong> and come
+            back later from the <strong>Setup</strong> button in the top bar.
           </div>
-          <div id="advancedSettings" style="display:none;margin-top:12px;padding:12px;background:var(--bg-input);border-radius:var(--radius)">
-            <div class="form-group">
-              <label class="form-label">API Port</label>
-              <input type="number" id="setupPort" value="12445">
-              <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Default 12445. Only change if your controller uses a non-standard port.</div>
-            </div>
-            <div class="form-group" style="margin-bottom:0">
-              <label class="form-label">Service Port</label>
-              <input type="number" id="setupServerPort" value="3000">
-              <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Port for the webhook listener and this dashboard. Default 3000.</div>
-            </div>
+          <div class="help-blurb" style="margin-top:16px;margin-bottom:0">
+            <strong>Before you start, have this ready:</strong>
+            <ul>
+              <li>Your UniFi Access controller powered on and on the same network.</li>
+              <li>An API token from the Access portal (we show you where to get it).</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP: connect (merges discovery + token + advanced; IDs preserved so
+           runDiscovery / selectController / testConnection work unchanged) -->
+      <section class="wizard-step" data-step="connect">
+        <div class="card" id="setupStep1">
+          <div class="card-title">Find your controller
+            <span class="tip" tabindex="0" data-tip="We scan your local subnets for devices answering on the UniFi Access API port. If yours is on another VLAN, type its IP below.">?</span>
+          </div>
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+            We'll scan your local network for UniFi controllers.
+          </div>
+
+          <div id="discoveryStatus" style="margin-bottom:16px">
+            <button class="btn btn-primary" onclick="runDiscovery()" id="discoverBtn">
+              Scan Network
+            </button>
+          </div>
+
+          <div id="discoveryResults" style="display:none">
+            <div id="discoveryList"></div>
+          </div>
+
+          <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Or enter the IP address manually:</div>
+            <input type="text" id="setupHost" placeholder="e.g. 192.168.1.1 or 10.1.10.1">
           </div>
         </div>
 
-        <div style="display:flex;gap:12px;flex-wrap:wrap">
-          <button class="btn btn-secondary" onclick="testConnection()" id="setupTestBtn">Test Connection</button>
-          <button class="btn btn-primary" onclick="saveSetup()" id="setupSaveBtn" disabled>Save &amp; Connect</button>
-          <button class="btn btn-secondary" onclick="skipSetup()" style="margin-left:auto">Skip for Now</button>
+        <div class="card" style="margin-top:16px" id="setupStep2">
+          <div class="card-title">API token
+            <span class="tip" tabindex="0" data-tip="The token authorizes this app to read doors and users and to trigger unlocks. Treat it like a password; it is stored locally and never shown again after saving.">?</span>
+          </div>
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+            Generate a token in the UniFi Access portal at:<br>
+            <strong>Access &gt; Settings &gt; General &gt; Advanced &gt; API Token</strong>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0">
+            <input type="text" id="setupToken" placeholder="Paste your API token here">
+          </div>
         </div>
 
-        <div id="setupStatus" style="margin-top:16px;font-size:13px"></div>
+        <div class="card" style="margin-top:16px">
+          <div class="card-title">Test the connection</div>
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+            We'll save these details and check that the controller responds and
+            can see your doors and users. Once it succeeds you can continue.
+          </div>
+
+          <div style="margin-bottom:16px">
+            <div style="font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none" onclick="document.getElementById('advancedSettings').style.display = document.getElementById('advancedSettings').style.display === 'none' ? 'block' : 'none'">
+              &#9654; Advanced Settings
+            </div>
+            <div id="advancedSettings" style="display:none;margin-top:12px;padding:12px;background:var(--bg-input);border-radius:var(--radius)">
+              <div class="form-group">
+                <label class="form-label">API Port</label>
+                <input type="number" id="setupPort" value="12445">
+                <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Default 12445. Only change if your controller uses a non-standard port.</div>
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label class="form-label">Service Port</label>
+                <input type="number" id="setupServerPort" value="3000">
+                <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Port for the webhook listener and this dashboard. Default 3000.</div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-primary" onclick="testConnection()" id="setupTestBtn">Test Connection</button>
+          </div>
+
+          <div id="setupStatus" style="margin-top:16px;font-size:13px"></div>
+        </div>
+      </section>
+
+      <!-- STEP: sync -->
+      <section class="wizard-step" data-step="sync">
+        <div class="card">
+          <div class="card-title">Confirm doors and users
+            <span class="tip" tabindex="0" data-tip="The orchestrator pulls the door list and the user directory from the controller. Rules reference these by name, so it helps to confirm they came through.">?</span>
+          </div>
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+            Here's what the orchestrator can currently see on your controller. If
+            users are missing, run a sync; new users appear once they badge in or
+            after the next scheduled sync.
+          </div>
+          <div id="wizSyncStats"><div style="color:var(--text-muted)">Loading...</div></div>
+        </div>
+      </section>
+
+      <!-- STEP: groups -->
+      <section class="wizard-step" data-step="groups">
+        <div class="card">
+          <div class="card-title">Name your groups
+            <span class="tip" tabindex="0" data-tip="UniFi group names are often technical. Map them to friendly labels (like Staff or Delivery) that your rules will use. Leave a row blank to keep the UniFi name.">?</span>
+          </div>
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+            Give your UniFi groups friendly names to use in rules. This is
+            optional; you can always change it later in the Configuration tab.
+          </div>
+          <div id="wizGroupMappings"><div style="color:var(--text-muted)">Loading groups...</div></div>
+        </div>
+      </section>
+
+      <!-- STEP: rule -->
+      <section class="wizard-step" data-step="rule">
+        <div class="card">
+          <div class="card-title">Create your first rule
+            <span class="tip" tabindex="0" data-tip="An access rule says: when someone in a group badges at a chosen door, unlock one or more doors. This is the core of the orchestrator.">?</span>
+          </div>
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+            Rules are what make the orchestrator act. A simple first rule might
+            be: when <em>Staff</em> badge at the <em>Front Door</em>, also unlock
+            the <em>Inner Door</em>. You can build rules in the full editor on the
+            Configuration tab, then come back here to finish.
+          </div>
+          <div id="wizRuleSummary"><div style="color:var(--text-muted)">Loading rules...</div></div>
+        </div>
+      </section>
+
+      <!-- STEP: events -->
+      <section class="wizard-step" data-step="events">
+        <div class="card">
+          <div class="card-title">How events reach the app
+            <span class="tip" tabindex="0" data-tip="This is how the controller tells the app that someone badged in. Most installs should use Alarm Manager, which the app configures on the controller for you.">?</span>
+          </div>
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+            Pick how the orchestrator learns about access events. If you're not
+            sure, leave the recommended option selected.
+          </div>
+          <div id="wizEventChoice"><div style="color:var(--text-muted)">Loading...</div></div>
+        </div>
+      </section>
+
+      <!-- STEP: finish -->
+      <section class="wizard-step" data-step="finish">
+        <div id="wizFinishSummary"></div>
+      </section>
+
+      <!-- Shared navigation -->
+      <div class="wizard-nav">
+        <button class="btn btn-secondary" id="wizBackBtn" onclick="wizardBack()">Back</button>
+        <div class="spacer"></div>
+        <button class="btn btn-secondary" id="wizSkipBtn" onclick="skipSetup()">Skip for now</button>
+        <button class="btn btn-primary" id="wizNextBtn" onclick="wizardNext()">Next</button>
       </div>
     </div>
   </div>
@@ -1841,9 +2049,14 @@ function renderConfig() {
   const discoveredGroupNames = new Set();
   users.forEach(u => { if (u.group) discoveredGroupNames.add(u.group); });
 
-  // Group Mappings Form (after rendering users)
-  let groupMappingsHtml = `
-    <div style="margin-bottom:20px">
+  // Group Mappings Form (after rendering users). Rows come from the shared
+  // buildGroupMappingRows helper, which emits data-mapping-group attributes
+  // instead of element ids, so the same builder is safe to reuse in the setup
+  // wizard without colliding on duplicate ids. saveGroupMappings is scoped to
+  // this container so a save here never picks up the wizard's rows.
+  const configMappingRows = buildGroupMappingRows(Array.from(rawUnifiGroups).sort(), currentResolver);
+  const groupMappingsHtml = `
+    <div style="margin-bottom:20px" id="configGroupMappings">
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Map UniFi group names to logical names (used in your rules). Leave blank to use the UniFi name.</div>
       <div style="overflow-x:auto">
         <table class="event-table" style="min-width:500px">
@@ -1853,29 +2066,13 @@ function renderConfig() {
               <th style="width:50%">Logical Name (for rules)</th>
             </tr>
           </thead>
-          <tbody>
-  `;
-
-  for (const groupName of Array.from(rawUnifiGroups).sort()) {
-    const logicalName = currentResolver[groupName] || groupName;
-    groupMappingsHtml += `
-      <tr>
-        <td style="color:var(--text-primary);font-weight:600">${escapeHtml(groupName)}</td>
-        <td>
-          <input type="text" id="mapping-${escapeHtml(groupName)}" value="${escapeHtml(logicalName)}" placeholder="${escapeHtml(groupName)}" style="font-size:12px;padding:6px 8px">
-        </td>
-      </tr>
-    `;
-  }
-
-  groupMappingsHtml += `
-          </tbody>
+          <tbody>${configMappingRows}</tbody>
         </table>
       </div>
-      <button class="btn btn-primary" onclick="saveGroupMappings()" style="margin-top:12px">Save Group Mappings</button>
+      <button class="btn btn-primary" onclick="saveGroupMappings('#configGroupMappings')" style="margin-top:12px">Save Group Mappings</button>
     </div>
   `;
-  
+
   // Append group mappings to users section
   document.getElementById('configUsers').innerHTML += groupMappingsHtml;
 
@@ -2410,13 +2607,14 @@ function toggleEventSourceFields() {
   document.getElementById('websocketFields').style.display = mode === 'websocket' ? 'block' : 'none';
 }
 
-async function saveGroupMappings() {
+async function saveGroupMappings(scopeSelector) {
   try {
-    const discoveredGroups = new Set();
-    document.querySelectorAll('[id^="mapping-"]').forEach(input => {
-      const groupName = input.id.substring(8); // Remove 'mapping-' prefix
-      discoveredGroups.add(groupName);
-    });
+    // Read the mapping inputs from a single container so the config tab and the
+    // setup wizard (which can both mount rows built by buildGroupMappingRows)
+    // never read each other's inputs. Falls back to the whole document if no
+    // scope is given, matching the pre-refactor behaviour.
+    const scope = (scopeSelector && document.querySelector(scopeSelector)) || document;
+    const inputs = scope.querySelectorAll('[data-mapping-group]');
 
     // Always send every mapping (even identity ones). The previous behaviour
     // dropped entries where logical === unifi name, which made the input
@@ -2424,11 +2622,12 @@ async function saveGroupMappings() {
     // referenced the typed-in name. Persisting the full map keeps the UI
     // consistent with what's saved and makes the mapping explicit.
     const unifi_group_to_group = {};
-    for (const groupName of discoveredGroups) {
-      const input = document.getElementById(`mapping-${groupName}`);
+    inputs.forEach((input) => {
+      const groupName = input.getAttribute('data-mapping-group');
+      if (!groupName) return;
       const logicalName = input.value.trim() || groupName;
       unifi_group_to_group[groupName] = logicalName;
-    }
+    });
 
     const resolver = { unifi_group_to_group };
     // Include current doors map so rules saves remain consistent
@@ -3449,6 +3648,162 @@ function renderMarkdown(md) {
 // ============================================================
 // Setup Wizard (first run)
 // ============================================================
+// Guided-wizard runtime state. step = current step id; maxIndex = furthest
+// step reached (controls which stepper dots are clickable); connectTested =
+// whether the controller test has passed (gates leaving the connect step).
+let wizardState = { step: 'welcome', maxIndex: 0, connectTested: false, reviewMode: false };
+
+// ---- Pure builders (extracted and unit-tested; keep them side-effect free) ----
+
+// Ordered list of wizard step ids. Kept inline here and in the step helpers so
+// each function is self-contained for the extract-and-run test harness.
+function wizardStepList() {
+  return ['welcome', 'connect', 'sync', 'groups', 'rule', 'events', 'finish'];
+}
+
+function nextWizardStep(cur) {
+  const steps = ['welcome', 'connect', 'sync', 'groups', 'rule', 'events', 'finish'];
+  const i = steps.indexOf(cur);
+  if (i < 0 || i >= steps.length - 1) return null;
+  return steps[i + 1];
+}
+
+function prevWizardStep(cur) {
+  const steps = ['welcome', 'connect', 'sync', 'groups', 'rule', 'events', 'finish'];
+  const i = steps.indexOf(cur);
+  if (i <= 0) return null;
+  return steps[i - 1];
+}
+
+// Decide whether the wizard should open itself on load. It opens only for a
+// genuine fresh install: no controller host configured AND setup was neither
+// completed nor skipped. Existing installs (a host is set) and anyone who
+// finished or dismissed the wizard are never interrupted. A setup_wizard
+// object that is present but unfinished resumes; its absence on an already
+// configured install is treated as "legacy, already set up".
+function computeWizardAutoOpen(config) {
+  if (!config || typeof config !== 'object') return false;
+  const unifi = (config.unifi && typeof config.unifi === 'object') ? config.unifi : {};
+  const host = typeof unifi.host === 'string' ? unifi.host.trim() : '';
+  const hostSet = host !== '';
+  const sw = (config.setup_wizard && typeof config.setup_wizard === 'object') ? config.setup_wizard : {};
+  if (sw.completed === true || sw.skipped === true) return false;
+  return !hostSet;
+}
+
+// Numbered/clickable stepper. done = a step behind the current one; active =
+// current; clickable = any visited step (index <= maxIndex) that is not the
+// current one. Labels are authored constants, so no escaping is required.
+function renderWizardStepper(currentStep, maxIndex) {
+  const steps = [
+    { id: 'welcome', label: 'Welcome' },
+    { id: 'connect', label: 'Connect' },
+    { id: 'sync', label: 'Verify' },
+    { id: 'groups', label: 'Groups' },
+    { id: 'rule', label: 'Rules' },
+    { id: 'events', label: 'Events' },
+    { id: 'finish', label: 'Finish' }
+  ];
+  const curIdx = steps.findIndex((s) => s.id === currentStep);
+  const maxIdx = (typeof maxIndex === 'number' && maxIndex >= curIdx) ? maxIndex : curIdx;
+  return steps.map((s, i) => {
+    const classes = ['wstep'];
+    if (i === curIdx) classes.push('active');
+    else if (i < curIdx) classes.push('done');
+    const clickable = i <= maxIdx && i !== curIdx;
+    if (clickable) classes.push('clickable');
+    const dot = (i < curIdx) ? '&#10003;' : String(i + 1);
+    return '<span class="' + classes.join(' ') + '" data-step="' + s.id + '">'
+      + '<span class="wdot">' + dot + '</span>' + s.label + '</span>';
+  }).join('');
+}
+
+// Group-mapping rows shared by the config tab and the wizard. Emits
+// data-mapping-group (not id) so both can be present in the DOM without an id
+// collision; saveGroupMappings reads the attribute within a scoped container.
+function buildGroupMappingRows(rawGroups, resolverMap) {
+  const map = resolverMap || {};
+  return (rawGroups || []).map((groupName) => {
+    const mapped = map[groupName];
+    const logical = (mapped !== undefined && mapped !== null && mapped !== '') ? mapped : groupName;
+    return '<tr>'
+      + '<td style="color:var(--text-primary);font-weight:600">' + escapeHtml(groupName) + '</td>'
+      + '<td><input type="text" data-mapping-group="' + escapeHtml(groupName) + '"'
+      + ' value="' + escapeHtml(logical) + '" placeholder="' + escapeHtml(groupName) + '"'
+      + ' style="font-size:12px;padding:6px 8px"></td>'
+      + '</tr>';
+  }).join('');
+}
+
+// Plain-language event-source picker for the wizard. Option ids/labels are
+// authored constants; only the caller-supplied selection is compared.
+function buildWizardEventChoice(currentMode) {
+  const mode = currentMode || 'alarm_manager';
+  const opts = [
+    { id: 'alarm_manager', label: 'Alarm Manager (recommended)', desc: 'The app sets up an alarm rule on your controller and receives events automatically. Best for most installs.' },
+    { id: 'api_webhook', label: 'API Webhook', desc: 'The controller posts events to this app over a webhook you configure manually. Use this if Alarm Manager is not available.' },
+    { id: 'websocket', label: 'WebSocket (advanced)', desc: 'Subscribe to the controller event stream directly. Requires a compatible controller.' }
+  ];
+  const rows = opts.map((o) => {
+    const checked = o.id === mode ? ' checked' : '';
+    return '<label style="display:flex;gap:10px;align-items:flex-start;padding:12px;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:10px;cursor:pointer">'
+      + '<input type="radio" name="wizEventMode" value="' + o.id + '"' + checked + ' style="margin-top:3px">'
+      + '<span><span style="font-weight:600;color:var(--text-primary)">' + o.label + '</span>'
+      + '<span style="display:block;font-size:12px;color:var(--text-secondary);margin-top:2px">' + o.desc + '</span></span>'
+      + '</label>';
+  }).join('');
+  return rows + '<button class="btn btn-primary" style="margin-top:6px" onclick="saveWizardEventMode()">Save event mode</button>';
+}
+
+// Finish-step summary. Counts are numeric and the event mode comes from a fixed
+// label map, but everything dynamic is still escaped defensively.
+function buildWizardFinishHtml(summary) {
+  const s = summary || {};
+  const doors = Number(s.doors || 0);
+  const users = Number(s.users || 0);
+  const rules = Number(s.rules || 0);
+  const modeLabels = { alarm_manager: 'Alarm Manager', api_webhook: 'API Webhook', websocket: 'WebSocket' };
+  const modeLabel = modeLabels[s.eventMode] || 'Not set';
+  const tile = (value, label) => '<div style="flex:1;min-width:110px;background:var(--bg-input);border-radius:var(--radius);padding:14px">'
+    + '<div style="font-size:22px;font-weight:700;color:var(--accent)">' + escapeHtml(String(value)) + '</div>'
+    + '<div style="font-size:12px;color:var(--text-secondary)">' + escapeHtml(String(label)) + '</div></div>';
+  const nudge = rules === 0
+    ? '<div class="help-blurb" style="margin-top:16px;margin-bottom:0;text-align:left">No rules yet. The orchestrator will connect and sync, but it will not automate anything until you add at least one rule on the Configuration tab.</div>'
+    : '';
+  return '<div class="card" style="text-align:center">'
+    + '<div style="font-size:40px;margin-bottom:8px">&#127881;</div>'
+    + '<div style="font-size:18px;font-weight:700;margin-bottom:6px">You\'re all set</div>'
+    + '<div style="font-size:13px;color:var(--text-secondary)">Here is where things stand.</div>'
+    + '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:18px">'
+    + tile(doors, 'doors') + tile(users, 'users') + tile(rules, 'rules') + tile(modeLabel, 'events')
+    + '</div>'
+    + nudge
+    + '<div class="help-blurb" style="text-align:left;margin-top:16px;margin-bottom:0">'
+    + '<strong>What you can do next:</strong>'
+    + '<ul>'
+    + '<li>Fine-tune rules, doors, and group names on the <strong>Configuration</strong> tab.</li>'
+    + '<li>Add visitor and doorbell rules, backups, and alerts under <strong>Configuration</strong> and <strong>Settings</strong>.</li>'
+    + '<li>Pair a smart deadbolt from <strong>Configuration &gt; Z-Wave</strong> once the hardware is connected.</li>'
+    + '<li>Reopen this wizard any time from the <strong>Setup</strong> button in the top bar.</li>'
+    + '</ul></div>'
+    + '</div>';
+}
+
+// Per-step title/subtitle for the wizard header.
+function wizardStepTitles() {
+  return {
+    welcome: { title: 'Welcome to UniFi Access Orchestrator', subtitle: "Let's find your controller and set up your first automation." },
+    connect: { title: 'Connect to your controller', subtitle: 'Find it on the network, add your API token, and test the link.' },
+    sync: { title: 'Confirm doors and users', subtitle: 'Make sure the orchestrator can see what it needs.' },
+    groups: { title: 'Name your groups', subtitle: 'Give UniFi groups friendly names to use in rules.' },
+    rule: { title: 'Create your first rule', subtitle: 'Rules are what make the orchestrator act on access events.' },
+    events: { title: 'Event delivery', subtitle: 'Choose how the controller tells this app about access events.' },
+    finish: { title: "You're all set", subtitle: 'A quick summary and where to go next.' }
+  };
+}
+
+// ---- Wizard runtime (side-effecting) ----
+
 async function checkFirstRun() {
   // The in-process server may still be settling right after the window opens,
   // so retry briefly. Only a response that actually carries a unifi object is
@@ -3458,8 +3813,10 @@ async function checkFirstRun() {
     try {
       const config = await api('GET', '/api/config');
       if (config && typeof config.unifi === 'object' && config.unifi !== null) {
-        if (!config.unifi.host || config.unifi.host === '' || config.unifi.host === '192.168.1.1') {
-          showSetupWizard();
+        configData = config; // cache so the wizard can prefill and resume
+        if (computeWizardAutoOpen(config)) {
+          const sw = config.setup_wizard || {};
+          showSetupWizard(sw.last_step);
           return true;
         }
         return false;
@@ -3482,59 +3839,346 @@ async function checkFirstRun() {
   return false;
 }
 
-function showSetupWizard() {
+function showSetupWizard(startStep) {
   const setup = document.getElementById('setup');
-  const tabBar = document.getElementById('tabBar');
+  if (!setup) return;
 
-  // Hide other pages
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  // Take over the viewport: hide the tab bar and any other page so the wizard
+  // is the only thing on screen. hideSetupWizard/skipSetup/finish restore it.
+  document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
   setup.style.display = 'block';
   setup.classList.add('active');
+  document.getElementById('tabBar').style.display = 'none';
 
-  // If config already has a host, pre-fill the fields and show a back button
-  if (configData && configData.unifi?.host && configData.unifi.host !== '') {
-    document.getElementById('setupHost').value = configData.unifi.host;
-    document.getElementById('setupPort').value = configData.unifi.port || 12445;
-    // Don't pre-fill token for security
-    document.getElementById('setupServerPort').value = configData.server?.port || 3000;
-    tabBar.style.display = 'flex';
-
-    // Add back button if not already there
-    if (!document.getElementById('setupBackBtn')) {
-      const backBtn = document.createElement('button');
-      backBtn.id = 'setupBackBtn';
-      backBtn.className = 'btn btn-sm btn-secondary';
-      backBtn.textContent = 'Back to Dashboard';
-      backBtn.style.marginBottom = '16px';
-      backBtn.onclick = () => {
-        hideSetupWizard();
-        fetchHealth();
-        loadConfig();
-      };
-      setup.querySelector('div').insertBefore(backBtn, setup.querySelector('div').firstChild);
-    }
+  const unifi = (configData && configData.unifi) || {};
+  const host = typeof unifi.host === 'string' ? unifi.host.trim() : '';
+  const hostSet = host !== '';
+  if (hostSet) {
+    const hostEl = document.getElementById('setupHost'); if (hostEl) hostEl.value = host;
+    const portEl = document.getElementById('setupPort'); if (portEl) portEl.value = unifi.port || 12445;
+    const spEl = document.getElementById('setupServerPort'); if (spEl) spEl.value = (configData.server && configData.server.port) || 3000;
+    // Already connected before, so the connect gate is satisfied on reentry.
+    wizardState.connectTested = true;
   } else {
-    tabBar.style.display = 'none';
+    wizardState.connectTested = false;
   }
+  // Review mode = the app is already set up and the user opened the wizard to
+  // look around. In that case the exit button just closes, rather than marking
+  // setup "skipped".
+  const swState = (configData && configData.setup_wizard) || {};
+  wizardState.reviewMode = hostSet || swState.completed === true;
+
+  const steps = wizardStepList();
+  let step = startStep;
+  if (!step || steps.indexOf(step) < 0) {
+    const sw = (configData && configData.setup_wizard) || {};
+    if (hostSet || sw.completed) step = 'connect';           // returning user -> controller screen
+    else if (sw.last_step && steps.indexOf(sw.last_step) >= 0) step = sw.last_step; // resume
+    else step = 'welcome';                                   // fresh install
+  }
+  wizardState.maxIndex = Math.max(wizardState.maxIndex || 0, steps.indexOf(step));
+  wizardGoTo(step);
 }
 
-function hideSetupWizard() {
-  document.getElementById('setup').style.display = 'none';
+function hideSetupWizard(skipPersist) {
+  if (!skipPersist) persistWizardState({ last_step: wizardState.step });
+  const setup = document.getElementById('setup');
+  if (setup) { setup.style.display = 'none'; setup.classList.remove('active'); }
   document.getElementById('tabBar').style.display = 'flex';
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.getElementById('dashboard').classList.add('active');
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab')[0].classList.add('active');
-  const backBtn = document.getElementById('setupBackBtn');
-  if (backBtn) backBtn.remove();
+  document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
+  const dashboard = document.getElementById('dashboard');
+  if (dashboard) dashboard.classList.add('active');
+  document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+  const firstTab = document.querySelectorAll('.tab')[0];
+  if (firstTab) firstTab.classList.add('active');
 }
 
 function skipSetup() {
-  hideSetupWizard();
+  // Review mode: the app is already configured, so leaving is just a close.
+  // Do not mark setup skipped and do not trigger a reload.
+  if (wizardState.reviewMode) {
+    hideSetupWizard(true);
+    return;
+  }
+  persistWizardState({ skipped: true, last_step: wizardState.step });
+  hideSetupWizard(true);
   fetchHealth();
   loadConfig();
   connectSSE();
-  toast('Setup skipped. You can configure controller settings later from the Settings tab.', 'info');
+  toast('You can finish setup any time from the Setup button in the top bar.', 'info');
+}
+
+function finishWizard() {
+  persistWizardState({ completed: true, last_step: 'finish' });
+  hideSetupWizard(true);
+  fetchHealth();
+  loadConfig();
+  connectSSE();
+  toast('Setup complete. Welcome aboard!', 'success');
+}
+
+// Persist wizard progress. Fire-and-forget: the UI never blocks on it, PUT
+// deep-merges so partial patches are safe, and a failed write (server mid-
+// reload) is non-fatal. Note the server auto-reloads after any config save.
+function persistWizardState(patch) {
+  try {
+    const current = (configData && configData.setup_wizard && typeof configData.setup_wizard === 'object')
+      ? configData.setup_wizard : {};
+    const merged = Object.assign({}, current, patch);
+    if (configData && typeof configData === 'object') configData.setup_wizard = merged;
+    api('PUT', '/api/config', { setup_wizard: merged }).catch(() => {});
+  } catch (e) { /* non-fatal */ }
+}
+
+function wizardGoTo(step) {
+  const steps = wizardStepList();
+  const idx = steps.indexOf(step);
+  if (idx < 0) return;
+  wizardState.step = step;
+  if (idx > (wizardState.maxIndex || 0)) wizardState.maxIndex = idx;
+
+  document.querySelectorAll('#setup .wizard-step').forEach((sec) => {
+    sec.classList.toggle('active', sec.getAttribute('data-step') === step);
+  });
+
+  renderWizardChrome();
+
+  if (step === 'sync') renderWizardSync();
+  else if (step === 'groups') renderWizardGroups();
+  else if (step === 'rule') renderWizardRuleStep();
+  else if (step === 'events') renderWizardEventsStep();
+  else if (step === 'finish') renderWizardFinish();
+
+  try {
+    const shell = document.querySelector('#setup .wizard-shell');
+    if (shell && shell.scrollIntoView) shell.scrollIntoView({ block: 'start' });
+  } catch (e) { /* non-critical */ }
+}
+
+function renderWizardChrome() {
+  const steps = wizardStepList();
+  const idx = steps.indexOf(wizardState.step);
+
+  const stepperEl = document.getElementById('wizardStepper');
+  if (stepperEl) {
+    stepperEl.innerHTML = renderWizardStepper(wizardState.step, wizardState.maxIndex);
+    stepperEl.querySelectorAll('.wstep.clickable').forEach((el) => {
+      el.onclick = () => wizardGoTo(el.getAttribute('data-step'));
+    });
+  }
+
+  const titles = wizardStepTitles();
+  const meta = titles[wizardState.step];
+  if (meta) {
+    const t = document.getElementById('wizardTitle'); if (t) t.textContent = meta.title;
+    const st = document.getElementById('wizardSubtitle'); if (st) st.textContent = meta.subtitle;
+  }
+
+  const backBtn = document.getElementById('wizBackBtn');
+  const nextBtn = document.getElementById('wizNextBtn');
+  const skipBtn = document.getElementById('wizSkipBtn');
+  if (backBtn) backBtn.style.visibility = idx <= 0 ? 'hidden' : 'visible';
+  if (nextBtn) {
+    if (wizardState.step === 'finish') {
+      nextBtn.textContent = 'Finish';
+    } else {
+      nextBtn.textContent = 'Next';
+    }
+    // The connect step is the only hard gate: you must pass a test (or Skip).
+    if (wizardState.step === 'connect') {
+      nextBtn.disabled = !wizardState.connectTested;
+      nextBtn.title = wizardState.connectTested ? '' : 'Test the connection first, or choose Skip for now';
+    } else {
+      nextBtn.disabled = false;
+      nextBtn.title = '';
+    }
+  }
+  if (skipBtn) {
+    skipBtn.style.display = wizardState.step === 'finish' ? 'none' : '';
+    skipBtn.textContent = wizardState.reviewMode ? 'Close' : 'Skip for now';
+  }
+}
+
+async function wizardNext() {
+  const step = wizardState.step;
+  if (step === 'connect') {
+    if (!wizardState.connectTested) {
+      const el = document.getElementById('setupStatus');
+      if (el) el.innerHTML = '<span style="color:var(--yellow)">Please test the connection first, or choose Skip for now.</span>';
+      return;
+    }
+    // The test may have passed earlier; guard against the host having been
+    // cleared since, which would otherwise persist an empty host and tear down
+    // the working controller connection on the server reload.
+    const hostEl = document.getElementById('setupHost');
+    if (!hostEl || hostEl.value.trim() === '') {
+      const el = document.getElementById('setupStatus');
+      if (el) el.innerHTML = '<span style="color:var(--yellow)">Please enter the controller address before continuing.</span>';
+      return;
+    }
+    // Persist the latest field values (idempotent; the token is left untouched
+    // when the field is blank so a saved token is never wiped).
+    try { await persistConnection(); } catch (e) { /* test already proved reachability */ }
+  }
+  if (step === 'finish') { finishWizard(); return; }
+  const next = nextWizardStep(step);
+  if (next) wizardGoTo(next);
+}
+
+function wizardBack() {
+  const prev = prevWizardStep(wizardState.step);
+  if (prev) wizardGoTo(prev);
+}
+
+// Called by testConnection on a successful test to satisfy the connect gate.
+function wizardOnConnectTested() {
+  wizardState.connectTested = true;
+  const nextBtn = document.getElementById('wizNextBtn');
+  if (nextBtn && wizardState.step === 'connect') {
+    nextBtn.disabled = false;
+    nextBtn.title = '';
+  }
+}
+
+// Write the current connection fields without running the doors/users probe.
+// Used when advancing past the connect step so manual edits after a test are
+// still saved.
+async function persistConnection() {
+  const hostEl = document.getElementById('setupHost');
+  const portEl = document.getElementById('setupPort');
+  const tokenEl = document.getElementById('setupToken');
+  const spEl = document.getElementById('setupServerPort');
+  const host = hostEl ? hostEl.value.trim() : '';
+  const port = portEl ? portEl.value.trim() : '';
+  const token = tokenEl ? tokenEl.value.trim() : '';
+  const serverPort = spEl ? spEl.value.trim() : '';
+  const body = {
+    server: { port: parseInt(serverPort, 10) || 3000, host: '0.0.0.0' },
+    unifi: { port: parseInt(port, 10) || 12445, verify_ssl: false, user_sync_interval_minutes: 5 }
+  };
+  // Omit a blank host so a stored, working host is never overwritten with '',
+  // which would trigger a full reload against an empty controller address.
+  if (host) body.unifi.host = host;
+  if (token) body.unifi.token = token; // never overwrite a stored token with blank
+  await api('PUT', '/api/config', body);
+}
+
+async function renderWizardSync() {
+  const el = document.getElementById('wizSyncStats');
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--text-muted)">Checking the controller...</div>';
+  try {
+    const h = await api('GET', '/health');
+    const doors = (h.unifi && h.unifi.doors_discovered) || 0;
+    const users = (h.unifi && h.unifi.users_mapped) || 0;
+    const tile = (n, label) => '<div style="flex:1;min-width:120px;background:var(--bg-input);border-radius:var(--radius);padding:16px;text-align:center">'
+      + '<div style="font-size:28px;font-weight:700;color:var(--accent)">' + Number(n) + '</div>'
+      + '<div style="font-size:12px;color:var(--text-secondary)">' + label + '</div></div>';
+    el.innerHTML = '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">'
+      + tile(doors, 'doors discovered') + tile(users, 'users mapped') + '</div>'
+      + '<button class="btn btn-secondary" onclick="wizardForceSync()">Sync users now</button>'
+      + (users === 0 ? '<div style="font-size:12px;color:var(--text-muted);margin-top:12px">No users yet? They appear after a sync, or the first time each person badges in.</div>' : '');
+  } catch (e) {
+    el.innerHTML = '<div style="color:var(--red)">Could not read controller status: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+async function wizardForceSync() {
+  await forceSync();
+  renderWizardSync();
+}
+
+function renderWizardGroups() {
+  const el = document.getElementById('wizGroupMappings');
+  if (!el) return;
+  const currentResolver = (configData && configData.resolver && configData.resolver.unifi_group_to_group) || {};
+  const raw = new Set((groupsData && groupsData.groups) ? groupsData.groups : []);
+  const users = (usersData && usersData.users) || [];
+  if (raw.size === 0) users.forEach((u) => { if (u.group) raw.add(u.group); });
+  Object.keys(currentResolver).forEach((k) => raw.add(k));
+  const rawGroups = Array.from(raw).sort();
+  if (rawGroups.length === 0) {
+    el.innerHTML = '<div style="color:var(--text-muted)">No groups found yet. Sync users first, then come back. You can also skip this and set it up later.</div>';
+    return;
+  }
+  el.innerHTML = '<div style="overflow-x:auto"><table class="event-table" style="min-width:480px"><thead><tr>'
+    + '<th style="width:50%">UniFi Group Name</th><th style="width:50%">Friendly Name</th>'
+    + '</tr></thead><tbody>' + buildGroupMappingRows(rawGroups, currentResolver) + '</tbody></table></div>'
+    + '<button class="btn btn-primary" style="margin-top:12px" onclick="saveWizardGroups()">Save group names</button>';
+}
+
+async function saveWizardGroups() {
+  await saveGroupMappings('#wizGroupMappings');
+}
+
+function renderWizardRuleStep() {
+  const el = document.getElementById('wizRuleSummary');
+  if (!el) return;
+  let count = 0;
+  try { count = _getAccessRules().length; } catch (e) { count = 0; }
+  el.innerHTML = '<div style="background:var(--bg-input);border-radius:var(--radius);padding:16px;margin-bottom:16px">'
+    + '<div style="font-size:13px;color:var(--text-secondary)">You currently have <strong style="color:var(--text-primary)">'
+    + Number(count) + '</strong> access rule' + (count === 1 ? '' : 's') + '.</div></div>'
+    + '<button class="btn btn-primary" onclick="wizardGoToConfig(\'rule\')">'
+    + (count === 0 ? 'Create your first rule' : 'Manage rules') + '</button>'
+    + '<div style="font-size:12px;color:var(--text-muted);margin-top:10px">Rules open in the full editor on the Configuration tab. You can continue the wizard without adding one.</div>';
+}
+
+function renderWizardEventsStep() {
+  const el = document.getElementById('wizEventChoice');
+  if (!el) return;
+  const mode = (configData && configData.event_source && configData.event_source.mode) || 'alarm_manager';
+  el.innerHTML = buildWizardEventChoice(mode);
+}
+
+async function saveWizardEventMode() {
+  const picked = document.querySelector('input[name="wizEventMode"]:checked');
+  const mode = picked ? picked.value : 'alarm_manager';
+  try {
+    await api('PUT', '/api/config', { event_source: { mode } });
+    if (configData && typeof configData === 'object') {
+      configData.event_source = Object.assign({}, configData.event_source, { mode });
+    }
+    toast('Event mode saved.', 'success');
+  } catch (e) {
+    toast('Could not save event mode: ' + e.message, 'error');
+  }
+}
+
+async function renderWizardFinish() {
+  const el = document.getElementById('wizFinishSummary');
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--text-muted)">Summarizing...</div>';
+  let doors = 0, users = 0, rules = 0, mode = '';
+  try {
+    const h = await api('GET', '/health');
+    doors = (h.unifi && h.unifi.doors_discovered) || 0;
+    users = (h.unifi && h.unifi.users_mapped) || 0;
+  } catch (e) { /* summary is best-effort */ }
+  try { rules = _getAccessRules().length; } catch (e) { rules = 0; }
+  try { mode = (configData && configData.event_source && configData.event_source.mode) || ''; } catch (e) { mode = ''; }
+  el.innerHTML = buildWizardFinishHtml({ doors, users, rules, eventMode: mode });
+}
+
+// Hand off to the full Configuration tab editor (the single source of truth for
+// rules and mappings). We persist where we were so the Setup button can resume,
+// and deliberately do not duplicate those editors inside the wizard.
+function wizardGoToConfig(section) {
+  persistWizardState({ last_step: wizardState.step });
+  hideSetupWizard(true);
+  document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
+  const configTab = document.querySelector('[data-page="config"]');
+  if (configTab) configTab.classList.add('active');
+  const configPage = document.getElementById('config');
+  if (configPage) configPage.classList.add('active');
+  loadConfig();
+  const anchorId = section === 'groups' ? 'configUsers' : 'configNfcRules';
+  setTimeout(() => {
+    const anchor = document.getElementById(anchorId);
+    if (anchor && anchor.scrollIntoView) anchor.scrollIntoView({ block: 'start' });
+  }, 400);
+  toast('Opening the Configuration tab. Use the Setup button any time to return here.', 'info');
 }
 
 // ============================================================
@@ -3640,70 +4284,67 @@ function selectController(ip, port) {
 }
 
 async function testConnection() {
-  const host = document.getElementById('setupHost').value.trim();
-  const port = document.getElementById('setupPort').value.trim();
-  const token = document.getElementById('setupToken').value.trim();
+  const hostEl = document.getElementById('setupHost');
+  const portEl = document.getElementById('setupPort');
+  const tokenEl = document.getElementById('setupToken');
   const statusEl = document.getElementById('setupStatus');
+  const testBtn = document.getElementById('setupTestBtn');
+  const host = hostEl ? hostEl.value.trim() : '';
+  const port = portEl ? portEl.value.trim() : '';
+  const token = tokenEl ? tokenEl.value.trim() : '';
 
   if (!host || !token) {
-    statusEl.innerHTML = '<span style="color:var(--red)">Please enter both the IP address and API token.</span>';
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Please enter both the IP address and API token.</span>';
     return;
   }
 
-  statusEl.innerHTML = '<span style="color:var(--text-secondary)">Testing connection...</span>';
-  document.getElementById('setupTestBtn').disabled = true;
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-secondary)">Testing connection...</span>';
+  if (testBtn) testBtn.disabled = true;
 
   try {
-    // Save config first so the orchestrator can use it
-    const result = await api('PUT', '/api/config', {
-      unifi: { host, port: parseInt(port) || 12445, token, verify_ssl: false, user_sync_interval_minutes: 5 }
+    // Save the connection details so the orchestrator can use them. PUT
+    // auto-reloads the service, so no separate /reload call is needed.
+    await api('PUT', '/api/config', {
+      unifi: { host, port: parseInt(port, 10) || 12445, token, verify_ssl: false, user_sync_interval_minutes: 5 }
     });
 
-    // Reload the orchestrator with new config
-    await api('POST', '/reload');
+    // Keep the client-side cache in step so the wizard treats the host as set.
+    if (configData && typeof configData === 'object') {
+      configData.unifi = Object.assign({}, configData.unifi, { host, port: parseInt(port, 10) || 12445 });
+    }
 
-    // Wait for it to initialize
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Give the reloaded orchestrator a moment to talk to the controller.
+    await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    // Check health
     const health = await api('GET', '/health');
-    const doorsCount = health.unifi?.doors_discovered || 0;
-    const usersCount = health.unifi?.users_mapped || 0;
+    const doorsCount = (health.unifi && health.unifi.doors_discovered) || 0;
+    const usersCount = (health.unifi && health.unifi.users_mapped) || 0;
 
     if (doorsCount > 0 || usersCount > 0) {
-      statusEl.innerHTML = `<span style="color:var(--green)">Connected! Found ${doorsCount} doors and ${usersCount} users.</span>`;
-      document.getElementById('setupSaveBtn').disabled = false;
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">Connected! Found ${doorsCount} doors and ${usersCount} users. Click Next to continue.</span>`;
     } else {
-      statusEl.innerHTML = `<span style="color:var(--yellow)">Connected but no doors/users found. Check that the Access Gateway IP and token are correct, and that you can reach port ${port} from this machine.</span>`;
-      document.getElementById('setupSaveBtn').disabled = false;
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--yellow)">Connected, but no doors or users were found yet. Check the Access Gateway IP and token, and that you can reach port ${escapeHtml(port)} from this machine. You can still continue.</span>`;
     }
+    // Test passed: satisfy the connect gate so Next becomes available.
+    if (typeof wizardOnConnectTested === 'function') wizardOnConnectTested();
   } catch (e) {
-    statusEl.innerHTML = `<span style="color:var(--red)">Connection failed: ${e.message}. Verify the IP, port, and that this device can reach the controller.</span>`;
+    if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Connection failed: ${escapeHtml(e.message)}. Verify the IP, port, and that this device can reach the controller.</span>`;
   }
 
-  document.getElementById('setupTestBtn').disabled = false;
+  if (testBtn) testBtn.disabled = false;
 }
 
+// Legacy entry point kept for menu/tray callers: persist the connection fields
+// and drop back to the dashboard. The guided wizard advances with Next instead.
 async function saveSetup() {
-  const host = document.getElementById('setupHost').value.trim();
-  const port = document.getElementById('setupPort').value.trim();
-  const token = document.getElementById('setupToken').value.trim();
-  const serverPort = document.getElementById('setupServerPort').value.trim();
-
   try {
-    await api('PUT', '/api/config', {
-      server: { port: parseInt(serverPort) || 3000, host: '0.0.0.0' },
-      unifi: { host, port: parseInt(port) || 12445, token, verify_ssl: false, user_sync_interval_minutes: 5 }
-    });
-
-    await api('POST', '/reload');
-    toast('Configuration saved! Loading dashboard...', 'success');
-
+    await persistConnection();
+    toast('Configuration saved. Loading dashboard...', 'success');
     setTimeout(() => {
-      hideSetupWizard();
+      hideSetupWizard(true);
       fetchHealth();
       loadConfig();
-    }, 1500);
+    }, 1200);
   } catch (e) {
     toast('Failed to save: ' + e.message, 'error');
   }
