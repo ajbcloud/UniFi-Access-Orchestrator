@@ -86,6 +86,10 @@ let deadboltController = null;
 // Live getters keep these valid across config reloads.
 const zwaveManager = new ZwaveManager({
   logger,
+  // Write the zwave-js debug log alongside the app log so a pairing failure
+  // (for example "secure join timeout") can be diagnosed from the log folder.
+  logDir: process.env.LOG_DIR || path.join(path.dirname(CONFIG_PATH), 'logs'),
+  logLevel: (config.devices && config.devices.zwave && config.devices.zwave.log_level) || 'debug',
   loadKeys: () => {
     const k = loadSecurityKeys(config.devices && config.devices.zwave);
     return { classic: k.classic, longRange: k.longRange };

@@ -101,3 +101,46 @@ test('ensureStarted requires a serial path', async () => {
   const { manager } = makeManager();
   await assert.rejects(() => manager.ensureStarted({}), /No Z-Wave serial path/);
 });
+
+// ---------------------------------------------------------------------------
+// zwave-js debug file logging (added to diagnose S2 "secure join" failures)
+// ---------------------------------------------------------------------------
+
+function makeManagerWith(deps) {
+  const made = [];
+  const manager = new ZwaveManager(Object.assign({
+    logger: { warn() {}, info() {} },
+    driverFactory: (path, options) => {
+      const d = new MockDriver();
+      d.path = path; d.options = options; made.push(d);
+      return d;
+    },
+    loadKeys: () => ({ classic: {}, longRange: {} }),
+  }, deps));
+  return { manager, made };
+}
+
+test('logConfig is passed to the driver when a log dir is configured', async () => {
+  const dir = require('os').tmpdir();
+  const { manager, made } = makeManagerWith({ logDir: dir, logLevel: 'debug' });
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  const lc = made[0].options.logConfig;
+  assert.ok(lc, 'logConfig should be present');
+  assert.strictEqual(lc.enabled, true);
+  assert.strictEqual(lc.logToFile, true);
+  assert.strictEqual(lc.level, 'debug');
+  assert.ok(String(lc.filename).endsWith('zwave.log'), 'log filename under the log dir');
+});
+
+test('no logConfig when no log dir is configured (tests/headless stay quiet)', async () => {
+  const { manager, made } = makeManagerWith({});
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.strictEqual(made[0].options.logConfig, undefined);
+});
+
+test('an invalid log level is clamped to debug', async () => {
+  const dir = require('os').tmpdir();
+  const { manager, made } = makeManagerWith({ logDir: dir, logLevel: 'bogus' });
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.strictEqual(made[0].options.logConfig.level, 'debug');
+});
