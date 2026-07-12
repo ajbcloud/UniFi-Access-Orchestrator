@@ -277,8 +277,8 @@ function createAppMenu() {
             if (mainWindow) {
               mainWindow.show();
               mainWindow.focus();
-              // Navigate to setup wizard
-              mainWindow.webContents.executeJavaScript('showSetupWizard && showSetupWizard()');
+              // Jump straight to the connect step (the controller screen)
+              mainWindow.webContents.executeJavaScript("showSetupWizard && showSetupWizard('connect')");
             }
           }
         },
@@ -426,7 +426,7 @@ function createAppMenu() {
             if (mainWindow) {
               mainWindow.show();
               mainWindow.focus();
-              mainWindow.webContents.executeJavaScript('showSetupWizard && showSetupWizard(); setTimeout(() => runDiscovery && runDiscovery(), 300)');
+              mainWindow.webContents.executeJavaScript("showSetupWizard && showSetupWizard('connect'); setTimeout(() => runDiscovery && runDiscovery(), 300)");
             }
           }
         }
@@ -455,7 +455,8 @@ function createAppMenu() {
             if (mainWindow) {
               mainWindow.show();
               mainWindow.focus();
-              mainWindow.webContents.executeJavaScript('showSetupWizard && showSetupWizard()');
+              // Start the guided wizard from the welcome step
+              mainWindow.webContents.executeJavaScript("showSetupWizard && showSetupWizard('welcome')");
             }
           }
         },
@@ -522,7 +523,7 @@ function createTray() {
     { label: 'Open in Browser', click: () => { shell.openExternal(`http://localhost:${servicePort}`); } },
     { type: 'separator' },
     { label: 'Connection Settings', click: () => {
-      if (mainWindow) { mainWindow.show(); mainWindow.focus(); mainWindow.webContents.executeJavaScript('showSetupWizard && showSetupWizard()'); }
+      if (mainWindow) { mainWindow.show(); mainWindow.focus(); mainWindow.webContents.executeJavaScript("showSetupWizard && showSetupWizard('connect')"); }
     }},
     { label: 'Open Config Folder', click: () => { shell.openPath(getConfigDir()); } },
     { label: 'Open Log Folder', click: () => { shell.openPath(getLogDir()); } },
