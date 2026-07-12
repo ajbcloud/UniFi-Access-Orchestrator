@@ -599,8 +599,13 @@ function startHealthWatchdog() {
           const h = JSON.parse(data);
           healthFailCount = 0;
           if (mainWindow) {
+            // Keep this mapping identical to the in-app status pill
+            // (updateStatus in public/index.html) so the window title and the
+            // pill never contradict each other.
             const cs = h.unifi?.connection_state || 'unknown';
-            const label = cs === 'connected' ? 'Online' : cs === 'reconnecting' ? 'Reconnecting...' : 'Disconnected';
+            const label = cs === 'connected'
+              ? 'Online'
+              : (cs === 'reconnecting' || cs === 'connecting') ? 'Reconnecting...' : 'Disconnected';
             mainWindow.setTitle(`UniFi Access Orchestrator — ${label}`);
           }
         } catch { healthFailCount++; }
