@@ -264,3 +264,88 @@ test('activation failure after a radio-successful include surfaces as failed', a
   assert.strictEqual(pairing.state, 'failed');
   assert.match(pairing.status().error, /paired as node 3 but activation failed: disk full/);
 });
+
+// ---------------------------------------------------------------------------
+// Late-join adoption: the provisioning timer must not blindly fail when the
+// lock actually joined (a slow S2 bootstrap after the timer caused the app to
+// report failure while the lock ended up paired at the radio level).
+// ---------------------------------------------------------------------------
+
+async function driveToPin(pairing, ctl) {
+  await pairing.startInclusion();
+  ctl.emit('inclusion started');
+  ctl.inclusionOpts.userCallbacks.validateDSKAndEnterPIN('-11111-22222');
+  pairing.submitPin('12345');
+}
+
+test('provisioning timeout adopts a late S2 join instead of failing', async () => {
+  const { pairing, manager, calls } = makePairing({
+    timeouts: { starting: 500, waiting: 500, dsk: 500, provisioning: 20, provisioning_grace: 20 },
+  });
+  const ctl = manager.mockController;
+  ctl.ownNodeId = 1;
+  ctl.nodes = new Map([[1, { id: 1 }]]); // controller's own node pre-exists
+  await driveToPin(pairing, ctl);
+
+  // the lock joins with S2 Access Control but 'node added' never fires
+  ctl.nodes.set(9, { id: 9, getHighestSecurityClass: () => 2 });
+  await new Promise((r) => setTimeout(r, 120));
+
+  assert.strictEqual(pairing.state, 'done');
+  assert.strictEqual(pairing.status().node_id, 9);
+  assert.deepStrictEqual(calls.includeDone, [{ nodeId: 9, securityClass: 'S2 Access Control' }]);
+});
+
+test('provisioning timeout grants one grace period while the join is mid-flight', async () => {
+  const { pairing, manager } = makePairing({
+    timeouts: { starting: 500, waiting: 500, dsk: 500, provisioning: 20, provisioning_grace: 200 },
+  });
+  const ctl = manager.mockController;
+  ctl.ownNodeId = 1;
+  ctl.nodes = new Map([[1, { id: 1 }]]);
+  await driveToPin(pairing, ctl);
+
+  // node exists but security class is not known yet (bootstrap mid-flight)
+  ctl.nodes.set(9, { id: 9, getHighestSecurityClass: () => undefined });
+  await new Promise((r) => setTimeout(r, 60));
+  assert.strictEqual(pairing.state, 'provisioning', 'grace period keeps the session alive');
+
+  // bootstrap finishes during the grace window
+  ctl.nodes.get(9).getHighestSecurityClass = () => 2;
+  await new Promise((r) => setTimeout(r, 250));
+  assert.strictEqual(pairing.state, 'done');
+  assert.strictEqual(pairing.status().node_id, 9);
+});
+
+test('a late join without S2 Access Control fails with the unpair guidance', async () => {
+  const { pairing, manager } = makePairing({
+    timeouts: { starting: 500, waiting: 500, dsk: 500, provisioning: 20, provisioning_grace: 20 },
+  });
+  const ctl = manager.mockController;
+  ctl.ownNodeId = 1;
+  ctl.nodes = new Map([[1, { id: 1 }]]);
+  await driveToPin(pairing, ctl);
+
+  ctl.nodes.set(9, { id: 9, getHighestSecurityClass: () => 0 }); // S2_Unauthenticated
+  await new Promise((r) => setTimeout(r, 120));
+
+  assert.strictEqual(pairing.state, 'failed');
+  assert.match(pairing.status().error, /not with S2 Access Control/);
+  assert.match(pairing.status().error, /Unpair/);
+  assert.strictEqual(pairing.status().node_id, 9);
+});
+
+test('provisioning timeout with no joined node still fails with guidance', async () => {
+  const { pairing, manager } = makePairing({
+    timeouts: { starting: 500, waiting: 500, dsk: 500, provisioning: 20, provisioning_grace: 20 },
+  });
+  const ctl = manager.mockController;
+  ctl.ownNodeId = 1;
+  ctl.nodes = new Map([[1, { id: 1 }]]);
+  await driveToPin(pairing, ctl);
+
+  await new Promise((r) => setTimeout(r, 60));
+  assert.strictEqual(pairing.state, 'failed');
+  assert.match(pairing.status().error, /secure join timed out/);
+  assert.match(pairing.status().error, /Unpair \(exclusion\)/);
+});

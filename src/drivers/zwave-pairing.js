@@ -43,8 +43,10 @@ class ZwavePairing {
     this.timeouts = Object.assign(
       // provisioning covers the full S2 bootstrap after the PIN (key exchange
       // plus the device interview), which can be slow on a battery lock at
-      // range, so it gets a generous window.
-      { starting: 30000, waiting: 120000, dsk: 240000, provisioning: 180000 },
+      // range, so it gets a generous window. starting is 60s because Windows
+      // can be slow to release the serial port after a previous session's
+      // teardown, and a retry right after a failure must still succeed.
+      { starting: 60000, waiting: 120000, dsk: 240000, provisioning: 180000, provisioning_grace: 60000 },
       deps.timeouts || {}
     );
 
@@ -65,6 +67,8 @@ class ZwavePairing {
     this._listeners = [];         // [{emitter, event, fn}]
     this._startedManager = false;
     this._keysGenerated = false;
+    this._preNodeIds = null;      // node ids present before inclusion started
+    this._graceExtended = false;  // the one-time provisioning grace period
   }
 
   isActive() {
@@ -167,9 +171,69 @@ class ZwavePairing {
     const d = this._pinDeferred;
     this._pinDeferred = null;
     this._stage('provisioning', this.timeouts.provisioning,
-      () => this._fail('secure join timed out. Check the 5-digit PIN matches the label on the lock, move the Z-Wave stick within a few feet of the lock, then retry. The Z-Wave debug log (Open Log Folder) has the full handshake.'));
+      () => this._onProvisioningTimeout());
     d.resolve(String(pin));
     return { state: this.state };
+  }
+
+  // A node that appeared on the controller during this session but was not
+  // there when inclusion started. Tolerates controllers without a nodes map.
+  _findLateNode() {
+    const controller = this.manager && this.manager.controller;
+    const nodes = controller && controller.nodes;
+    if (!nodes || typeof nodes.forEach !== 'function') return null;
+    let found = null;
+    nodes.forEach((node, id) => {
+      if (found) return;
+      if (controller.ownNodeId != null && id === controller.ownNodeId) return;
+      if (this._preNodeIds && this._preNodeIds.has(id)) return;
+      found = node;
+    });
+    return found;
+  }
+
+  // The provisioning timer fired without a 'node added' event. Failing blindly
+  // here caused a nasty desync in the field: a slow lock could complete its
+  // secure join AFTER our teardown removed the listeners, leaving the lock
+  // paired at the radio level while the app reported failure and knew nothing
+  // about the node. So before failing, look for a node that joined during this
+  // session and adopt it (or wait one extra minute if it is still mid-join).
+  async _onProvisioningTimeout() {
+    const node = this._findLateNode();
+
+    if (node && !this._graceExtended) {
+      this._graceExtended = true;
+      this.logger.info && this.logger.info(
+        `Z-Wave include: node ${node.id} joined but the secure bootstrap has not finished; extending the wait`);
+      this._stage('provisioning', this.timeouts.provisioning_grace, () => this._onProvisioningTimeout());
+      return;
+    }
+
+    if (node) {
+      const S2_ACCESS_CONTROL = 2; // zwave-js SecurityClass.S2_AccessControl
+      let secClass = null;
+      try {
+        secClass = typeof node.getHighestSecurityClass === 'function'
+          ? node.getHighestSecurityClass() : null;
+      } catch (e) { /* security class not known yet */ }
+      if (secClass === S2_ACCESS_CONTROL) {
+        this.logger.warn && this.logger.warn(
+          `Z-Wave include: 'node added' never fired but node ${node.id} joined with S2 Access Control; adopting it`);
+        await this._onNodeAdded(node, { lowSecurity: false });
+        return;
+      }
+      this.nodeId = node.id;
+      await this._fail(
+        `node ${node.id} joined but not with S2 Access Control (usually a wrong PIN or weak signal). ` +
+        'Run Unpair to remove it, move the stick within a few feet of the lock, ' +
+        'check the 5-digit PIN on the lock label, and pair again.');
+      return;
+    }
+
+    await this._fail(
+      'secure join timed out. If this keeps happening the lock may already think it is paired: ' +
+      'run Unpair (exclusion) first, then redo the pairing sequence on the lock with the stick ' +
+      'within a few feet. The Z-Wave debug log (Open Log Folder) has the full handshake.');
   }
 
   async startInclusion() {
@@ -194,6 +258,15 @@ class ZwavePairing {
       const controller = this.manager.controller;
       if (!controller || typeof controller.beginInclusion !== 'function') {
         throw new Error('Z-Wave controller unavailable');
+      }
+
+      // Snapshot the node ids present BEFORE inclusion so a node that appears
+      // during this session can be recognized even if 'node added' never fires
+      // (see _onProvisioningTimeout).
+      this._preNodeIds = new Set();
+      const preNodes = controller.nodes;
+      if (preNodes && typeof preNodes.forEach === 'function') {
+        preNodes.forEach((_n, id) => this._preNodeIds.add(id));
       }
 
       this._listen(controller, 'inclusion started', () => {
