@@ -1,6 +1,8 @@
 'use strict';
 
 const { EventEmitter } = require('events');
+const path = require('path');
+const fs = require('fs');
 
 /**
  * Sole owner of the zwave-js Driver for the configured serial path. Both the
@@ -23,6 +25,12 @@ class ZwaveManager extends EventEmitter {
     this.logger = deps.logger || console;
     this._driverFactory = deps.driverFactory || null;
     this._loadKeys = deps.loadKeys || (() => ({ classic: {}, longRange: {} }));
+    // When a log directory is provided, the zwave-js driver writes a rotating
+    // debug log there (zwave-js_*.log). This captures the full S2 inclusion
+    // handshake, which is the only way to diagnose a "secure join" failure.
+    this.logDir = deps.logDir || null;
+    const VALID_LEVELS = ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly'];
+    this.logLevel = VALID_LEVELS.includes(deps.logLevel) ? deps.logLevel : 'debug';
     this._driver = null;
     this._serialPath = null;
     this._starting = null; // in-flight ensureStarted promise, shared by callers
@@ -86,10 +94,28 @@ class ZwaveManager extends EventEmitter {
     });
 
     const keys = this._loadKeys();
+
+    // Build a file-logging config only when a log directory is configured, so
+    // tests and headless runs stay quiet. The driver appends a date and
+    // rotates, keeping maxFiles days of history.
+    let logConfig;
+    if (this.logDir) {
+      try { fs.mkdirSync(this.logDir, { recursive: true }); } catch (e) { /* best effort */ }
+      logConfig = {
+        enabled: true,
+        level: this.logLevel,
+        logToFile: true,
+        filename: path.join(this.logDir, 'zwave.log'),
+        maxFiles: 7,
+        forceConsole: false,
+      };
+    }
+
     const driver = factory(serialPath, {
       securityKeys: keys.classic,
       securityKeysLongRange: keys.longRange,
       storage: cacheDir ? { cacheDir } : undefined,
+      logConfig,
     });
 
     try {

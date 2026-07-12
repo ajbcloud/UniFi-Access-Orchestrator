@@ -41,7 +41,10 @@ class ZwavePairing {
     this.isLockBound = deps.isLockBound || (() => false);
     this.now = deps.now || (() => Date.now());
     this.timeouts = Object.assign(
-      { starting: 30000, waiting: 120000, dsk: 240000, provisioning: 90000 },
+      // provisioning covers the full S2 bootstrap after the PIN (key exchange
+      // plus the device interview), which can be slow on a battery lock at
+      // range, so it gets a generous window.
+      { starting: 30000, waiting: 120000, dsk: 240000, provisioning: 180000 },
       deps.timeouts || {}
     );
 
@@ -164,7 +167,7 @@ class ZwavePairing {
     const d = this._pinDeferred;
     this._pinDeferred = null;
     this._stage('provisioning', this.timeouts.provisioning,
-      () => this._fail('secure join timed out; move the stick closer to the lock and retry'));
+      () => this._fail('secure join timed out. Check the 5-digit PIN matches the label on the lock, move the Z-Wave stick within a few feet of the lock, then retry. The Z-Wave debug log (Open Log Folder) has the full handshake.'));
     d.resolve(String(pin));
     return { state: this.state };
   }
