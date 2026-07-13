@@ -431,3 +431,57 @@ test('history records every session step but never the PIN digits', async () => 
     assert.ok(entry.t && entry.msg, 'each entry carries a timestamp and message');
   }
 });
+
+// ---------------------------------------------------------------------------
+// Pre-flight timing and zombie-session guards (from the field diagnostics:
+// five slow ghost removals once ate the whole starting window and the failed
+// session then kept running as a zombie, mutating state after failure)
+// ---------------------------------------------------------------------------
+
+test('slow ghost cleanup does not trip the starting timeout', async () => {
+  const { pairing, manager } = makePairing({
+    timeouts: { starting: 40, waiting: 500, dsk: 500, provisioning: 500 },
+  });
+  const ctl = manager.mockController;
+  ctl.ownNodeId = 1;
+  ctl.nodes = new Map([[1, { id: 1 }], [2, { id: 2 }], [3, { id: 3 }]]);
+  ctl.isFailedNode = async (id) => id !== 1;
+  ctl.removeFailedNode = async (id) => {
+    await new Promise((r) => setTimeout(r, 30)); // 2 removals x 30ms > 40ms window
+    ctl.nodes.delete(id);
+  };
+
+  await pairing.startInclusion();
+  assert.strictEqual(pairing.state, 'starting', 'session survives a cleanup longer than the starting window');
+  assert.ok(ctl.inclusionOpts, 'inclusion proceeds after the slow cleanup');
+});
+
+test('a session failed during beginInclusion is not resurrected (zombie guard)', async () => {
+  const { pairing, manager } = makePairing({
+    timeouts: { starting: 500, waiting: 500, dsk: 500, provisioning: 500 },
+  });
+  const ctl = manager.mockController;
+  // beginInclusion resolves only after the session has already been cancelled
+  let releaseBegin;
+  ctl.beginInclusion = async (opts) => {
+    ctl.inclusionOpts = opts;
+    await new Promise((r) => { releaseBegin = r; });
+    return true;
+  };
+
+  const startPromise = pairing.startInclusion();
+  await new Promise((r) => setImmediate(r));
+  await pairing.cancel(); // session dies while beginInclusion is in flight
+  assert.strictEqual(pairing.state, 'cancelled');
+
+  const stopCallsBefore = ctl.stopInclusionCalls;
+  releaseBegin();
+  await startPromise;
+
+  assert.strictEqual(pairing.state, 'cancelled', 'a dead session must stay dead');
+  assert.ok(ctl.stopInclusionCalls > stopCallsBefore, 'the orphaned radio listen is stopped');
+
+  // late events must not resurrect it either
+  ctl.emit('inclusion started');
+  assert.strictEqual(pairing.state, 'cancelled');
+});

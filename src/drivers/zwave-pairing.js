@@ -239,6 +239,9 @@ class ZwavePairing {
       if (configured.has(id)) return;
       candidates.push(id);
     });
+    if (candidates.length) {
+      this._note(`checking ${candidates.length} leftover node${candidates.length === 1 ? '' : 's'} from earlier attempts (this can take a moment)...`);
+    }
     for (const id of candidates) {
       try {
         if (await controller.isFailedNode(id)) {
@@ -340,12 +343,17 @@ class ZwavePairing {
       // unreachable on the next boot.
       const kp = await this.ensureKeysPersisted();
       this._keysGenerated = !!(kp && kp.generated);
+      if (!this.isActive()) return this.status();
 
       const zw = this.getZwaveConfig() || {};
       this._note(`include session starting on ${zw.serial_path || 'unset port'} `
         + `(driver ${this.manager.isRunning() ? 'already running' : 'cold start'}, `
         + `S2 keys ${this._keysGenerated ? 'newly generated' : 'existing'})`);
       await this._ensureFreshDriver(zw);
+      // The session may have been failed or cancelled while we awaited (e.g.
+      // the stage timer fired). Never keep working a dead session: doing so
+      // once produced a zombie that kept mutating state after failure.
+      if (!this.isActive()) return this.status();
 
       const controller = this.manager.controller;
       if (!controller || typeof controller.beginInclusion !== 'function') {
@@ -358,13 +366,22 @@ class ZwavePairing {
       // accurate message, because zwave-js silently aborts the join of an
       // already-included device ("Cannot add node N as it is already part of
       // the network") without emitting any event we could react to.
+      //
+      // Each ghost removal can take ~10s of radio work, so the stage timer is
+      // suspended for the cleanup (zwave-js bounds each removal internally)
+      // and re-armed fresh before the radio work begins. Five ghosts once ate
+      // the whole 60s window and failed the session mid-cleanup.
+      clearTimeout(this._timer);
       await this._cleanupGhostNodes(controller);
+      if (!this.isActive()) return this.status();
       const foreignId = this._findForeignLiveNode(controller);
       if (foreignId != null) {
         throw new Error(
           `a device is already paired to this stick as node ${foreignId} (usually this lock, left over ` +
           'from an earlier attempt). Run Unpair and complete the exclusion sequence on the lock, then pair again.');
       }
+      this._stage('starting', this.timeouts.starting,
+        () => this._fail('the Z-Wave controller did not start in time'));
 
       // Snapshot the node ids present BEFORE inclusion so a node that appears
       // during this session can be recognized even if 'node added' never fires
@@ -376,6 +393,7 @@ class ZwavePairing {
       }
 
       this._listen(controller, 'inclusion started', () => {
+        if (!this.isActive()) return; // never resurrect a dead session
         this._note('controller radio is listening for the lock (inclusion started)');
         this._stage('waiting_for_device', this.timeouts.waiting,
           () => this._fail('no device entered inclusion mode; run the sequence on the lock and retry'));
@@ -420,6 +438,12 @@ class ZwavePairing {
         strategy: INCLUSION_STRATEGY_SECURITY_S2,
         userCallbacks,
       });
+      if (!this.isActive()) {
+        // The session died while beginInclusion was in flight; the radio may
+        // now be listening with nobody driving it, so shut it down.
+        try { if (typeof controller.stopInclusion === 'function') await controller.stopInclusion(); } catch (e) { /* best effort */ }
+        return this.status();
+      }
       if (accepted === false) {
         throw new Error('the controller is busy; wait a moment and try again');
       }
@@ -446,6 +470,7 @@ class ZwavePairing {
       this._note(`exclude session starting on ${zw.serial_path || 'unset port'} `
         + `(driver ${this.manager.isRunning() ? 'already running' : 'cold start'})`);
       await this._ensureFreshDriver(zw);
+      if (!this.isActive()) return this.status();
 
       const controller = this.manager.controller;
       if (!controller || typeof controller.beginExclusion !== 'function') {
@@ -453,6 +478,7 @@ class ZwavePairing {
       }
 
       this._listen(controller, 'exclusion started', () => {
+        if (!this.isActive()) return; // never resurrect a dead session
         this._note('controller radio is listening for the lock (exclusion started)');
         this._stage('waiting_for_device', this.timeouts.waiting,
           () => this._fail('no device entered exclusion mode; run the sequence on the lock and retry'));
@@ -464,6 +490,10 @@ class ZwavePairing {
       });
 
       const accepted = await controller.beginExclusion();
+      if (!this.isActive()) {
+        try { if (typeof controller.stopExclusion === 'function') await controller.stopExclusion(); } catch (e) { /* best effort */ }
+        return this.status();
+      }
       if (accepted === false) {
         throw new Error('the controller is busy; wait a moment and try again');
       }
