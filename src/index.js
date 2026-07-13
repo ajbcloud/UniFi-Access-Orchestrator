@@ -737,6 +737,62 @@ app.get('/api/deadbolt/pair/status', (req, res) => {
   res.json(zwavePairing.status());
 });
 
+// One-file support bundle: everything needed to diagnose a pairing or
+// connection problem without hunting log folders. Secrets are redacted with
+// the same helper GET /api/config uses; log tails are size-capped.
+app.get('/api/diagnostics', (req, res) => {
+  const tailFile = (file, maxBytes) => {
+    try {
+      const stat = fs.statSync(file);
+      const start = Math.max(0, stat.size - maxBytes);
+      const fd = fs.openSync(file, 'r');
+      try {
+        const buf = Buffer.alloc(stat.size - start);
+        fs.readSync(fd, buf, 0, buf.length, start);
+        return { file, size: stat.size, truncated: start > 0, content: buf.toString('utf8') };
+      } finally { fs.closeSync(fd); }
+    } catch (e) {
+      return { file, error: e.message };
+    }
+  };
+  const newestMatching = (dir, prefix) => {
+    try {
+      const files = fs.readdirSync(dir)
+        .filter((f) => f.startsWith(prefix) && f.includes('.log'))
+        .map((f) => ({ f, m: fs.statSync(path.join(dir, f)).mtimeMs }))
+        .sort((a, b) => b.m - a.m);
+      return files.length ? path.join(dir, files[0].f) : null;
+    } catch (e) { return null; }
+  };
+
+  const logDir = process.env.LOG_DIR || path.join(path.dirname(CONFIG_PATH), 'logs');
+  const appLog = newestMatching(logDir, 'access');
+  const zwaveLog = newestMatching(logDir, 'zwave');
+
+  let pkgVersion = 'unknown';
+  try { pkgVersion = require('../package.json').version; } catch (e) { /* packaged path differences */ }
+
+  res.json({
+    generated_at: new Date().toISOString(),
+    app_version: pkgVersion,
+    platform: { os: process.platform, arch: process.arch, node: process.version },
+    config: redactSecrets(JSON.parse(JSON.stringify(config))),
+    unifi: {
+      connection_state: (unifiClient && unifiClient.connectionState) || 'unknown',
+      doors_discovered: (unifiClient && unifiClient.doors && unifiClient.doors.size) || 0,
+    },
+    zwave: {
+      driver_running: zwaveManager.isRunning(),
+      serial_path: zwaveManager.serialPath || null,
+      pairing: zwavePairing.status(),
+    },
+    logs: {
+      app: appLog ? tailFile(appLog, 256 * 1024) : { error: 'no access log found' },
+      zwave: zwaveLog ? tailFile(zwaveLog, 512 * 1024) : { error: 'no zwave log found (the driver may never have started)' },
+    },
+  });
+});
+
 app.post('/api/deadbolt/pair/pin', (req, res) => {
   try {
     const r = zwavePairing.submitPin(req.body && req.body.pin);

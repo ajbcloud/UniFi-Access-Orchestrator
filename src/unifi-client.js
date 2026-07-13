@@ -489,6 +489,14 @@ class UniFiClient {
   // ---------------------------------------------------------------------------
 
   connectWebSocket(onEvent, reconnectSeconds = 5) {
+    // No controller configured yet (fresh install waiting on the setup
+    // wizard). new WebSocket('wss://:12445/...') throws synchronously, and on
+    // startup that escaped as a fatal that killed the whole server. Skip
+    // quietly; the connection is re-attempted after the config gets a host.
+    if (!this.host || String(this.host).trim() === '') {
+      logger.warn('WebSocket event source: no controller host configured yet; waiting for setup to complete');
+      return;
+    }
     const wsUrl = `wss://${this.host}:${this.port}/api/v1/developer/devices/notifications`;
     logger.info(`Connecting WebSocket: ${wsUrl}`);
 
@@ -525,7 +533,16 @@ class UniFiClient {
       }
     }
 
-    this.ws = new WebSocket(wsUrl, wsOptions);
+    try {
+      this.ws = new WebSocket(wsUrl, wsOptions);
+    } catch (err) {
+      // A malformed host makes the constructor throw synchronously. Never let
+      // that escape to the fatal handler; retry once the config is corrected.
+      logger.error(`WebSocket connect failed (${err.message}); retrying in ${reconnectSeconds}s`);
+      this.ws = null;
+      setTimeout(() => this.connectWebSocket(onEvent, reconnectSeconds), reconnectSeconds * 1000).unref();
+      return;
+    }
 
     this.ws.on('open', () => {
       logger.info('WebSocket connected');

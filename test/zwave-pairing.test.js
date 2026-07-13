@@ -34,12 +34,13 @@ class MockManager extends EventEmitter {
   }
   get controller() { return this.running ? this.mockController : null; }
   isRunning() { return this.running; }
-  async ensureStarted() {
+  async ensureStarted(opts) {
     if (this.failStart) throw new Error('port open failed');
     this.running = true;
+    this.serialPath = (opts && opts.serial_path) || this.serialPath || null;
     return {};
   }
-  async stop() { this.stopCalls++; this.running = false; }
+  async stop() { this.stopCalls++; this.running = false; this.serialPath = null; }
 }
 
 function makePairing(overrides = {}) {
@@ -160,26 +161,35 @@ test('cancel stops inclusion and resolves a pending PIN false', async () => {
   assert.ok(ctl.stopInclusionCalls >= 1);
 });
 
-test('manager stopped on failure only when pairing started it and no lock is bound', async () => {
-  // pairing started the manager, no lock -> stop
+test('the driver stays running after any session outcome (log continuity)', async () => {
+  // Stopping the driver between attempts created gaps in the zwave-js debug
+  // log and made quick retries race Windows' slow serial-port release, so a
+  // terminal session leaves the driver up regardless of who started it.
   const a = makePairing();
   await a.pairing.startInclusion();
   await a.pairing.cancel();
-  assert.strictEqual(a.manager.stopCalls, 1);
+  assert.strictEqual(a.manager.stopCalls, 0);
+  assert.strictEqual(a.manager.isRunning(), true);
 
-  // manager already running (lock started it) -> never stopped
   const runningManager = new MockManager();
   runningManager.running = true;
   const b = makePairing({ manager: runningManager });
   await b.pairing.startInclusion();
   await b.pairing.cancel();
   assert.strictEqual(runningManager.stopCalls, 0);
+});
 
-  // pairing started it but a lock is bound -> never stopped
-  const c = makePairing({ isLockBound: () => true });
-  await c.pairing.startInclusion();
-  await c.pairing.cancel();
-  assert.strictEqual(c.manager.stopCalls, 0);
+test('a changed serial port restarts the driver before inclusion', async () => {
+  const manager = new MockManager();
+  manager.running = true;
+  manager.serialPath = 'COM3';
+  const { pairing } = makePairing({
+    manager,
+    getZwaveConfig: () => ({ serial_path: 'COM4' }),
+  });
+  await pairing.startInclusion();
+  assert.strictEqual(manager.stopCalls, 1, 'old driver stopped for the port switch');
+  assert.strictEqual(manager.isRunning(), true, 'restarted on the new port');
 });
 
 test('successful include keeps the manager running for activation', async () => {
@@ -400,4 +410,24 @@ test('the configured lock node is neither a ghost nor a foreign device', async (
   await pairing.startInclusion();
   assert.deepStrictEqual(failedChecks, [], 'configured node is never even checked');
   assert.ok(ctl.inclusionOpts, 'inclusion proceeds');
+});
+
+test('history records every session step but never the PIN digits', async () => {
+  const { pairing, manager } = makePairing();
+  const ctl = manager.mockController;
+  await driveToPin(pairing, ctl); // submits PIN 12345
+  ctl.emit('node added', { id: 7 }, { lowSecurity: false });
+  await new Promise((r) => setImmediate(r));
+
+  const hist = pairing.status().history;
+  assert.ok(Array.isArray(hist) && hist.length > 0, 'history is populated');
+  const joined = JSON.stringify(hist);
+  assert.match(joined, /include session starting/);
+  assert.match(joined, /DSK received/);
+  assert.match(joined, /PIN submitted/);
+  assert.match(joined, /node 7 added/);
+  assert.ok(!joined.includes('12345'), 'the PIN digits must never be recorded');
+  for (const entry of hist) {
+    assert.ok(entry.t && entry.msg, 'each entry carries a timestamp and message');
+  }
 });

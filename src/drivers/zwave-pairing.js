@@ -13,10 +13,16 @@ const INCLUSION_STRATEGY_SECURITY_S2 = 4;
  * Exclusion reuses the same slot with mode 'exclude' and no dsk/pin stages.
  *
  * Every terminal transition funnels through _teardown(): stage timer cleared,
- * controller listeners removed, inclusion/exclusion stopped best-effort, any
- * pending PIN promise resolved false, and the manager stopped ONLY when this
- * session started it and no lock driver is bound to it. A live lock keeps its
- * driver no matter how pairing ends.
+ * controller listeners removed, inclusion/exclusion stopped best-effort, and
+ * any pending PIN promise resolved false. The Z-Wave driver is deliberately
+ * LEFT RUNNING after a session ends (success or failure): stopping it between
+ * attempts created gaps in the zwave-js debug log, made quick retries race
+ * Windows' slow serial-port release, and added no safety. The driver stops
+ * only when the configured serial port changes or the app shuts down.
+ *
+ * Every step of a session is also recorded in this.history (and mirrored to
+ * the app log with a [pairing] prefix) so a failed attempt can be diagnosed
+ * from the dashboard or the diagnostics bundle without hunting files.
  *
  * deps (all injectable for tests):
  *   manager             ZwaveManager (shared with the lock driver)
@@ -50,7 +56,26 @@ class ZwavePairing {
       deps.timeouts || {}
     );
 
+    // Rolling record of pairing steps across sessions (never reset with the
+    // session, capped). Surfaced via status().history, the failed panel, and
+    // the diagnostics bundle. Never contains the PIN.
+    this.history = [];
+
     this._reset();
+  }
+
+  // Record a diagnostic step: appended to history AND mirrored to the app log
+  // so every pairing action is captured even when the zwave-js driver (and
+  // therefore its own debug log) is not running.
+  _note(msg) {
+    this.history.push({
+      t: new Date(this.now()).toISOString(),
+      mode: this.mode,
+      state: this.state,
+      msg: String(msg),
+    });
+    if (this.history.length > 200) this.history.splice(0, this.history.length - 200);
+    this.logger.info && this.logger.info(`[pairing] ${msg}`);
   }
 
   _reset() {
@@ -65,7 +90,6 @@ class ZwavePairing {
     this._timer = null;
     this._pinDeferred = null;
     this._listeners = [];         // [{emitter, event, fn}]
-    this._startedManager = false;
     this._keysGenerated = false;
     this._preNodeIds = null;      // node ids present before inclusion started
     this._graceExtended = false;  // the one-time provisioning grace period
@@ -87,6 +111,7 @@ class ZwavePairing {
       error: this.error,
       last_result: this.lastResult,
       keys_generated: this._keysGenerated,
+      history: this.history.slice(-40),
     };
   }
 
@@ -110,7 +135,7 @@ class ZwavePairing {
     this._listeners.push({ emitter, event, fn });
   }
 
-  async _teardown({ stopRadio = true, keepManager = false } = {}) {
+  async _teardown({ stopRadio = true } = {}) {
     clearTimeout(this._timer);
     this._timer = null;
     for (const { emitter, event, fn } of this._listeners) {
@@ -129,13 +154,11 @@ class ZwavePairing {
         if (this.mode === 'exclude' && typeof controller.stopExclusion === 'function') await controller.stopExclusion();
       } catch (e) { /* best effort */ }
     }
-    // Stop the manager only if this session started it AND no lock uses it.
-    // keepManager: a successful include is about to activate the lock on this
-    // very driver, so leave it running for bringDeadboltOnline.
-    if (this._startedManager && !keepManager && !this.isLockBound()) {
-      try { await this.manager.stop(); } catch (e) { /* best effort */ }
-    }
-    this._startedManager = false;
+    // The driver is intentionally left running (see the class comment): the
+    // zwave-js debug log stays continuous across attempts and a retry never
+    // races Windows' slow serial-port release. It stops only on a serial-path
+    // change (_ensureFreshDriver) or app shutdown.
+    this._note('session ended; the Z-Wave driver stays running for diagnostics and quick retries');
   }
 
   async _fail(reason) {
@@ -143,6 +166,7 @@ class ZwavePairing {
     this.error = reason;
     this.lastResult = 'failed';
     this._setState('failed');
+    this._note(`FAILED: ${reason}`);
     this.logger.warn && this.logger.warn(`Z-Wave ${this.mode} failed: ${reason}`);
     await this._teardown();
   }
@@ -152,9 +176,21 @@ class ZwavePairing {
     this.error = null;
     this.lastResult = 'cancelled';
     this._setState('cancelled');
+    this._note(`cancelled: ${reason}`);
     this.logger.info && this.logger.info(`Z-Wave ${this.mode} cancelled: ${reason}`);
     await this._teardown();
     return { status: 'cancelled' };
+  }
+
+  // Start (or reuse) the driver for the configured port, restarting it when
+  // the configured serial path changed since the driver came up.
+  async _ensureFreshDriver(zw) {
+    if (this.manager.isRunning() && this.manager.serialPath
+        && zw.serial_path && this.manager.serialPath !== zw.serial_path) {
+      this._note(`serial port changed from ${this.manager.serialPath} to ${zw.serial_path}; restarting the Z-Wave driver`);
+      await this.manager.stop();
+    }
+    await this.manager.ensureStarted({ serial_path: zw.serial_path, cache_dir: zw.cache_dir });
   }
 
   submitPin(pin) {
@@ -172,6 +208,7 @@ class ZwavePairing {
     this._pinDeferred = null;
     this._stage('provisioning', this.timeouts.provisioning,
       () => this._onProvisioningTimeout());
+    this._note('PIN submitted (5 digits, not recorded); waiting for the S2 secure join to complete');
     d.resolve(String(pin));
     return { state: this.state };
   }
@@ -206,10 +243,10 @@ class ZwavePairing {
       try {
         if (await controller.isFailedNode(id)) {
           await controller.removeFailedNode(id);
-          this.logger.info && this.logger.info(`Z-Wave: removed ghost node ${id} left over from a failed pairing`);
+          this._note(`removed ghost node ${id} left over from a failed pairing`);
         }
       } catch (e) {
-        this.logger.warn && this.logger.warn(`Z-Wave: could not remove ghost node ${id}: ${e.message}`);
+        this._note(`could not remove ghost node ${id}: ${e.message}`);
       }
     }
   }
@@ -305,9 +342,10 @@ class ZwavePairing {
       this._keysGenerated = !!(kp && kp.generated);
 
       const zw = this.getZwaveConfig() || {};
-      const wasRunning = this.manager.isRunning();
-      await this.manager.ensureStarted({ serial_path: zw.serial_path, cache_dir: zw.cache_dir });
-      this._startedManager = !wasRunning;
+      this._note(`include session starting on ${zw.serial_path || 'unset port'} `
+        + `(driver ${this.manager.isRunning() ? 'already running' : 'cold start'}, `
+        + `S2 keys ${this._keysGenerated ? 'newly generated' : 'existing'})`);
+      await this._ensureFreshDriver(zw);
 
       const controller = this.manager.controller;
       if (!controller || typeof controller.beginInclusion !== 'function') {
@@ -338,19 +376,37 @@ class ZwavePairing {
       }
 
       this._listen(controller, 'inclusion started', () => {
+        this._note('controller radio is listening for the lock (inclusion started)');
         this._stage('waiting_for_device', this.timeouts.waiting,
           () => this._fail('no device entered inclusion mode; run the sequence on the lock and retry'));
       });
 
+      // Log-only listeners: these events carry no state transition for us but
+      // are the difference between "nothing happened" and a real diagnosis.
+      this._listen(controller, 'node found', (found) => {
+        this._note(`device answered the inclusion request (node ${found && found.id != null ? found.id : '?'}); starting the secure handshake`);
+      });
+      this._listen(controller, 'inclusion failed', () => {
+        this._note("controller reported 'inclusion failed'");
+      });
+      this._listen(controller, 'inclusion stopped', () => {
+        this._note('controller radio stopped listening (inclusion stopped)');
+      });
+
       this._listen(controller, 'node added', (node, result) => {
+        this._note(`node ${node && node.id} added (${result && result.lowSecurity ? 'WITHOUT full security' : 'secure'})`);
         Promise.resolve(this._onNodeAdded(node, result)).catch((e) =>
           this.logger.warn && this.logger.warn(`pairing node-added handler error: ${e.message}`));
       });
 
       const userCallbacks = {
-        grantSecurityClasses: async (requested) => requested,
+        grantSecurityClasses: async (requested) => {
+          this._note('lock requested security classes; granting as requested');
+          return requested;
+        },
         validateDSKAndEnterPIN: (dsk) => {
           this.dsk = dsk; // partial: zwave-js withholds the 5-digit PIN block
+          this._note('lock identified (DSK received); waiting for the 5-digit PIN');
           this._stage('dsk_pending', this.timeouts.dsk,
             () => this._fail('PIN entry timed out'));
           return new Promise((resolve) => { this._pinDeferred = { resolve }; });
@@ -367,6 +423,7 @@ class ZwavePairing {
       if (accepted === false) {
         throw new Error('the controller is busy; wait a moment and try again');
       }
+      this._note('inclusion request accepted by the controller');
       // Some stacks emit 'inclusion started' before/after beginInclusion
       // resolves; if it already fired, state moved on. Otherwise wait for it
       // under the 'starting' timer.
@@ -386,9 +443,9 @@ class ZwavePairing {
 
     try {
       const zw = this.getZwaveConfig() || {};
-      const wasRunning = this.manager.isRunning();
-      await this.manager.ensureStarted({ serial_path: zw.serial_path, cache_dir: zw.cache_dir });
-      this._startedManager = !wasRunning;
+      this._note(`exclude session starting on ${zw.serial_path || 'unset port'} `
+        + `(driver ${this.manager.isRunning() ? 'already running' : 'cold start'})`);
+      await this._ensureFreshDriver(zw);
 
       const controller = this.manager.controller;
       if (!controller || typeof controller.beginExclusion !== 'function') {
@@ -396,6 +453,7 @@ class ZwavePairing {
       }
 
       this._listen(controller, 'exclusion started', () => {
+        this._note('controller radio is listening for the lock (exclusion started)');
         this._stage('waiting_for_device', this.timeouts.waiting,
           () => this._fail('no device entered exclusion mode; run the sequence on the lock and retry'));
       });
@@ -430,7 +488,7 @@ class ZwavePairing {
     this.lastResult = 'done';
     this._setState('done');
     this.logger.info && this.logger.info(`Z-Wave inclusion complete: node ${this.nodeId}`);
-    await this._teardown({ stopRadio: true, keepManager: true });
+    await this._teardown({ stopRadio: true });
     try {
       await this.onIncludeDone({ nodeId: this.nodeId, securityClass: this.security });
     } catch (err) {
