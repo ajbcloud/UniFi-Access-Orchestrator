@@ -31,6 +31,7 @@ class ZwaveManager extends EventEmitter {
     this.logDir = deps.logDir || null;
     const VALID_LEVELS = ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly'];
     this.logLevel = VALID_LEVELS.includes(deps.logLevel) ? deps.logLevel : 'debug';
+    this.cryptoPatched = null; // ciphers the crypto shim replaced (null = not checked yet)
     this._driver = null;
     this._serialPath = null;
     this._starting = null; // in-flight ensureStarted promise, shared by callers
@@ -80,6 +81,23 @@ class ZwaveManager extends EventEmitter {
 
   async _start(serialPath, cacheDir) {
     const factory = this._driverFactory || ((p, opts) => {
+      // Electron's crypto lacks ciphers S2 needs (notably aes-128-ccm), which
+      // made every secure join fail with "Unknown cipher". The shim swaps in
+      // zwave-js's own portable implementations for exactly the missing
+      // ciphers, and MUST run before the first require('zwave-js').
+      try {
+        const shim = require('./zwave-crypto-shim'); // eslint-disable-line global-require
+        const res = shim.install();
+        this.cryptoPatched = res.patched || [];
+        if (res.patched && res.patched.length) {
+          this.logger.warn && this.logger.warn(
+            `Z-Wave crypto: this runtime lacks ${res.patched.join(', ')}; using zwave-js portable implementations`);
+        } else if (res.error) {
+          this.logger.warn && this.logger.warn(`Z-Wave crypto shim unavailable: ${res.error}`);
+        }
+      } catch (e) {
+        this.logger.warn && this.logger.warn(`Z-Wave crypto shim failed: ${e.message}`);
+      }
       let ZWaveJS;
       try {
         // Lazy require: tests and non-deadbolt installs never load the native package.

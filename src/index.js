@@ -784,6 +784,7 @@ app.get('/api/diagnostics', (req, res) => {
     zwave: {
       driver_running: zwaveManager.isRunning(),
       serial_path: zwaveManager.serialPath || null,
+      crypto_patched: zwaveManager.cryptoPatched, // ciphers replaced by the shim (null = driver never started)
       pairing: zwavePairing.status(),
     },
     logs: {
