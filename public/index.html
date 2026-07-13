@@ -12,11 +12,15 @@
      Tennis Ball    #D4FF3B   Haunted Forest #052B15   Chrome    #E0E0E0
      Green Goddess  #79A88A   Peachy Pinky   #FF715B    + white / black
 
-   Light mode is built on the Chrome background; dark mode on Haunted Forest.
-   Every surface, text and accent below is a tint or shade of those five
-   colors so both themes read as one system. Light is the default; the dark
-   block applies when the user picks it (html[data-theme="dark"]) or when the
-   system prefers dark and no explicit choice is stored.
+   Two moods, one identity, driven by a shared neon yellow-green highlight:
+     - Dark mode: a deep, near-black forest-green field lit up with lots of
+       neon (Tennis Ball) highlights on buttons, tabs, focus and selections.
+     - Light mode: a neutral concrete-grey field with dark forest-green text
+       and structure ("dark highlights"), punched up with the same neon pops.
+
+   Light is the default; the dark block applies when the user picks it
+   (html[data-theme="dark"]) or when the system prefers dark and no explicit
+   choice is stored.
    ------------------------------------------------------------------------- */
 :root {
   /* Raw palette references */
@@ -26,43 +30,51 @@
   --pal-goddess: #79A88A;
   --pal-peach: #FF715B;
 
-  /* ---- Light theme (Chrome background) ---- */
-  --bg-primary: #E0E0E0;
-  --bg-secondary: #ECEEEA;
-  --bg-card: #FFFFFF;
-  --bg-elev: #F3F5F1;
-  --bg-hover: #E7EAE4;
-  --bg-input: #F6F8F4;
-  --border: #C6CDC5;
-  --border-light: #D7DDD5;
-  --text-primary: #06210F;
-  --text-secondary: #3A5347;
-  --text-muted: #5B6E62;
+  /* ---- Light theme (concrete grey + dark forest-green + neon) ---- */
+  --bg-primary: #C6C7C2;
+  --bg-secondary: #CFD0CB;
+  --bg-card: #DBDCD7;
+  --bg-elev: #E2E3DE;
+  --bg-hover: #BCBDB7;
+  --bg-input: #D4D5D0;
+  --border: #A7A9A3;
+  --border-light: #B8BAB4;
+  --text-primary: #0C2414;
+  --text-secondary: #35473C;
+  --text-muted: #566459;
 
-  --accent: #1C6B3F;
-  --accent-hover: #145730;
-  --accent-dim: rgba(28,107,63,0.14);
-  --on-accent: #FFFFFF;
+  /* accent = the readable, text-safe green ("dark highlight" on concrete) */
+  --accent: #15522A;
+  --accent-hover: #0E3D1F;
+  --accent-dim: rgba(21,82,42,0.14);
+  --on-accent: #EEF3EC;
 
-  --green: #2E7D4F;
-  --green-dim: rgba(46,125,79,0.15);
+  /* neon = the signature yellow-green highlight used for pops in both modes */
+  --neon: #C7E62E;
+  --neon-strong: #B4D822;
+  --neon-dim: #D3E88C;
+  --on-neon: #16320A;
+  --neon-glow: rgba(150,190,20,0.45);
+
+  --green: #227A43;
+  --green-dim: rgba(34,122,67,0.16);
   --on-success: #FFFFFF;
 
-  --yellow: #8A5E10;
-  --yellow-dim: rgba(138,94,16,0.15);
+  --yellow: #7E5410;
+  --yellow-dim: rgba(126,84,16,0.16);
 
   --red: #CF3A2A;
   --red-hover: #B22E20;
   --red-dim: rgba(207,58,42,0.14);
   --on-danger: #FFFFFF;
 
-  --sage: #4E7D64;
-  --sage-dim: rgba(78,125,100,0.16);
+  --sage: #3E6B50;
+  --sage-dim: rgba(62,107,80,0.18);
 
-  --blue-dim: rgba(28,107,63,0.14); /* legacy alias -> accent tint */
+  --blue-dim: #D3E88C; /* legacy alias -> neon tint (more neon on the dash) */
 
-  --overlay: rgba(5,43,21,0.45);
-  --shadow: rgba(5,43,21,0.18);
+  --overlay: rgba(12,36,20,0.5);
+  --shadow: rgba(20,30,25,0.22);
 
   --radius: 8px;
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -72,28 +84,34 @@
   color-scheme: light;
 }
 
-/* ---- Dark theme (Haunted Forest background) ---- */
+/* ---- Dark theme (deep dark forest green + neon) ---- */
 :root[data-theme="dark"] {
-  --bg-primary: #052B15;
-  --bg-secondary: #0A3721;
-  --bg-card: #0C3D26;
-  --bg-elev: #114A2E;
-  --bg-hover: #14512F;
-  --bg-input: #04220F;
-  --border: #1D5335;
-  --border-light: #2B6A45;
-  --text-primary: #E9F1EA;
-  --text-secondary: #A6C6B2;
-  --text-muted: #6E9179;
+  --bg-primary: #04170B;
+  --bg-secondary: #06210E;
+  --bg-card: #082813;
+  --bg-elev: #0C381B;
+  --bg-hover: #0F401E;
+  --bg-input: #02100A;
+  --border: #123E20;
+  --border-light: #1C5A32;
+  --text-primary: #E9F3E9;
+  --text-secondary: #9FC1AB;
+  --text-muted: #688A74;
 
   --accent: #D4FF3B;
-  --accent-hover: #E3FF70;
+  --accent-hover: #E4FF6B;
   --accent-dim: rgba(212,255,59,0.14);
-  --on-accent: #052B15;
+  --on-accent: #04170B;
+
+  --neon: #D4FF3B;
+  --neon-strong: #E4FF6B;
+  --neon-dim: rgba(212,255,59,0.15);
+  --on-neon: #04170B;
+  --neon-glow: rgba(212,255,59,0.35);
 
   --green: #79A88A;
   --green-dim: rgba(121,168,138,0.18);
-  --on-success: #052B15;
+  --on-success: #04170B;
 
   --yellow: #E3B341;
   --yellow-dim: rgba(227,179,65,0.16);
@@ -101,15 +119,15 @@
   --red: #FF715B;
   --red-hover: #FF8C79;
   --red-dim: rgba(255,113,91,0.16);
-  --on-danger: #052B15;
+  --on-danger: #04170B;
 
   --sage: #79A88A;
   --sage-dim: rgba(121,168,138,0.16);
 
   --blue-dim: rgba(212,255,59,0.12);
 
-  --overlay: rgba(0,0,0,0.6);
-  --shadow: rgba(0,0,0,0.5);
+  --overlay: rgba(0,0,0,0.65);
+  --shadow: rgba(0,0,0,0.55);
 
   color-scheme: dark;
 }
@@ -117,26 +135,32 @@
 /* Follow the system when the user has not made an explicit choice */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --bg-primary: #052B15;
-    --bg-secondary: #0A3721;
-    --bg-card: #0C3D26;
-    --bg-elev: #114A2E;
-    --bg-hover: #14512F;
-    --bg-input: #04220F;
-    --border: #1D5335;
-    --border-light: #2B6A45;
-    --text-primary: #E9F1EA;
-    --text-secondary: #A6C6B2;
-    --text-muted: #6E9179;
+    --bg-primary: #04170B;
+    --bg-secondary: #06210E;
+    --bg-card: #082813;
+    --bg-elev: #0C381B;
+    --bg-hover: #0F401E;
+    --bg-input: #02100A;
+    --border: #123E20;
+    --border-light: #1C5A32;
+    --text-primary: #E9F3E9;
+    --text-secondary: #9FC1AB;
+    --text-muted: #688A74;
 
     --accent: #D4FF3B;
-    --accent-hover: #E3FF70;
+    --accent-hover: #E4FF6B;
     --accent-dim: rgba(212,255,59,0.14);
-    --on-accent: #052B15;
+    --on-accent: #04170B;
+
+    --neon: #D4FF3B;
+    --neon-strong: #E4FF6B;
+    --neon-dim: rgba(212,255,59,0.15);
+    --on-neon: #04170B;
+    --neon-glow: rgba(212,255,59,0.35);
 
     --green: #79A88A;
     --green-dim: rgba(121,168,138,0.18);
-    --on-success: #052B15;
+    --on-success: #04170B;
 
     --yellow: #E3B341;
     --yellow-dim: rgba(227,179,65,0.16);
@@ -144,15 +168,15 @@
     --red: #FF715B;
     --red-hover: #FF8C79;
     --red-dim: rgba(255,113,91,0.16);
-    --on-danger: #052B15;
+    --on-danger: #04170B;
 
     --sage: #79A88A;
     --sage-dim: rgba(121,168,138,0.16);
 
     --blue-dim: rgba(212,255,59,0.12);
 
-    --overlay: rgba(0,0,0,0.6);
-    --shadow: rgba(0,0,0,0.5);
+    --overlay: rgba(0,0,0,0.65);
+    --shadow: rgba(0,0,0,0.55);
 
     color-scheme: dark;
   }
@@ -239,7 +263,7 @@ body {
 }
 
 .tab:hover { color: var(--text-primary); }
-.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab.active { color: var(--accent); border-bottom-color: var(--neon); }
 
 /* Main content */
 .main { padding: 24px; max-width: 1400px; margin: 0 auto; }
@@ -377,7 +401,7 @@ select, input[type="text"], input[type="number"] {
   transition: border-color 0.15s;
 }
 
-select:focus, input:focus { border-color: var(--accent); }
+select:focus, input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px var(--neon-glow); }
 
 select { cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%236a7d72'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
 
@@ -395,8 +419,8 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   transition: all 0.15s;
 }
 
-.btn-primary { background: var(--accent); color: var(--on-accent); }
-.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary { background: var(--neon); color: var(--on-neon); }
+.btn-primary:hover { background: var(--neon-strong); box-shadow: 0 2px 14px var(--neon-glow); }
 .btn-secondary { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border); }
 .btn-secondary:hover { background: var(--border); }
 .btn-danger { background: var(--red); color: var(--on-danger); }
@@ -478,7 +502,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   transition: all 0.15s;
 }
 
-.door-card:hover { border-color: var(--accent); background: var(--bg-hover); }
+.door-card:hover { border-color: var(--neon); background: var(--bg-hover); }
 .door-card.unlocking { border-color: var(--green); background: var(--green-dim); }
 
 .door-name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
@@ -750,7 +774,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 }
 .wizard-steps .wstep.done .wdot { background: var(--green); border-color: var(--green); color: var(--on-success); }
 .wizard-steps .wstep.active { color: var(--text-primary); }
-.wizard-steps .wstep.active .wdot { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.wizard-steps .wstep.active .wdot { background: var(--neon); border-color: var(--neon); color: var(--on-neon); }
 .wizard-steps .wstep.clickable { cursor: pointer; }
 .wizard-steps .wstep.clickable:hover { color: var(--text-primary); }
 
@@ -891,9 +915,10 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .door-tag:hover { border-color: var(--border-light); }
 
 .door-tag.selected {
-  background: var(--green-dim);
-  border-color: var(--green);
-  color: var(--green);
+  background: var(--neon-dim);
+  border-color: var(--neon);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .door-tag input[type="checkbox"] { display: none; }
@@ -922,7 +947,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 }
 
 .doorbell-link-toggle input[type="checkbox"] {
-  accent-color: var(--accent);
+  accent-color: var(--neon);
   width: 16px;
   height: 16px;
 }
