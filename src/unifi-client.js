@@ -42,12 +42,13 @@ class UniFiClient {
     this.ws = null;
     this.wsReconnectTimer = null;
     this.wsPingInterval = null;
-    this.wsAlive = false;
+    this.lastWsInboundAt = 0; // ms epoch of the last inbound ws frame
 
     // Connection state tracking
     this.connectionState = 'disconnected';
     this.healthMonitorInterval = null;
     this._shutdownRequested = false;
+    this._initRetryActive = false; // true while initializeWithRetry is looping
 
     // Sync interval
     this.syncInterval = null;
@@ -167,29 +168,34 @@ class UniFiClient {
 
   async initializeWithRetry() {
     this._shutdownRequested = false;
+    this._initRetryActive = true;
     this.connectionState = 'connecting';
     let attempt = 0;
     const backoffs = [5, 10, 20, 40, 60];
 
-    while (!this._shutdownRequested) {
-      const success = await this.initialize();
-      if (success) {
-        this.connectionState = 'connected';
-        logger.info('UniFi client connected and ready');
-        return true;
+    try {
+      while (!this._shutdownRequested) {
+        const success = await this.initialize();
+        if (success) {
+          this.connectionState = 'connected';
+          logger.info('UniFi client connected and ready');
+          return true;
+        }
+
+        if (this._shutdownRequested) break;
+
+        attempt++;
+        const delaySec = backoffs[Math.min(attempt - 1, backoffs.length - 1)];
+        this.connectionState = 'reconnecting';
+        logger.warn(`Initialization attempt ${attempt} failed. Retrying in ${delaySec}s...`);
+        await new Promise(r => setTimeout(r, delaySec * 1000));
       }
 
-      if (this._shutdownRequested) break;
-
-      attempt++;
-      const delaySec = backoffs[Math.min(attempt - 1, backoffs.length - 1)];
-      this.connectionState = 'reconnecting';
-      logger.warn(`Initialization attempt ${attempt} failed. Retrying in ${delaySec}s...`);
-      await new Promise(r => setTimeout(r, delaySec * 1000));
+      logger.info('Retry loop cancelled (shutdown requested)');
+      return false;
+    } finally {
+      this._initRetryActive = false;
     }
-
-    logger.info('Retry loop cancelled (shutdown requested)');
-    return false;
   }
 
   // ---------------------------------------------------------------------------
@@ -404,7 +410,13 @@ class UniFiClient {
     if (this.healthMonitorInterval) clearInterval(this.healthMonitorInterval);
 
     this.healthMonitorInterval = setInterval(async () => {
-      if (this.connectionState === 'reconnecting' || this.connectionState === 'connecting') return;
+      // Skip only while the init retry loop is actively working the problem.
+      // The old guard skipped whenever the STATE was reconnecting/connecting,
+      // but the monitor itself is the only thing that restores 'connected'
+      // after a transient blip, so one failed probe locked the state on
+      // 'reconnecting' forever (banner stuck on Reconnecting while everything
+      // actually worked).
+      if (this._initRetryActive) return;
 
       try {
         await this.request('GET', '/doors?page_num=1&page_size=1');
@@ -489,6 +501,14 @@ class UniFiClient {
   // ---------------------------------------------------------------------------
 
   connectWebSocket(onEvent, reconnectSeconds = 5) {
+    // No controller configured yet (fresh install waiting on the setup
+    // wizard). new WebSocket('wss://:12445/...') throws synchronously, and on
+    // startup that escaped as a fatal that killed the whole server. Skip
+    // quietly; the connection is re-attempted after the config gets a host.
+    if (!this.host || String(this.host).trim() === '') {
+      logger.warn('WebSocket event source: no controller host configured yet; waiting for setup to complete');
+      return;
+    }
     const wsUrl = `wss://${this.host}:${this.port}/api/v1/developer/devices/notifications`;
     logger.info(`Connecting WebSocket: ${wsUrl}`);
 
@@ -525,28 +545,44 @@ class UniFiClient {
       }
     }
 
-    this.ws = new WebSocket(wsUrl, wsOptions);
+    try {
+      this.ws = new WebSocket(wsUrl, wsOptions);
+    } catch (err) {
+      // A malformed host makes the constructor throw synchronously. Never let
+      // that escape to the fatal handler; retry once the config is corrected.
+      logger.error(`WebSocket connect failed (${err.message}); retrying in ${reconnectSeconds}s`);
+      this.ws = null;
+      setTimeout(() => this.connectWebSocket(onEvent, reconnectSeconds), reconnectSeconds * 1000).unref();
+      return;
+    }
 
     this.ws.on('open', () => {
       logger.info('WebSocket connected');
       if (this.wsPingInterval) clearInterval(this.wsPingInterval);
-      this.wsAlive = true;
+      // Liveness = ANY inbound frame (message, ping, or pong). The old check
+      // required a pong reply to OUR ping within one 30s tick, but some
+      // controllers never answer client pings while happily pinging us and
+      // delivering events, so a healthy but quiet connection (zero doors) was
+      // terminated every 60 seconds in an endless drop/reconnect loop.
+      this.lastWsInboundAt = Date.now();
       this.wsPingInterval = setInterval(() => {
-        if (!this.wsAlive) {
-          logger.warn('WebSocket heartbeat timeout — terminating stale connection');
+        const silentMs = Date.now() - this.lastWsInboundAt;
+        if (silentMs > 90000) {
+          logger.warn(`WebSocket heartbeat timeout — nothing received for ${Math.round(silentMs / 1000)}s; terminating stale connection`);
           this.ws.terminate();
           return;
         }
-        this.wsAlive = false;
-        this.ws.ping();
+        try { this.ws.ping(); } catch (e) { /* socket mid-close */ }
       }, 30000);
     });
 
-    this.ws.on('pong', () => {
-      this.wsAlive = true;
-    });
+    this.ws.on('pong', () => { this.lastWsInboundAt = Date.now(); });
+    // The controller pings us; ws answers with a pong automatically, and the
+    // ping itself is proof of a live peer.
+    this.ws.on('ping', () => { this.lastWsInboundAt = Date.now(); });
 
     this.ws.on('message', (data) => {
+      this.lastWsInboundAt = Date.now();
       try {
         const event = JSON.parse(data.toString());
         const eventType = event.event || event.type || '';

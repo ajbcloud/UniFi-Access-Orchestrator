@@ -34,12 +34,13 @@ class MockManager extends EventEmitter {
   }
   get controller() { return this.running ? this.mockController : null; }
   isRunning() { return this.running; }
-  async ensureStarted() {
+  async ensureStarted(opts) {
     if (this.failStart) throw new Error('port open failed');
     this.running = true;
+    this.serialPath = (opts && opts.serial_path) || this.serialPath || null;
     return {};
   }
-  async stop() { this.stopCalls++; this.running = false; }
+  async stop() { this.stopCalls++; this.running = false; this.serialPath = null; }
 }
 
 function makePairing(overrides = {}) {
@@ -160,26 +161,35 @@ test('cancel stops inclusion and resolves a pending PIN false', async () => {
   assert.ok(ctl.stopInclusionCalls >= 1);
 });
 
-test('manager stopped on failure only when pairing started it and no lock is bound', async () => {
-  // pairing started the manager, no lock -> stop
+test('the driver stays running after any session outcome (log continuity)', async () => {
+  // Stopping the driver between attempts created gaps in the zwave-js debug
+  // log and made quick retries race Windows' slow serial-port release, so a
+  // terminal session leaves the driver up regardless of who started it.
   const a = makePairing();
   await a.pairing.startInclusion();
   await a.pairing.cancel();
-  assert.strictEqual(a.manager.stopCalls, 1);
+  assert.strictEqual(a.manager.stopCalls, 0);
+  assert.strictEqual(a.manager.isRunning(), true);
 
-  // manager already running (lock started it) -> never stopped
   const runningManager = new MockManager();
   runningManager.running = true;
   const b = makePairing({ manager: runningManager });
   await b.pairing.startInclusion();
   await b.pairing.cancel();
   assert.strictEqual(runningManager.stopCalls, 0);
+});
 
-  // pairing started it but a lock is bound -> never stopped
-  const c = makePairing({ isLockBound: () => true });
-  await c.pairing.startInclusion();
-  await c.pairing.cancel();
-  assert.strictEqual(c.manager.stopCalls, 0);
+test('a changed serial port restarts the driver before inclusion', async () => {
+  const manager = new MockManager();
+  manager.running = true;
+  manager.serialPath = 'COM3';
+  const { pairing } = makePairing({
+    manager,
+    getZwaveConfig: () => ({ serial_path: 'COM4' }),
+  });
+  await pairing.startInclusion();
+  assert.strictEqual(manager.stopCalls, 1, 'old driver stopped for the port switch');
+  assert.strictEqual(manager.isRunning(), true, 'restarted on the new port');
 });
 
 test('successful include keeps the manager running for activation', async () => {
@@ -348,4 +358,76 @@ test('provisioning timeout with no joined node still fails with guidance', async
   assert.strictEqual(pairing.state, 'failed');
   assert.match(pairing.status().error, /secure join timed out/);
   assert.match(pairing.status().error, /Unpair \(exclusion\)/);
+});
+
+// ---------------------------------------------------------------------------
+// Pre-flight recovery: earlier aborted sessions leave ghost nodes on the stick
+// and can leave the lock itself included without the app knowing. zwave-js
+// silently aborts re-inclusion of an already-included device, so this must be
+// caught before the radio work starts.
+// ---------------------------------------------------------------------------
+
+test('startInclusion removes dead ghost nodes before starting', async () => {
+  const { pairing, manager } = makePairing();
+  const ctl = manager.mockController;
+  ctl.ownNodeId = 1;
+  ctl.nodes = new Map([[1, { id: 1 }], [2, { id: 2 }], [3, { id: 3 }]]);
+  const removed = [];
+  ctl.isFailedNode = async (id) => id !== 1; // 2 and 3 are dead ghosts
+  ctl.removeFailedNode = async (id) => { removed.push(id); ctl.nodes.delete(id); };
+
+  await pairing.startInclusion();
+  assert.deepStrictEqual(removed.sort(), [2, 3]);
+  assert.ok(ctl.inclusionOpts, 'inclusion proceeds after cleanup');
+  assert.strictEqual(pairing.state, 'starting');
+});
+
+test('startInclusion blocks when a live foreign node is already included', async () => {
+  const { pairing, manager } = makePairing();
+  const ctl = manager.mockController;
+  ctl.ownNodeId = 1;
+  ctl.nodes = new Map([[1, { id: 1 }], [6, { id: 6 }]]);
+  ctl.isFailedNode = async () => false; // node 6 is alive
+  ctl.removeFailedNode = async () => { throw new Error('must not be called'); };
+
+  await assert.rejects(() => pairing.startInclusion(), /already paired to this stick as node 6/);
+  assert.strictEqual(ctl.inclusionOpts, null, 'beginInclusion must not run');
+  assert.strictEqual(pairing.state, 'failed');
+  assert.match(pairing.status().error, /Unpair/);
+});
+
+test('the configured lock node is neither a ghost nor a foreign device', async () => {
+  const { pairing, manager } = makePairing({
+    getZwaveConfig: () => ({ serial_path: 'COM3', locks: { deadbolt: { node_id: 6 } } }),
+  });
+  const ctl = manager.mockController;
+  ctl.ownNodeId = 1;
+  ctl.nodes = new Map([[1, { id: 1 }], [6, { id: 6 }]]);
+  const failedChecks = [];
+  ctl.isFailedNode = async (id) => { failedChecks.push(id); return false; };
+  ctl.removeFailedNode = async () => { throw new Error('must not be called'); };
+
+  await pairing.startInclusion();
+  assert.deepStrictEqual(failedChecks, [], 'configured node is never even checked');
+  assert.ok(ctl.inclusionOpts, 'inclusion proceeds');
+});
+
+test('history records every session step but never the PIN digits', async () => {
+  const { pairing, manager } = makePairing();
+  const ctl = manager.mockController;
+  await driveToPin(pairing, ctl); // submits PIN 12345
+  ctl.emit('node added', { id: 7 }, { lowSecurity: false });
+  await new Promise((r) => setImmediate(r));
+
+  const hist = pairing.status().history;
+  assert.ok(Array.isArray(hist) && hist.length > 0, 'history is populated');
+  const joined = JSON.stringify(hist);
+  assert.match(joined, /include session starting/);
+  assert.match(joined, /DSK received/);
+  assert.match(joined, /PIN submitted/);
+  assert.match(joined, /node 7 added/);
+  assert.ok(!joined.includes('12345'), 'the PIN digits must never be recorded');
+  for (const entry of hist) {
+    assert.ok(entry.t && entry.msg, 'each entry carries a timestamp and message');
+  }
 });

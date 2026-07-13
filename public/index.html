@@ -2593,7 +2593,10 @@ function renderZwaveSetup() {
     <div id="zwaveSetupStatus" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
 
     <div id="zwaveDeadboltBlock" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-      <div style="font-size:13px;font-weight:600;margin-bottom:6px">Deadbolt</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="font-size:13px;font-weight:600">Deadbolt</div>
+        <button class="btn btn-sm btn-secondary" onclick="downloadDiagnostics()" title="One file with the app log, Z-Wave log, pairing history, and redacted config">Download Diagnostics</button>
+      </div>
       <div id="zwaveDeadboltStatusLine" style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Loading...</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap" id="zwaveDeadboltButtons"></div>
       <div id="zwavePairPanel" style="margin-top:10px"></div>
@@ -2643,13 +2646,25 @@ function renderZwavePairPanel(st) {
           : `<strong style="color:var(--green)">Paired!</strong> The lock joined as node ${escapeHtml(st.node_id)} with ${escapeHtml(st.security || 'S2')}. The deadbolt is now active.`,
         'var(--green)'
       );
-    case 'failed':
+    case 'failed': {
+      // Session history: what actually happened, step by step, so a failure is
+      // diagnosable on the spot. Entries are app-generated but escaped anyway.
+      const hist = Array.isArray(st.history) ? st.history.slice(-8) : [];
+      const histHtml = hist.length
+        ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">What happened (last ${hist.length} steps)</summary>`
+          + `<div style="font-family:var(--mono);font-size:11px;color:var(--text-secondary);margin-top:6px;line-height:1.6">`
+          + hist.map((h) => `${escapeHtml((h.t || '').slice(11, 19))} ${escapeHtml(h.msg || '')}`).join('<br>')
+          + `</div></details>`
+        : '';
       return box(
         `<strong style="color:var(--red)">${modeWord} failed:</strong> ${escapeHtml(st.error || 'unknown error')}`
         + `<div style="margin-top:6px;font-size:12px;color:var(--text-muted)">If this lock was ever paired before, run Unpair (or factory reset it), move the stick close to the lock, and try again.</div>`
-        + `<div style="margin-top:8px"><button class="btn btn-sm btn-primary" onclick="${st.mode === 'exclude' ? 'startUnpair()' : 'startPairing()'}">Try Again</button></div>`,
+        + histHtml
+        + `<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-sm btn-primary" onclick="${st.mode === 'exclude' ? 'startUnpair()' : 'startPairing()'}">Try Again</button>`
+        + `<button class="btn btn-sm btn-secondary" onclick="downloadDiagnostics()">Download Diagnostics</button></div>`,
         'var(--red)'
       );
+    }
     case 'cancelled':
       return box(`${modeWord} cancelled.`);
     default:
@@ -2768,16 +2783,29 @@ async function startPairing() {
   setPairPanel(renderZwavePairPanel({ mode: 'include', state: 'starting', seconds_in_state: 0 }));
   try {
     const r = await api('POST', '/api/deadbolt/pair/start');
-    if (r.error) { toast(r.error, 'error'); _lastPairPanelHtml = null; setPairPanel(''); refreshZwaveDeadbolt(); return; }
+    if (r.error) { toast(r.error, 'error'); await showPairFailure(); return; }
     toast('Pairing started', 'info');
     setPairPanel(renderZwavePairPanel({ mode: 'include', state: r.state || 'starting', seconds_in_state: 0 }));
     pollPairingStatus();
     refreshZwaveDeadbolt();
   } catch (e) {
     toast(`Pairing failed to start: ${e.message}`, 'error');
-    _lastPairPanelHtml = null; setPairPanel(''); // clear the provisional panel
-    refreshZwaveDeadbolt(); // re-enable the buttons
+    await showPairFailure();
   }
+}
+
+// A pair/unpair start was rejected. The server-side session holds the full
+// failure text (with the recovery steps), which outlives the 4-second toast,
+// so render it in the panel instead of clearing the panel.
+async function showPairFailure() {
+  _lastPairPanelHtml = null;
+  try {
+    const st = await api('GET', '/api/deadbolt/pair/status');
+    setPairPanel(renderZwavePairPanel(st));
+  } catch (e) {
+    setPairPanel('');
+  }
+  refreshZwaveDeadbolt(); // re-enable the buttons
 }
 
 async function submitPairPin() {
@@ -2794,6 +2822,27 @@ async function cancelPairing() {
   try { await api('POST', '/api/deadbolt/pair/cancel'); } catch (e) { /* ignore */ }
 }
 
+// Fetch the one-file support bundle and save it, so "send me the logs" is a
+// single click instead of a hunt through AppData folders.
+async function downloadDiagnostics() {
+  toast('Collecting diagnostics...', 'info');
+  try {
+    const data = await api('GET', '/api/diagnostics');
+    if (data && data.error) { toast('Diagnostics failed: ' + data.error, 'error'); return; }
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `orchestrator-diagnostics-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+    toast('Diagnostics saved to your Downloads folder.', 'success');
+  } catch (e) {
+    toast('Diagnostics failed: ' + e.message, 'error');
+  }
+}
+
 async function startUnpair() {
   const ok = confirm('Unpair the deadbolt?\n\nThe lock will be removed from the Z-Wave network and the app will stop controlling it until it is paired again.');
   if (!ok) return;
@@ -2803,13 +2852,12 @@ async function startUnpair() {
   setPairPanel(renderZwavePairPanel({ mode: 'exclude', state: 'starting', seconds_in_state: 0 }));
   try {
     const r = await api('POST', '/api/deadbolt/unpair');
-    if (r.error) { toast(r.error, 'error'); _lastPairPanelHtml = null; setPairPanel(''); refreshZwaveDeadbolt(); return; }
+    if (r.error) { toast(r.error, 'error'); await showPairFailure(); return; }
     toast('Unpairing started', 'info');
     pollPairingStatus();
   } catch (e) {
     toast(`Unpair failed to start: ${e.message}`, 'error');
-    _lastPairPanelHtml = null; setPairPanel('');
-    refreshZwaveDeadbolt();
+    await showPairFailure();
   }
 }
 
