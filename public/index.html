@@ -2754,6 +2754,30 @@ function _setDeadboltButtonsBusy(busy) {
   if (btns) btns.querySelectorAll('button').forEach((b) => { b.disabled = !!busy; });
 }
 
+// Pure renderer for the deadbolt action-button row (#zwaveDeadboltButtons),
+// given the /api/devices `zwave` object. Buttons are static strings (no
+// controller-derived data), so there is nothing to escape. Every button is
+// disabled while a pair/unpair session is active.
+//
+// The configured-but-not-paired branch deliberately keeps Unpair / Exclude
+// available: a failed or incomplete secure inclusion can leave a live node on
+// the controller without persisting a paired lock, and that node then blocks
+// the next inclusion. Without this control the operator has no way to run the
+// exclusion the app is telling them to run. A still-responsive node is never
+// auto-removed as a failed ghost, so exclusion is the only recovery.
+function buildDeadboltButtons(zw) {
+  const z = zw || {};
+  if (!z.configured) return '';
+  const dis = z.pairing_active ? ' disabled' : '';
+  if (z.paired) {
+    return `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('lock')"${dis}>Test Lock</button>`
+      + `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('unlock')"${dis}>Test Unlock</button>`
+      + `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis}>Unpair</button>`;
+  }
+  return `<button class="btn btn-sm btn-primary" onclick="startPairing()"${dis}>Pair New Lock</button>`
+    + `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis}>Unpair / Exclude Device</button>`;
+}
+
 async function refreshZwaveDeadbolt() {
   const line = document.getElementById('zwaveDeadboltStatusLine');
   const btns = document.getElementById('zwaveDeadboltButtons');
@@ -2769,13 +2793,9 @@ async function refreshZwaveDeadbolt() {
       if (live) live.innerHTML = '';
       return;
     }
+    btns.innerHTML = buildDeadboltButtons(zw);
     if (zw.paired) {
       line.textContent = `Lock paired (node ${zw.node_id}, "${zw.lock_id}").`;
-      btns.innerHTML = `
-        <button class="btn btn-sm btn-secondary" onclick="deadboltControl('lock')" ${pairingActive ? 'disabled' : ''}>Test Lock</button>
-        <button class="btn btn-sm btn-secondary" onclick="deadboltControl('unlock')" ${pairingActive ? 'disabled' : ''}>Test Unlock</button>
-        <button class="btn btn-sm btn-secondary" onclick="startUnpair()" ${pairingActive ? 'disabled' : ''}>Unpair</button>
-      `;
       if (live) {
         const ls = r.lock_state || {};
         const bolt = ls.boltState || 'unknown';
@@ -2788,7 +2808,6 @@ async function refreshZwaveDeadbolt() {
       }
     } else {
       line.textContent = 'No lock paired yet.';
-      btns.innerHTML = `<button class="btn btn-sm btn-primary" onclick="startPairing()" ${pairingActive ? 'disabled' : ''}>Pair New Lock</button>`;
       if (live) live.innerHTML = '';
     }
     // Resume polling if a session is running (e.g. after a page reload).
