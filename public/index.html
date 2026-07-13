@@ -2768,16 +2768,29 @@ async function startPairing() {
   setPairPanel(renderZwavePairPanel({ mode: 'include', state: 'starting', seconds_in_state: 0 }));
   try {
     const r = await api('POST', '/api/deadbolt/pair/start');
-    if (r.error) { toast(r.error, 'error'); _lastPairPanelHtml = null; setPairPanel(''); refreshZwaveDeadbolt(); return; }
+    if (r.error) { toast(r.error, 'error'); await showPairFailure(); return; }
     toast('Pairing started', 'info');
     setPairPanel(renderZwavePairPanel({ mode: 'include', state: r.state || 'starting', seconds_in_state: 0 }));
     pollPairingStatus();
     refreshZwaveDeadbolt();
   } catch (e) {
     toast(`Pairing failed to start: ${e.message}`, 'error');
-    _lastPairPanelHtml = null; setPairPanel(''); // clear the provisional panel
-    refreshZwaveDeadbolt(); // re-enable the buttons
+    await showPairFailure();
   }
+}
+
+// A pair/unpair start was rejected. The server-side session holds the full
+// failure text (with the recovery steps), which outlives the 4-second toast,
+// so render it in the panel instead of clearing the panel.
+async function showPairFailure() {
+  _lastPairPanelHtml = null;
+  try {
+    const st = await api('GET', '/api/deadbolt/pair/status');
+    setPairPanel(renderZwavePairPanel(st));
+  } catch (e) {
+    setPairPanel('');
+  }
+  refreshZwaveDeadbolt(); // re-enable the buttons
 }
 
 async function submitPairPin() {
@@ -2803,13 +2816,12 @@ async function startUnpair() {
   setPairPanel(renderZwavePairPanel({ mode: 'exclude', state: 'starting', seconds_in_state: 0 }));
   try {
     const r = await api('POST', '/api/deadbolt/unpair');
-    if (r.error) { toast(r.error, 'error'); _lastPairPanelHtml = null; setPairPanel(''); refreshZwaveDeadbolt(); return; }
+    if (r.error) { toast(r.error, 'error'); await showPairFailure(); return; }
     toast('Unpairing started', 'info');
     pollPairingStatus();
   } catch (e) {
     toast(`Unpair failed to start: ${e.message}`, 'error');
-    _lastPairPanelHtml = null; setPairPanel('');
-    refreshZwaveDeadbolt();
+    await showPairFailure();
   }
 }
 

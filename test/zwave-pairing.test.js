@@ -349,3 +349,55 @@ test('provisioning timeout with no joined node still fails with guidance', async
   assert.match(pairing.status().error, /secure join timed out/);
   assert.match(pairing.status().error, /Unpair \(exclusion\)/);
 });
+
+// ---------------------------------------------------------------------------
+// Pre-flight recovery: earlier aborted sessions leave ghost nodes on the stick
+// and can leave the lock itself included without the app knowing. zwave-js
+// silently aborts re-inclusion of an already-included device, so this must be
+// caught before the radio work starts.
+// ---------------------------------------------------------------------------
+
+test('startInclusion removes dead ghost nodes before starting', async () => {
+  const { pairing, manager } = makePairing();
+  const ctl = manager.mockController;
+  ctl.ownNodeId = 1;
+  ctl.nodes = new Map([[1, { id: 1 }], [2, { id: 2 }], [3, { id: 3 }]]);
+  const removed = [];
+  ctl.isFailedNode = async (id) => id !== 1; // 2 and 3 are dead ghosts
+  ctl.removeFailedNode = async (id) => { removed.push(id); ctl.nodes.delete(id); };
+
+  await pairing.startInclusion();
+  assert.deepStrictEqual(removed.sort(), [2, 3]);
+  assert.ok(ctl.inclusionOpts, 'inclusion proceeds after cleanup');
+  assert.strictEqual(pairing.state, 'starting');
+});
+
+test('startInclusion blocks when a live foreign node is already included', async () => {
+  const { pairing, manager } = makePairing();
+  const ctl = manager.mockController;
+  ctl.ownNodeId = 1;
+  ctl.nodes = new Map([[1, { id: 1 }], [6, { id: 6 }]]);
+  ctl.isFailedNode = async () => false; // node 6 is alive
+  ctl.removeFailedNode = async () => { throw new Error('must not be called'); };
+
+  await assert.rejects(() => pairing.startInclusion(), /already paired to this stick as node 6/);
+  assert.strictEqual(ctl.inclusionOpts, null, 'beginInclusion must not run');
+  assert.strictEqual(pairing.state, 'failed');
+  assert.match(pairing.status().error, /Unpair/);
+});
+
+test('the configured lock node is neither a ghost nor a foreign device', async () => {
+  const { pairing, manager } = makePairing({
+    getZwaveConfig: () => ({ serial_path: 'COM3', locks: { deadbolt: { node_id: 6 } } }),
+  });
+  const ctl = manager.mockController;
+  ctl.ownNodeId = 1;
+  ctl.nodes = new Map([[1, { id: 1 }], [6, { id: 6 }]]);
+  const failedChecks = [];
+  ctl.isFailedNode = async (id) => { failedChecks.push(id); return false; };
+  ctl.removeFailedNode = async () => { throw new Error('must not be called'); };
+
+  await pairing.startInclusion();
+  assert.deepStrictEqual(failedChecks, [], 'configured node is never even checked');
+  assert.ok(ctl.inclusionOpts, 'inclusion proceeds');
+});

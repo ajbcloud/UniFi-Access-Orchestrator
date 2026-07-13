@@ -176,6 +176,60 @@ class ZwavePairing {
     return { state: this.state };
   }
 
+  // Node ids the config already claims (the paired lock). These are never
+  // treated as ghosts or foreign devices.
+  _configuredNodeIds() {
+    const ids = new Set();
+    const zw = this.getZwaveConfig() || {};
+    const locks = zw.locks || {};
+    for (const lock of Object.values(locks)) {
+      if (lock && typeof lock.node_id === 'number' && lock.node_id > 0) ids.add(lock.node_id);
+    }
+    return ids;
+  }
+
+  // Remove dead entries left in the stick's node list by earlier aborted
+  // pairing attempts. Only nodes the controller itself reports as failed are
+  // removed, so a healthy device can never be deleted by accident.
+  async _cleanupGhostNodes(controller) {
+    const nodes = controller && controller.nodes;
+    if (!nodes || typeof nodes.forEach !== 'function') return;
+    if (typeof controller.isFailedNode !== 'function' || typeof controller.removeFailedNode !== 'function') return;
+    const configured = this._configuredNodeIds();
+    const candidates = [];
+    nodes.forEach((_n, id) => {
+      if (controller.ownNodeId != null && id === controller.ownNodeId) return;
+      if (configured.has(id)) return;
+      candidates.push(id);
+    });
+    for (const id of candidates) {
+      try {
+        if (await controller.isFailedNode(id)) {
+          await controller.removeFailedNode(id);
+          this.logger.info && this.logger.info(`Z-Wave: removed ghost node ${id} left over from a failed pairing`);
+        }
+      } catch (e) {
+        this.logger.warn && this.logger.warn(`Z-Wave: could not remove ghost node ${id}: ${e.message}`);
+      }
+    }
+  }
+
+  // A live node that is neither the controller nor the configured lock. Its
+  // presence means a previous join actually completed without the app knowing.
+  _findForeignLiveNode(controller) {
+    const nodes = controller && controller.nodes;
+    if (!nodes || typeof nodes.forEach !== 'function') return null;
+    const configured = this._configuredNodeIds();
+    let found = null;
+    nodes.forEach((_n, id) => {
+      if (found != null) return;
+      if (controller.ownNodeId != null && id === controller.ownNodeId) return;
+      if (configured.has(id)) return;
+      found = id;
+    });
+    return found;
+  }
+
   // A node that appeared on the controller during this session but was not
   // there when inclusion started. Tolerates controllers without a nodes map.
   _findLateNode() {
@@ -258,6 +312,20 @@ class ZwavePairing {
       const controller = this.manager.controller;
       if (!controller || typeof controller.beginInclusion !== 'function') {
         throw new Error('Z-Wave controller unavailable');
+      }
+
+      // Recover from earlier failed sessions before touching the radio. Dead
+      // ghost entries are removed automatically; a LIVE node that is neither
+      // the controller nor the configured lock blocks inclusion with an
+      // accurate message, because zwave-js silently aborts the join of an
+      // already-included device ("Cannot add node N as it is already part of
+      // the network") without emitting any event we could react to.
+      await this._cleanupGhostNodes(controller);
+      const foreignId = this._findForeignLiveNode(controller);
+      if (foreignId != null) {
+        throw new Error(
+          `a device is already paired to this stick as node ${foreignId} (usually this lock, left over ` +
+          'from an earlier attempt). Run Unpair and complete the exclusion sequence on the lock, then pair again.');
       }
 
       // Snapshot the node ids present BEFORE inclusion so a node that appears
