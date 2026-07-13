@@ -378,7 +378,7 @@ class ZwavePairing {
       if (foreignId != null) {
         throw new Error(
           `a device is already paired to this stick as node ${foreignId} (usually this lock, left over ` +
-          'from an earlier attempt). Run Unpair and complete the exclusion sequence on the lock, then pair again.');
+          'from an earlier attempt). Use Unpair / Exclude Device below, complete the exclusion sequence on the lock, then pair again.');
       }
       this._stage('starting', this.timeouts.starting,
         () => this._fail('the Z-Wave controller did not start in time'));
