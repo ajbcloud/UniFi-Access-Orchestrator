@@ -29,7 +29,9 @@ const LockState = Object.freeze({
  * @typedef {Object} LockSnapshot
  * @property {string} boltState   one of LockState
  * @property {number|null} battery  percent 0..100, or null if unknown
- * @property {boolean} online     driver currently connected to the device
+ * @property {boolean} batteryLow  battery at/under the driver's low threshold
+ * @property {boolean} online     device reachable (an asleep battery lock counts as up)
+ * @property {string} linkState   'online' | 'asleep' | 'offline'
  * @property {string|null} lastSeen  ISO timestamp of the last confirmed report
  */
 
@@ -74,7 +76,14 @@ class LockDriver extends EventEmitter {
 
   /** @returns {Promise<LockSnapshot>} */
   async getState() {
-    return { boltState: LockState.UNKNOWN, battery: null, online: false, lastSeen: null };
+    return {
+      boltState: LockState.UNKNOWN,
+      battery: null,
+      batteryLow: false,
+      online: false,
+      linkState: 'offline',
+      lastSeen: null,
+    };
   }
 }
 

@@ -845,6 +845,29 @@ app.post('/api/deadbolt/control', async (req, res) => {
   }
 });
 
+// Kick off a fresh interview of the paired lock ("heal"). Recovers a node
+// whose pairing-time interview died partway (field report: node presumed dead
+// mid-interview left bolt/battery unknown). Fire-and-forget by design: on a
+// sleeping lock the interview finishes on its next wake, and the driver's
+// ready/interview-completed handlers re-seed state when it does.
+app.post('/api/deadbolt/reinterview', (req, res) => {
+  if (zwavePairing.isActive()) {
+    return res.status(409).json({ error: 'A pairing session is in progress' });
+  }
+  if (!lockDriver || typeof lockDriver.reinterview !== 'function') {
+    return res.status(503).json({ error: 'No lock driver is active (pair a lock first)' });
+  }
+  try {
+    lockDriver.reinterview().then(
+      () => logger.info('Deadbolt: re-interview completed'),
+      (err) => logger.warn(`Deadbolt: re-interview failed: ${err.message}`)
+    );
+    res.json({ status: 'started' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Serial-port discovery so the dashboard can offer a COM-port picker for the
 // Z-Wave stick. serialport ships with the bundled zwave-js; lazy-require it so
 // an install without the optional dependency (or a failed native build)

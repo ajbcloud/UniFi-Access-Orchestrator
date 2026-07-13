@@ -1121,7 +1121,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 <div class="header">
   <div class="header-left">
     <div class="logo"><span>UniFi Access</span> Orchestrator</div>
-    <div id="statusPill" class="status-pill offline">
+    <div id="statusPill" class="status-pill offline" title="UniFi controller link (not the Z-Wave lock)">
       <div class="status-dot"></div>
       <span>Connecting...</span>
     </div>
@@ -2123,6 +2123,25 @@ function updateDashboard() {
   renderDeadbolt(h);
 }
 
+// Pure descriptors for the deadbolt Link and Battery readouts, shared by the
+// dashboard card and the configuration panel (and unit-tested via extractFn).
+// linkState comes from the driver: 'asleep' is the NORMAL idle state of a
+// battery deadbolt and must not be painted as a red "offline". Falls back to
+// the old boolean for snapshots that predate linkState.
+function describeLockLink(ls) {
+  const l = ls || {};
+  const link = l.linkState || (l.online ? 'online' : 'offline');
+  if (link === 'online') return { label: 'online', color: 'var(--green)' };
+  if (link === 'asleep') return { label: 'asleep (normal)', color: 'var(--text-muted)' };
+  return { label: 'offline', color: 'var(--red)' };
+}
+function describeLockBattery(ls) {
+  const l = ls || {};
+  if (l.battery == null) return { label: 'n/a', color: '' };
+  if (l.batteryLow) return { label: l.battery + '% (low)', color: 'var(--red)' };
+  return { label: l.battery + '%', color: '' };
+}
+
 // Renders the Smart Deadbolt card from /health. Hidden unless the add-on is
 // enabled. Controller-derived strings (last-action detail carries event actor
 // names) are escaped; internal enums/config go in via textContent.
@@ -2139,9 +2158,14 @@ function renderDeadbolt(h) {
   stateEl.className = 'badge ' + (bolt === 'locked' ? 'success' : bolt === 'unlocked' ? 'warning' : bolt === 'jammed' ? 'error' : 'info');
   stateEl.textContent = bolt;
 
-  document.getElementById('deadboltBattery').textContent = (lock.battery == null ? 'n/a' : lock.battery + '%');
+  const battEl = document.getElementById('deadboltBattery');
+  const batt = describeLockBattery(lock);
+  battEl.textContent = batt.label;
+  battEl.style.color = batt.color;
   const linkEl = document.getElementById('deadboltLink');
-  linkEl.textContent = lock.online ? 'online' : 'offline';
+  const link = describeLockLink(lock);
+  linkEl.textContent = link.label;
+  linkEl.style.color = link.color;
   document.getElementById('deadboltDoor').textContent = db.trigger_door || '-';
 
   const s = db.stats || {};
@@ -2637,6 +2661,13 @@ function renderConfig() {
 // saved into devices.zwave via PUT /api/config. Pairing itself arrives in a
 // later phase; this section only prepares the transport.
 function renderZwaveSetup() {
+  // Field report: while the user was typing the S2 pairing PIN, a background
+  // system.auto_reload event called loadConfig() -> here, and the innerHTML
+  // rewrite below destroyed the focused PIN input ("it froze"). While a
+  // pairing session is live, leave the whole Z-Wave section alone; the
+  // terminal poll branch clears _pairPollTimer before its own loadConfig(),
+  // so the post-pairing repaint still happens.
+  if (typeof _pairPollTimer !== 'undefined' && _pairPollTimer) return;
   const el = document.getElementById('configZwave');
   if (!el) return;
   const zw = configData?.devices?.zwave || {};
@@ -2795,8 +2826,12 @@ function buildDeadboltButtons(zw) {
   if (!z.configured) return '';
   const dis = z.pairing_active ? ' disabled' : '';
   if (z.paired) {
+    // Re-interview / Heal recovers a lock whose pairing-time interview died
+    // partway (bolt/battery stuck at unknown): it forces a fresh interview
+    // and the driver re-seeds state when it completes.
     return `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('lock')"${dis}>Test Lock</button>`
       + `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('unlock')"${dis}>Test Unlock</button>`
+      + `<button class="btn btn-sm btn-secondary" onclick="startReinterview()"${dis}>Re-interview / Heal</button>`
       + `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis}>Unpair</button>`;
   }
   return `<button class="btn btn-sm btn-primary" onclick="startPairing()"${dis}>Pair New Lock</button>`
@@ -2825,10 +2860,12 @@ async function refreshZwaveDeadbolt() {
         const ls = r.lock_state || {};
         const bolt = ls.boltState || 'unknown';
         const boltBadge = bolt === 'locked' ? 'success' : bolt === 'unlocked' ? 'warning' : bolt === 'jammed' ? 'error' : 'info';
+        const batt = describeLockBattery(ls);
+        const link = describeLockLink(ls);
         live.innerHTML = `<div style="display:flex;gap:14px;align-items:center;font-size:12px">
           <span>Bolt: <span class="badge ${boltBadge}">${escapeHtml(bolt)}</span></span>
-          <span>Battery: ${ls.battery == null ? 'n/a' : escapeHtml(ls.battery) + '%'}</span>
-          <span>Link: ${ls.online ? '<span style="color:var(--green)">online</span>' : '<span style="color:var(--red)">offline</span>'}</span>
+          <span>Battery: <span style="color:${batt.color || 'inherit'}">${escapeHtml(batt.label)}</span></span>
+          <span>Link: <span style="color:${link.color}">${escapeHtml(link.label)}</span></span>
         </div>`;
       }
     } else {
@@ -2957,6 +2994,19 @@ async function deadboltControl(action) {
     else toast(`Deadbolt ${action} failed: ${r.error || 'not verified'}`, 'error');
     refreshZwaveDeadbolt();
   } catch (e) { toast(`Control failed: ${e.message}`, 'error'); refreshZwaveDeadbolt(); }
+}
+
+// Heal a lock whose interview died partway (bolt/battery stuck at unknown).
+// Fire-and-forget on the server; on a battery lock the fresh interview
+// finishes the next time the lock wakes, and the dashboard readouts refresh
+// on their own once it does.
+async function startReinterview() {
+  toast('Starting re-interview...', 'info'); // immediate feedback
+  try {
+    const r = await api('POST', '/api/deadbolt/reinterview');
+    if (r.error) { toast(r.error, 'error'); return; }
+    toast('Re-interview started. Wake the lock at the keypad to speed it up; bolt and battery refresh automatically when it completes.', 'info');
+  } catch (e) { toast(`Re-interview failed to start: ${e.message}`, 'error'); }
 }
 
 // ------------------------------------------------------------

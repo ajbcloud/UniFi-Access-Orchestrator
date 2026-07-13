@@ -48,11 +48,13 @@ test('configured + not paired: Pair New Lock AND Unpair / Exclude Device', () =>
   assert.ok(!out.includes('Test Lock'));
 });
 
-test('configured + paired: Test Lock / Test Unlock / Unpair, no Pair', () => {
+test('configured + paired: Test Lock / Test Unlock / Re-interview / Unpair, no Pair', () => {
   const build = load();
   const out = build({ configured: true, paired: true, node_id: 8, lock_id: 'front' });
   assert.match(out, /Test Lock/);
   assert.match(out, /Test Unlock/);
+  assert.match(out, /onclick="startReinterview\(\)"/);
+  assert.match(out, /Re-interview \/ Heal/);
   assert.match(out, /onclick="startUnpair\(\)"/);
   assert.ok(!out.includes('Pair New Lock'), 'no Pair New Lock while paired');
 });
