@@ -38,6 +38,16 @@ function modeToState(mode) {
   return LockState.UNKNOWN;
 }
 
+// zwave-js NodeStatus enum (@zwave-js/core). For a battery lock, Asleep is the
+// normal idle state and still counts as reachable; only Dead/Unknown mean the
+// radio cannot deliver a frame right now.
+const NODE_STATUS = Object.freeze({ UNKNOWN: 0, ASLEEP: 1, AWAKE: 2, DEAD: 3, ALIVE: 4 });
+
+// Value ids for cache reads via node.getValue(): instant, never touch the
+// wire, and return undefined until the interview has fetched them once.
+const VALUE_ID_CURRENT_MODE = Object.freeze({ commandClass: 0x62, endpoint: 0, property: 'currentMode' });
+const VALUE_ID_BATTERY_LEVEL = Object.freeze({ commandClass: 0x80, endpoint: 0, property: 'level' });
+
 /**
  * Drives a Z-Wave deadbolt (Schlage BE469ZP) via zwave-js.
  *
@@ -86,11 +96,19 @@ class ZwaveLock extends LockDriver {
     this._driver = null;
     this._node = null;
     this._onManagerError = null;
-    this._state = { boltState: LockState.UNKNOWN, battery: null, online: false, lastSeen: null };
+    this._state = {
+      boltState: LockState.UNKNOWN,
+      battery: null,
+      batteryLow: false,
+      online: false,
+      linkState: 'offline',
+      lastSeen: null,
+    };
 
     this.nodeId = cfg.node_id;
     this.verifyTimeoutMs = cfg.verify_timeout_ms == null ? 12000 : cfg.verify_timeout_ms;
     this.verifyRetries = cfg.verify_retries == null ? 1 : cfg.verify_retries;
+    this.lowBatteryPct = cfg.low_battery_pct == null ? 25 : cfg.low_battery_pct;
   }
 
   get capabilities() {
@@ -129,13 +147,23 @@ class ZwaveLock extends LockDriver {
       this._onManagerError = () => this._setOnline(false);
       this._manager.on('driver-error', this._onManagerError);
     }
-    this._state.online = true;
-    try {
-      await this._seedState();
-    } catch (err) {
-      this.logger.warn && this.logger.warn(`ZwaveLock: initial state read failed: ${err.message}`);
+    // Field report: init() runs the instant inclusion finishes, BEFORE the
+    // node interview has populated the Door Lock CC. A live read here used to
+    // reject with a misleading "does not support Door Lock" and nothing ever
+    // re-read state, so the dashboard stuck at unknown/n-a/offline. Seed from
+    // the value cache (instant, non-blocking), and only go to the wire when
+    // the node is actually reachable; the lifecycle handlers in _wireNode
+    // recover state when the interview completes or the lock wakes.
+    this._refreshLink();
+    this._seedFromCache();
+    if (this._shouldLiveRead()) {
+      try {
+        await this._refreshLive();
+      } catch (err) {
+        this.logger.warn && this.logger.warn(`ZwaveLock: live state refresh failed: ${err.message}`);
+      }
     }
-    this.emit('online');
+    this.emit(this._state.online ? 'online' : 'offline');
   }
 
   _resolveNode(driver) {
@@ -154,8 +182,15 @@ class ZwaveLock extends LockDriver {
     this._nodeHandlers = {
       notification: (_endpoint, ccId, args) => this._onNotification(ccId, args || {}),
       'value updated': (_node, args) => this._onValueUpdated(args || {}),
-      dead: () => this._setOnline(false),
-      alive: () => this._setOnline(true),
+      dead: () => this._onNodeDead(),
+      alive: () => this._onNodeReachable(),
+      // A battery lock only listens when awake; the moment it wakes is the
+      // one chance to read it live, and 'ready'/'interview completed' mean
+      // the value cache has just been (re)populated. These handlers are how
+      // state recovers after the pairing-time interview race (see init()).
+      'wake up': () => this._onNodeReachable(),
+      ready: () => this._onNodeReady(),
+      'interview completed': () => this._onNodeReady(),
     };
     for (const [ev, fn] of Object.entries(this._nodeHandlers)) node.on(ev, fn);
   }
@@ -192,14 +227,19 @@ class ZwaveLock extends LockDriver {
     }
     const isBattery = args.commandClassName === 'Battery' || args.commandClass === 0x80;
     if (isBattery && args.property === 'level' && typeof args.newValue === 'number') {
-      this._state.battery = args.newValue;
-      this.emit('state-change', this.snapshot());
+      this._setBattery(args.newValue);
     }
   }
 
   _updateState(boltState) {
     this._state.boltState = boltState;
     this._state.lastSeen = new Date().toISOString();
+    this.emit('state-change', this.snapshot());
+  }
+
+  _setBattery(level) {
+    this._state.battery = level;
+    this._state.batteryLow = level <= this.lowBatteryPct;
     this.emit('state-change', this.snapshot());
   }
 
@@ -210,10 +250,82 @@ class ZwaveLock extends LockDriver {
     }
   }
 
+  /** node.status when the node exposes one (real zwave-js), else null. */
+  _nodeStatus() {
+    const n = this._node;
+    return n && typeof n.status === 'number' ? n.status : null;
+  }
+
+  /**
+   * Derive the link from node.status. Asleep is the normal idle state of a
+   * battery deadbolt and still counts as UP (commands queue for its next
+   * wake), so it must not read as "offline" or trip the offline alert.
+   */
+  _refreshLink() {
+    const st = this._nodeStatus();
+    let link;
+    if (st == null) link = 'online'; // injected/test node exposes no status
+    else if (st === NODE_STATUS.AWAKE || st === NODE_STATUS.ALIVE) link = 'online';
+    else if (st === NODE_STATUS.ASLEEP) link = 'asleep';
+    else link = 'offline'; // Dead or Unknown
+    this._state.linkState = link;
+    this._setOnline(link !== 'offline');
+  }
+
+  _onNodeDead() {
+    this._state.linkState = 'offline';
+    this._setOnline(false);
+  }
+
+  _onNodeReachable() {
+    this._refreshLink();
+    this._seedFromCache();
+    if (this._shouldLiveRead()) this._refreshLive().catch(() => { /* best effort */ });
+  }
+
+  _onNodeReady() {
+    this._refreshLink();
+    this._seedFromCache();
+    if (this._shouldLiveRead()) this._refreshLive().catch(() => { /* best effort */ });
+  }
+
+  /**
+   * Live CC reads queue until a sleeping node wakes and would reject outright
+   * on a dead one, so only go to the wire when the node is reachable now.
+   * A node without a status (injected test node) is assumed reachable.
+   */
+  _shouldLiveRead() {
+    if (!this._node) return false;
+    if (this._node.ready === false) return false;
+    const st = this._nodeStatus();
+    if (st == null) return true;
+    return st === NODE_STATUS.AWAKE || st === NODE_STATUS.ALIVE;
+  }
+
   _doorLockCC() {
     const cc = this._node && this._node.commandClasses;
     if (!cc) return null;
     return cc['Door Lock'] || cc.doorLock || null;
+  }
+
+  _batteryCC() {
+    const cc = this._node && this._node.commandClasses;
+    if (!cc) return null;
+    return cc.Battery || cc.battery || null;
+  }
+
+  /**
+   * Seed bolt + battery from the zwave-js value cache: instant, never touches
+   * the wire, and simply yields undefined for values the interview has not
+   * fetched yet, so it is always safe to call.
+   */
+  _seedFromCache() {
+    const node = this._node;
+    if (!node || typeof node.getValue !== 'function') return;
+    const mode = node.getValue(VALUE_ID_CURRENT_MODE);
+    if (mode != null) this._updateState(modeToState(mode));
+    const level = node.getValue(VALUE_ID_BATTERY_LEVEL);
+    if (typeof level === 'number') this._setBattery(level);
   }
 
   async _seedState() {
@@ -222,6 +334,19 @@ class ZwaveLock extends LockDriver {
       const rep = await dl.get();
       if (rep && rep.currentMode != null) this._updateState(modeToState(rep.currentMode));
     }
+  }
+
+  async _readBattery() {
+    const bat = this._batteryCC();
+    if (bat && typeof bat.get === 'function') {
+      const rep = await bat.get();
+      if (rep && typeof rep.level === 'number') this._setBattery(rep.level);
+    }
+  }
+
+  async _refreshLive() {
+    await this._seedState();
+    await this._readBattery();
   }
 
   async _commandSet(mode) {
@@ -274,7 +399,25 @@ class ZwaveLock extends LockDriver {
       this.logger.warn && this.logger.warn(
         `ZwaveLock ${action} not confirmed (attempt ${attempt + 1}/${this.verifyRetries + 1}), state=${last}`);
     }
-    return { success: false, boltState: last, error: 'not verified' };
+    return { success: false, boltState: last, error: this._describeFailure() };
+  }
+
+  /**
+   * Turn a verification failure into something the operator can act on. The
+   * node status says WHY the command went nowhere; a flat "not verified" sent
+   * people hunting through logs (field report, node presumed dead mid-pair).
+   */
+  _describeFailure() {
+    const st = this._nodeStatus();
+    if (st === NODE_STATUS.DEAD || st === NODE_STATUS.UNKNOWN) {
+      return 'lock not responding (Z-Wave reports the node dead). Wake it at the keypad; '
+        + 'if it stays dead, move the controller closer to the lock or add a '
+        + 'mains-powered Z-Wave device between them, then retry';
+    }
+    if (st === NODE_STATUS.ASLEEP) {
+      return 'lock did not answer in time (it is asleep). Press the keypad to wake it, then retry';
+    }
+    return 'not verified';
   }
 
   async lock(reason) {
@@ -283,6 +426,22 @@ class ZwaveLock extends LockDriver {
 
   async unlock(reason) {
     return this._setVerified(DOOR_LOCK_MODE.UNSECURED, LockState.UNLOCKED, 'unlock', reason);
+  }
+
+  /**
+   * Force a fresh interview (zwave-js refreshInfo): the in-app "heal" for a
+   * node whose pairing-time interview died partway. NOT awaited to completion
+   * by callers; on a sleeping lock it can take minutes and finishes on the
+   * next wake. State recovers via the 'ready'/'interview completed' handlers.
+   * Synchronous throw (not async) so route guards surface immediately while
+   * the returned promise tracks the long-running interview itself.
+   */
+  reinterview() {
+    const node = this._node;
+    if (!node || typeof node.refreshInfo !== 'function') {
+      throw new Error('re-interview unavailable (node not resolved yet)');
+    }
+    return Promise.resolve(node.refreshInfo());
   }
 
   async getState() {
@@ -294,6 +453,7 @@ class ZwaveLock extends LockDriver {
   }
 
   async shutdown() {
+    this._state.linkState = 'offline';
     this._setOnline(false);
     this._unwireNode();
     if (this._onManagerError) {

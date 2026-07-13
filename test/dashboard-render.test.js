@@ -26,7 +26,8 @@ function extractFn(name) {
 }
 
 function loadRenderer() {
-  const src = extractFn('escapeHtml') + '\n' + extractFn('renderDeadbolt');
+  const src = extractFn('escapeHtml') + '\n' + extractFn('describeLockLink')
+    + '\n' + extractFn('describeLockBattery') + '\n' + extractFn('renderDeadbolt');
   const els = {};
   for (const id of ['deadboltCard', 'deadboltState', 'deadboltBattery', 'deadboltLink', 'deadboltDoor', 'deadboltLastAction', 'deadboltStats']) {
     els[id] = { textContent: '', innerHTML: '', className: '', style: {} };
