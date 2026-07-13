@@ -4,11 +4,12 @@ Multi-door unlock automation for UniFi Access with a built-in admin dashboard.
 
 ## Overview
 
-This is a headless Node.js/Express service that integrates with Ubiquiti UniFi Access to automate door unlock sequences based on configurable rules. When someone badges in at a trigger door, it automatically unlocks additional doors based on their user group. It also handles intercom/doorbell events.
+This is a Node.js/Express service that integrates with Ubiquiti UniFi Access to automate door unlock sequences based on configurable rules. When someone badges in at a trigger door, it automatically unlocks additional doors based on their user group. It also handles intercom/doorbell events. It ships both headless and packaged as an Electron desktop app (Windows/macOS/Linux) with a system-tray runtime and a guided first-run setup wizard. An optional Smart Deadbolt (Z-Wave) add-on lets it drive a physical deadbolt, paired and managed entirely from the dashboard.
 
 ## Architecture
 
-- **Runtime**: Node.js 20
+- **Runtime**: Node.js 22 (also packaged as an Electron 43 desktop app)
+- **Event source**: WebSocket to the controller by default (no controller-side setup); Alarm Manager / API webhooks optional
 - **Framework**: Express 4
 - **Real-time**: Server-Sent Events (SSE) for live dashboard updates
 - **Dashboard**: Single-page HTML (`public/index.html`) served statically
@@ -36,8 +37,10 @@ This is a headless Node.js/Express service that integrates with Ubiquiti UniFi A
   - Access Rules (NFC/PIN/Face/Mobile) — natural language rule cards with add/edit/delete
   - Visitor Rules (Doorbell/Buzz-in) — can link to access rules or use custom doors, plus viewer device mappings
   - Event Source configuration
-- **Settings** — Server port, controller connection, logging level
-- **Test Tools** — Test Configured Rules (simulate access/visitor rules with one click), door unlock testing, custom event simulation, connectivity test, raw event payload viewer
+  - Smart Deadbolt (Z-Wave): serial-port selection, in-app S2 pairing/unpairing, retract trigger, and interior cascade rules
+- **Visual Designer**: the same rules as a node graph (SVG edges + DOM nodes, pan/zoom, drag-to-wire); bidirectional with the Configuration tab through the shared `config.json` and the same `/api/config` save helpers, implemented inline with no build step or dependencies
+- **Settings**: Server port and host, controller connection and API token, auto-sync interval, logging level, backup/restore
+- **Test Tools**: Test Configured Rules (simulate access/visitor rules with one click), door unlock testing, custom event simulation, connectivity test, raw event payload viewer
 
 ## Configuration
 
