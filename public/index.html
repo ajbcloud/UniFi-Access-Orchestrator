@@ -37,6 +37,7 @@
   --bg-elev: #E2E3DE;
   --bg-hover: #BCBDB7;
   --bg-input: #D4D5D0;
+  --banner-bg: #CFD0CB;
   --border: #A7A9A3;
   --border-light: #B8BAB4;
   --text-primary: #0C2414;
@@ -73,6 +74,17 @@
 
   --blue-dim: #D3E88C; /* legacy alias -> neon tint (more neon on the dash) */
 
+  /* concrete = neutral grey; a real pop only against the dark field, so its
+     dark-mode values below are the loud ones. Light keeps a subtle grey. */
+  --concrete: #C6C7C2;
+  --concrete-strong: #B4B6B0;
+  --on-concrete: #0C2414;
+  --btn2-bg: #BCBDB7;
+  --btn2-fg: #0C2414;
+  --btn2-hover: #ADAFA9;
+  --eyebrow: #566459;
+  --mono-muted: #566459;
+
   --overlay: rgba(12,36,20,0.5);
   --shadow: rgba(20,30,25,0.22);
 
@@ -86,12 +98,13 @@
 
 /* ---- Dark theme (deep dark forest green + neon) ---- */
 :root[data-theme="dark"] {
-  --bg-primary: #04170B;
-  --bg-secondary: #06210E;
-  --bg-card: #082813;
-  --bg-elev: #0C381B;
-  --bg-hover: #0F401E;
-  --bg-input: #02100A;
+  --bg-primary: #020C07;
+  --bg-secondary: #04130A;
+  --bg-card: #061D0F;
+  --bg-elev: #0A2B16;
+  --bg-hover: #0D3318;
+  --bg-input: #010805;
+  --banner-bg: #020C07;
   --border: #123E20;
   --border-light: #1C5A32;
   --text-primary: #E9F3E9;
@@ -101,17 +114,17 @@
   --accent: #D4FF3B;
   --accent-hover: #E4FF6B;
   --accent-dim: rgba(212,255,59,0.14);
-  --on-accent: #04170B;
+  --on-accent: #020C07;
 
   --neon: #D4FF3B;
   --neon-strong: #E4FF6B;
   --neon-dim: rgba(212,255,59,0.15);
-  --on-neon: #04170B;
+  --on-neon: #020C07;
   --neon-glow: rgba(212,255,59,0.35);
 
   --green: #79A88A;
   --green-dim: rgba(121,168,138,0.18);
-  --on-success: #04170B;
+  --on-success: #020C07;
 
   --yellow: #E3B341;
   --yellow-dim: rgba(227,179,65,0.16);
@@ -119,12 +132,22 @@
   --red: #FF715B;
   --red-hover: #FF8C79;
   --red-dim: rgba(255,113,91,0.16);
-  --on-danger: #04170B;
+  --on-danger: #020C07;
 
   --sage: #79A88A;
   --sage-dim: rgba(121,168,138,0.16);
 
   --blue-dim: rgba(212,255,59,0.12);
+
+  /* concrete pops: a light neutral against the near-black forest field */
+  --concrete: #C6C7C2;
+  --concrete-strong: #B4B6B0;
+  --on-concrete: #0C2414;
+  --btn2-bg: #C6C7C2;
+  --btn2-fg: #0C2414;
+  --btn2-hover: #B4B6B0;
+  --eyebrow: #A9ACA6;
+  --mono-muted: #AEB2AD;
 
   --overlay: rgba(0,0,0,0.65);
   --shadow: rgba(0,0,0,0.55);
@@ -135,12 +158,13 @@
 /* Follow the system when the user has not made an explicit choice */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --bg-primary: #04170B;
-    --bg-secondary: #06210E;
-    --bg-card: #082813;
-    --bg-elev: #0C381B;
-    --bg-hover: #0F401E;
-    --bg-input: #02100A;
+    --bg-primary: #020C07;
+    --bg-secondary: #04130A;
+    --bg-card: #061D0F;
+    --bg-elev: #0A2B16;
+    --bg-hover: #0D3318;
+    --bg-input: #010805;
+    --banner-bg: #020C07;
     --border: #123E20;
     --border-light: #1C5A32;
     --text-primary: #E9F3E9;
@@ -150,17 +174,17 @@
     --accent: #D4FF3B;
     --accent-hover: #E4FF6B;
     --accent-dim: rgba(212,255,59,0.14);
-    --on-accent: #04170B;
+    --on-accent: #020C07;
 
     --neon: #D4FF3B;
     --neon-strong: #E4FF6B;
     --neon-dim: rgba(212,255,59,0.15);
-    --on-neon: #04170B;
+    --on-neon: #020C07;
     --neon-glow: rgba(212,255,59,0.35);
 
     --green: #79A88A;
     --green-dim: rgba(121,168,138,0.18);
-    --on-success: #04170B;
+    --on-success: #020C07;
 
     --yellow: #E3B341;
     --yellow-dim: rgba(227,179,65,0.16);
@@ -168,12 +192,22 @@
     --red: #FF715B;
     --red-hover: #FF8C79;
     --red-dim: rgba(255,113,91,0.16);
-    --on-danger: #04170B;
+    --on-danger: #020C07;
 
     --sage: #79A88A;
     --sage-dim: rgba(121,168,138,0.16);
 
     --blue-dim: rgba(212,255,59,0.12);
+
+    /* concrete pops: a light neutral against the near-black forest field */
+    --concrete: #C6C7C2;
+    --concrete-strong: #B4B6B0;
+    --on-concrete: #0C2414;
+    --btn2-bg: #C6C7C2;
+    --btn2-fg: #0C2414;
+    --btn2-hover: #B4B6B0;
+    --eyebrow: #A9ACA6;
+    --mono-muted: #AEB2AD;
 
     --overlay: rgba(0,0,0,0.65);
     --shadow: rgba(0,0,0,0.55);
@@ -196,7 +230,7 @@ body {
 
 /* Header */
 .header {
-  background: var(--bg-secondary);
+  background: var(--banner-bg);
   border-bottom: 1px solid var(--border);
   padding: 0 24px;
   height: 56px;
@@ -246,7 +280,7 @@ body {
 .tabs {
   display: flex;
   gap: 0;
-  background: var(--bg-secondary);
+  background: var(--banner-bg);
   border-bottom: 1px solid var(--border);
   padding: 0 24px;
 }
@@ -288,7 +322,7 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--text-muted);
+  color: var(--eyebrow);
   margin-bottom: 12px;
 }
 
@@ -350,7 +384,7 @@ body {
 
 .event-table tr:hover td { background: var(--bg-hover); }
 
-.event-table .time { font-family: var(--mono); font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.event-table .time { font-family: var(--mono); font-size: 12px; color: var(--mono-muted); white-space: nowrap; }
 
 .badge {
   display: inline-block;
@@ -421,8 +455,8 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 
 .btn-primary { background: var(--neon); color: var(--on-neon); }
 .btn-primary:hover { background: var(--neon-strong); box-shadow: 0 2px 14px var(--neon-glow); }
-.btn-secondary { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border); }
-.btn-secondary:hover { background: var(--border); }
+.btn-secondary { background: var(--btn2-bg); color: var(--btn2-fg); border-color: var(--border); }
+.btn-secondary:hover { background: var(--btn2-hover); }
 .btn-danger { background: var(--red); color: var(--on-danger); }
 .btn-danger:hover { background: var(--red-hover); }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
@@ -506,7 +540,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .door-card.unlocking { border-color: var(--green); background: var(--green-dim); }
 
 .door-name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
-.door-id { font-family: var(--mono); font-size: 11px; color: var(--text-muted); word-break: break-all; }
+.door-id { font-family: var(--mono); font-size: 11px; color: var(--mono-muted); word-break: break-all; }
 .door-status { font-size: 12px; margin-top: 8px; }
 
 /* Rule builder */
