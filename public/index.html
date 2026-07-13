@@ -1794,6 +1794,37 @@ function toast(message, type = 'info') {
 }
 
 // ============================================================
+// Dirty-state Save buttons
+// ============================================================
+// A section's Save button is hidden until something in that section actually
+// changes, and hides again once the section re-renders (or re-arms) after a
+// successful save. Arm after every render of the section. Listeners attach
+// once per living scope element: re-renders that replace the scope's children
+// keep the scope's own listener, and the button is re-queried on every event
+// so a freshly rendered button is found. Programmatic edits that fire no
+// input/change event (adding or removing a row) call markSectionDirty.
+function armDirtySave(scopeSelector, buttonSelector) {
+  const scope = document.querySelector(scopeSelector);
+  if (!scope) return;
+  const btn = scope.querySelector(buttonSelector);
+  if (btn) btn.style.display = 'none';
+  if (scope._dirtyArmed) return;
+  scope._dirtyArmed = true;
+  const show = () => {
+    const b = scope.querySelector(buttonSelector);
+    if (b) b.style.display = '';
+  };
+  scope.addEventListener('input', show);
+  scope.addEventListener('change', show);
+}
+
+function markSectionDirty(scopeSelector, buttonSelector) {
+  const scope = document.querySelector(scopeSelector);
+  const b = scope && scope.querySelector(buttonSelector);
+  if (b) b.style.display = '';
+}
+
+// ============================================================
 // API helpers
 // ============================================================
 // In the packaged desktop app, the Electron preload exposes
@@ -2234,6 +2265,9 @@ async function loadSettings() {
     const as = cfg.auto_sync || {};
     document.getElementById('settingAutoSyncEnabled').checked = as.enabled !== false;
     document.getElementById('settingAutoSyncInterval').value = as.interval_seconds || 15;
+    // Values were just repopulated programmatically (fires no events), so the
+    // Save button hides until the user actually edits something.
+    armDirtySave('#settings', '#saveSettingsBtn');
   } catch (e) {
     toast('Failed to load settings', 'error');
   }
@@ -2503,7 +2537,7 @@ function renderConfig() {
   dbHtml += `<div id="dbRuleFormContainer"></div>`;
 
   // Identification Device Mappings section (formerly Viewer Device Mappings)
-  dbHtml += `<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
+  dbHtml += `<div id="viewerMappingsSection" style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
     <div style="font-size:13px;font-weight:600;margin-bottom:4px">Device / Actor Mappings</div>
     <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
       Map specific devices or fallback names to groups. Useful when the answering admin isn't automatically identified (e.g. physical Intercom Viewers or mobile app users without a clear ID).
@@ -2523,7 +2557,7 @@ function renderConfig() {
         <select class="viewer-group-select" style="width:auto;min-width:150px;font-size:12px;padding:6px 28px 6px 10px">
           ${Array.from(discoveredGroupNames).sort().map(g => `<option value="${escapeHtml(g)}" ${g === group ? 'selected' : ''}>${escapeHtml(g)}</option>`).join('')}
         </select>
-        <button class="btn btn-sm btn-secondary" onclick="this.closest('.viewer-mapping-row').remove()" style="padding:4px 8px;font-size:11px">&#10005;</button>
+        <button class="btn btn-sm btn-secondary" onclick="removeViewerMappingRow(this)" style="padding:4px 8px;font-size:11px">&#10005;</button>
       </div>`;
     }
   }
@@ -2565,6 +2599,12 @@ function renderConfig() {
     <button class="btn btn-primary" onclick="saveEventSource()" style="margin-top:12px">Save Event Source</button>
   `;
   document.getElementById('configEventSource').innerHTML = eventSourceHtml;
+
+  // Save buttons hide until their section actually changes (and hide again
+  // when a successful save re-renders the section through loadConfig).
+  armDirtySave('#configGroupMappings', 'button[onclick^="saveGroupMappings"]');
+  armDirtySave('#viewerMappingsSection', 'button[onclick^="saveViewerMappings"]');
+  armDirtySave('#configEventSource', 'button[onclick^="saveEventSource"]');
 }
 
 // Smart Deadbolt (Z-Wave) setup: pick the stick's serial/COM port and enable
@@ -2581,7 +2621,7 @@ function renderZwaveSetup() {
       Plug the Z-Wave USB stick (e.g. Zooz ZST39) into this machine, pick its port below, and save.
       Likely Z-Wave sticks are marked. Lock pairing is done after the port is set.
     </div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <div id="zwaveSetupRow" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <select id="zwaveSerialPort" style="min-width:280px;font-size:12px;padding:6px">
         <option value="">Scanning ports...</option>
       </select>
@@ -2608,6 +2648,7 @@ function renderZwaveSetup() {
       <div id="zwaveRulesBody"></div>
     </div>
   `;
+  armDirtySave('#zwaveSetupRow', 'button[onclick^="saveZwaveSetup"]');
 }
 
 // Pure renderer for the pairing panel: pairing-status object -> innerHTML.
@@ -2897,7 +2938,7 @@ function renderDeadboltRules() {
   const rules = _getCascadeRules();
 
   let html = `
-    <div style="margin-bottom:14px">
+    <div id="deadboltTriggerRow" style="margin-bottom:14px">
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">
         Retract on entry: when someone badges in at this door, the deadbolt retracts.
         Leave unset to disable automatic retract.
@@ -2935,6 +2976,7 @@ function renderDeadboltRules() {
   html += `<div id="cascadeRuleFormContainer"></div>
     <button class="btn btn-sm btn-secondary" onclick="showCascadeRuleForm()" style="margin-top:8px">Add Cascade Rule</button>`;
   body.innerHTML = html;
+  armDirtySave('#deadboltTriggerRow', 'button[onclick^="saveDeadboltTrigger"]');
 }
 
 function showCascadeRuleForm() {
@@ -3431,9 +3473,18 @@ function addViewerMapping() {
     <select class="viewer-group-select" style="width:auto;min-width:150px;font-size:12px;padding:6px 28px 6px 10px">
       ${groups.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('')}
     </select>
-    <button class="btn btn-sm btn-secondary" onclick="this.closest('.viewer-mapping-row').remove()" style="padding:4px 8px;font-size:11px">&#10005;</button>
+    <button class="btn btn-sm btn-secondary" onclick="removeViewerMappingRow(this)" style="padding:4px 8px;font-size:11px">&#10005;</button>
   `;
   container.appendChild(row);
+  // Adding a row is an edit, but it fires no input/change event.
+  markSectionDirty('#viewerMappingsSection', 'button[onclick^="saveViewerMappings"]');
+}
+
+// Row removal is also an edit that fires no input/change event.
+function removeViewerMappingRow(btn) {
+  const row = btn && btn.closest ? btn.closest('.viewer-mapping-row') : null;
+  if (row) row.remove();
+  markSectionDirty('#viewerMappingsSection', 'button[onclick^="saveViewerMappings"]');
 }
 
 async function saveViewerMappings() {
@@ -4568,10 +4619,13 @@ function renderWizardGroups() {
     + '<th style="width:50%">UniFi Group Name</th><th style="width:50%">Friendly Name</th>'
     + '</tr></thead><tbody>' + buildGroupMappingRows(rawGroups, currentResolver) + '</tbody></table></div>'
     + '<button class="btn btn-primary" style="margin-top:12px" onclick="saveWizardGroups()">Save group names</button>';
+  armDirtySave('#wizGroupMappings', 'button[onclick^="saveWizardGroups"]');
 }
 
 async function saveWizardGroups() {
   await saveGroupMappings('#wizGroupMappings');
+  // This panel is not re-rendered by loadConfig, so re-arm (hide) explicitly.
+  armDirtySave('#wizGroupMappings', 'button[onclick^="saveWizardGroups"]');
 }
 
 function renderWizardRuleStep() {
@@ -4592,6 +4646,7 @@ function renderWizardEventsStep() {
   if (!el) return;
   const mode = (configData && configData.event_source && configData.event_source.mode) || 'websocket';
   el.innerHTML = buildWizardEventChoice(mode);
+  armDirtySave('#wizEventChoice', 'button[onclick^="saveWizardEventMode"]');
 }
 
 async function saveWizardEventMode() {
@@ -4603,6 +4658,8 @@ async function saveWizardEventMode() {
       configData.event_source = Object.assign({}, configData.event_source, { mode });
     }
     toast('Event mode saved.', 'success');
+    // This panel does not re-render on save, so re-arm (hide) explicitly.
+    armDirtySave('#wizEventChoice', 'button[onclick^="saveWizardEventMode"]');
   } catch (e) {
     toast('Could not save event mode: ' + e.message, 'error');
   }
