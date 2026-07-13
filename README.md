@@ -17,6 +17,7 @@ Built for multi-tenant commercial buildings where different tenants need differe
 - [Setting Up Alarm Manager Webhooks](#setting-up-alarm-manager-webhooks)
 - [Testing Your Setup](#testing-your-setup)
 - [Dashboard Guide](#dashboard-guide)
+- [Pairing the Smart Deadbolt (Z-Wave)](#pairing-the-smart-deadbolt-z-wave)
 - [Troubleshooting](#troubleshooting)
 - [Building from Source](#building-from-source)
 - [API Reference](#api-reference)
@@ -108,9 +109,11 @@ The setup wizard appears automatically the first time you open the app.
 
 See [Configuring Unlock Rules](#configuring-unlock-rules) below.
 
-### Step 7: Set Up Webhooks
+### Step 7: Choose How Events Arrive
 
-See [Setting Up Alarm Manager Webhooks](#setting-up-alarm-manager-webhooks) below. Use this PC's IP address for the webhook URL.
+By default the orchestrator listens over a **WebSocket** to the controller, so events start flowing as soon as you connect, with no controller-side setup. That is the recommended path for most installs, and nothing more is needed here.
+
+If you would rather have the controller push events with **Alarm Manager webhooks** (for example when it cannot hold a WebSocket open to this machine), switch the event source to webhook mode under **Configuration > Event Source**, then follow [Setting Up Alarm Manager Webhooks](#setting-up-alarm-manager-webhooks) below using this PC's IP address for the webhook URL.
 
 ### How It Runs
 
@@ -217,7 +220,7 @@ sudo bash scripts/setup-pi.sh
 
 This script does everything automatically:
 - Updates system packages
-- Installs Node.js 20
+- Installs Node.js 22
 - Creates a dedicated service user (`middleware`)
 - Copies the project to `/opt/unifi-access-orchestrator`
 - Installs Node.js dependencies
@@ -278,9 +281,9 @@ You should see the orchestrator dashboard with your doors and user counts.
 
 See [Configuring Unlock Rules](#configuring-unlock-rules) below. You can do this from the dashboard in your browser or by editing the config file directly.
 
-### Step 10: Set Up Webhooks
+### Step 10: Choose How Events Arrive
 
-See [Setting Up Alarm Manager Webhooks](#setting-up-alarm-manager-webhooks) below. Use the Linux device's IP address for the webhook URL.
+The default event source is a **WebSocket** to the controller, which needs no controller-side setup, so most installs are done at this point. To use **Alarm Manager webhooks** instead, switch the event source to webhook mode under **Configuration > Event Source**, then follow [Setting Up Alarm Manager Webhooks](#setting-up-alarm-manager-webhooks) below using the Linux device's IP address for the webhook URL.
 
 ### Useful Commands
 
@@ -400,7 +403,9 @@ Use the on-canvas controls to zoom, **Fit** the whole graph to the view, or **Ar
 
 ## Setting Up Alarm Manager Webhooks
 
-The orchestrator needs to receive events from UniFi Access. The simplest way is through Alarm Manager webhooks.
+> **Optional.** The default event source is a WebSocket to the controller, which needs no controller-side setup. Follow this section only if you switched the event source to **API webhook / Alarm Manager** mode under Configuration > Event Source.
+
+When running in webhook mode, the orchestrator receives events that UniFi Access pushes through Alarm Manager.
 
 ### Open Alarm Manager
 
@@ -483,13 +488,17 @@ curl http://DEVICE_IP:3000/health
 
 ## Dashboard Guide
 
-The dashboard has four tabs:
+The dashboard has six tabs:
 
-**Dashboard** - Overview showing door count, user count, events received, unlocks triggered, last event details, and system info (memory, uptime, event source mode).
+**Dashboard** - Overview showing door count, user count, events received, unlocks triggered, last event details, and system info (memory, uptime, event source mode). When a Z-Wave deadbolt is paired, a Smart Deadbolt card also appears with live bolt state, battery, and link.
 
 **Live Events** - Real-time scrolling feed of every event. Each row shows the timestamp, event type (color-coded), who triggered it, which door, what the orchestrator did, and whether it succeeded. Events stream in automatically via Server-Sent Events.
 
-**Configuration** - Shows your door mappings, user groups, NFC tap rules, doorbell visitor rules, and event source mode. Buttons to rediscover doors and reload the service.
+**Configuration** - Shows your door mappings, user groups, NFC tap rules, doorbell visitor rules, event source mode, and the Smart Deadbolt (Z-Wave) setup and automation rules. Buttons to rediscover doors and reload the service.
+
+**Visual Designer** - The same rules as a node graph you can build and edit by drawing connections. Kept in sync with the Configuration tab both ways. See [Visual Designer](#visual-designer).
+
+**Settings** - Server port and host, controller connection and API token, auto-sync interval, log level, and backup/restore.
 
 **Test Tools** - Click any door to test-unlock it. Simulate events with configurable parameters. Quick action buttons for force sync, reload, and health check.
 
@@ -559,7 +568,7 @@ If you want to build the installers yourself instead of downloading from Release
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) 18 or later
+- [Node.js](https://nodejs.org/) 22 or later (the app targets Node 22; see `engines` in `package.json`)
 - [Git](https://git-scm.com/)
 
 ### Clone and Install
