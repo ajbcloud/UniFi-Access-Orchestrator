@@ -75,6 +75,38 @@ test('a sender failure is counted, not thrown', async () => {
   assert.equal(n.getStatus().stats.failed, 1);
 });
 
+test('a total delivery failure does NOT suppress the next identical alert', async () => {
+  // The de-dupe window must not be opened by a send that all channels failed:
+  // otherwise a lockout alert is both lost AND the retry is silenced.
+  const clock = { t: 0 };
+  let attempts = 0;
+  const n = new Notifier(
+    { enabled: true, webhook_url: 'http://x/hook', min_interval_seconds: 60 },
+    { logger: { warn() {} }, now: () => clock.t, sender: async () => { attempts++; throw new Error('down'); } }
+  );
+  n.notify({ type: 'deadbolt_retract_failed' });
+  await flush();
+  clock.t = 30000; // within the 60s window, but the first send FAILED
+  n.notify({ type: 'deadbolt_retract_failed' });
+  await flush();
+  assert.equal(attempts, 2, 'the second alert is retried, not de-duped away');
+  assert.equal(n.getStatus().stats.suppressed, 0);
+  assert.equal(n.getStatus().stats.failed, 2);
+});
+
+test('a successful send still de-dupes a rapid repeat', async () => {
+  // Guard the other direction: the rollback must not defeat normal de-dupe.
+  const clock = { t: 0 };
+  const { n, calls } = makeNotifier({ min_interval_seconds: 60 }, clock);
+  n.notify({ type: 'jam' });
+  await flush();
+  clock.t = 30000;
+  n.notify({ type: 'jam' });
+  await flush();
+  assert.equal(calls.length, 1);
+  assert.equal(n.getStatus().stats.suppressed, 1);
+});
+
 // ---------------------------------------------------------------------------
 // Multi-channel: webhook + chat (Slack/Teams) + email, any subset, one
 // de-dupe decision shared by all channels, severity in every payload.

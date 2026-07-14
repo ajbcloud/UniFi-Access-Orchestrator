@@ -83,6 +83,10 @@ class Notifier {
       this.stats.suppressed++;
       return;
     }
+    // Open the de-dupe window optimistically so a burst of identical alerts
+    // while sends are in flight is still collapsed. If EVERY channel fails,
+    // the window is rolled back in _deliver so the alert is not both lost AND
+    // silenced: a failed-only channel must not suppress the next retry.
     this._lastSent.set(alert.type, nowTs);
 
     const severity = SEVERITY[alert.type] || 'warning';
@@ -93,22 +97,34 @@ class Notifier {
     this.stats.last = { type: alert.type, time: body.time };
 
     // Fan out to every configured channel; each send succeeds or fails on its
-    // own so one dead channel cannot silence the others.
-    if (this.url) this._deliver(alert.type, () => this.sender(this.url, body));
+    // own so one dead channel cannot silence the others. The tracker rolls the
+    // de-dupe window back only when NO channel delivered.
+    const track = { type: alert.type, stamp: nowTs, remaining: 0, anySuccess: false };
+    const thunks = [];
+    if (this.url) thunks.push(() => this.sender(this.url, body));
     if (this.chat) {
       const payload = this.chat.type === 'teams' ? formatTeams(body) : formatSlack(body);
-      this._deliver(alert.type, () => this.sender(this.chat.url, payload));
+      thunks.push(() => this.sender(this.chat.url, payload));
     }
-    if (this.email) this._deliver(alert.type, () => this._sendEmail(body));
+    if (this.email) thunks.push(() => this._sendEmail(body));
+    track.remaining = thunks.length;
+    for (const fn of thunks) this._deliver(track, fn);
   }
 
-  _deliver(type, fn) {
+  _deliver(track, fn) {
     Promise.resolve()
       .then(fn)
-      .then(() => { this.stats.sent++; })
+      .then(() => { this.stats.sent++; track.anySuccess = true; })
       .catch((err) => {
         this.stats.failed++;
-        this.log.warn && this.log.warn(`Notifier send failed (${type}): ${err.message}`);
+        this.log.warn && this.log.warn(`Notifier send failed (${track.type}): ${err.message}`);
+      })
+      .then(() => {
+        if (--track.remaining > 0 || track.anySuccess) return;
+        // Every channel for this alert failed: reopen the de-dupe window so
+        // the next identical alert is retried, not suppressed. Guarded so a
+        // newer notify that already re-stamped this type is not disturbed.
+        if (this._lastSent.get(track.type) === track.stamp) this._lastSent.delete(track.type);
       });
   }
 

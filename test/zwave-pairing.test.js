@@ -126,6 +126,21 @@ test('an unencrypted join fails loud with the recovery message', async () => {
   assert.strictEqual(calls.includeDone.length, 0);
 });
 
+test('a None-class join with lowSecurity=false fails closed (not fabricated as S2)', async () => {
+  const { pairing, manager, calls } = makePairing();
+  await pairing.startInclusion({ security: 's2' });
+  const ctl = manager.mockController;
+  ctl.emit('inclusion started');
+  // The fail-open case: a lock lacking the Security-2 CC joins at None (-1)
+  // while zwave-js reports lowSecurity:false. The class, not the flag, must
+  // decide; this must be rejected, never relabelled 'S2 Access Control'.
+  ctl.emit('node added', { id: 8, getHighestSecurityClass: () => -1 }, { lowSecurity: false });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(pairing.state, 'failed');
+  assert.match(pairing.status().error, /WITHOUT encryption/);
+  assert.strictEqual(calls.includeDone.length, 0);
+});
+
 test('an S0 join is ACCEPTED and recorded as S0 Legacy (the Yale case)', async () => {
   const { pairing, manager, calls } = makePairing();
   await pairing.startInclusion({ security: 'auto' });
