@@ -41,6 +41,7 @@
   --banner-fg: #EDF3ED;      /* light text on the green banner */
   --banner-fg-dim: #B7CDBE;  /* muted light text (inactive tabs, uptime) */
   --banner-accent: #C7E62E;  /* neon logo/active accent on the banner */
+  --card-accent: #1B5E33;    /* dark-green edge stripe on cards */
   --border: #A7A9A3;
   --border-light: #B8BAB4;
   --text-primary: #0C2414;
@@ -111,6 +112,7 @@
   --banner-fg: #E9F3E9;
   --banner-fg-dim: #9FC1AB;
   --banner-accent: #D4FF3B;
+  --card-accent: #2B6A45;
   --border: #123E20;
   --border-light: #1C5A32;
   --text-primary: #E9F3E9;
@@ -174,6 +176,7 @@
     --banner-fg: #E9F3E9;
     --banner-fg-dim: #9FC1AB;
     --banner-accent: #D4FF3B;
+    --card-accent: #2B6A45;
     --border: #123E20;
     --border-light: #1C5A32;
     --text-primary: #E9F3E9;
@@ -329,6 +332,7 @@ body {
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--card-accent);
   border-radius: var(--radius);
   padding: 20px;
 }
@@ -483,6 +487,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .config-section {
   background: var(--bg-card);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--card-accent);
   border-radius: var(--radius);
   margin-bottom: 16px;
 }
