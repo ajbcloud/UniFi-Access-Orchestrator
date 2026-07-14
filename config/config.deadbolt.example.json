@@ -70,6 +70,7 @@
           "node_id": 0,
           "verify_timeout_ms": 12000,
           "verify_retries": 1,
+          "retry_backoff_ms": 1500,
           "poll_minutes": 20,
           "low_battery_pct": 25
         }
@@ -102,6 +103,8 @@
       "cascade_failed",
       "deadbolt_lock_offline",
       "deadbolt_lock_online",
+      "deadbolt_low_battery",
+      "deadbolt_jammed",
       "controller_disconnected",
       "controller_reconnected"
     ]

@@ -22,6 +22,16 @@ function getConfigPath() {
   return path.join(getConfigDir(), 'config.json');
 }
 
+// Best-effort config read for pre-boot decisions (start-at-login). Never
+// throws: a missing or corrupt config just means defaults apply.
+function readConfigSafe() {
+  try {
+    return JSON.parse(fs.readFileSync(getConfigPath(), 'utf-8'));
+  } catch (e) {
+    return null;
+  }
+}
+
 function getLogDir() {
   return path.join(getConfigDir(), 'logs');
 }
@@ -633,6 +643,25 @@ function startHealthWatchdog() {
 app.on('ready', async () => {
   const configExists = ensureConfig();
   wasFirstRun = !configExists; // exposed to the renderer via the preload bridge
+
+  // Self-healing, layer 0: this box lives unattended in a rack. After a power
+  // outage Windows/macOS boot to the login screen or desktop with nothing
+  // running unless the app registers itself to start. Packaged builds opt in
+  // by default; set server.start_at_login=false in config.json to opt out.
+  // (Dev runs skip it so a checkout never installs itself into login items.)
+  try {
+    if (app.isPackaged) {
+      const cfg = readConfigSafe();
+      const wantAutostart = !(cfg && cfg.server && cfg.server.start_at_login === false);
+      const current = app.getLoginItemSettings();
+      if (current.openAtLogin !== wantAutostart) {
+        app.setLoginItemSettings({ openAtLogin: wantAutostart });
+        console.log(`Start at login ${wantAutostart ? 'enabled' : 'disabled'}`);
+      }
+    }
+  } catch (e) {
+    console.warn('Could not update start-at-login setting:', e.message);
+  }
 
   createAppMenu();
   await startOrchestrator();

@@ -87,19 +87,85 @@ test('stop destroys the driver and allows a fresh start', async () => {
   assert.strictEqual(made.length, 2);
 });
 
-test('driver errors after start are re-emitted as driver-error, not thrown', async () => {
+test('driver errors after start are re-emitted and tear the dead driver down', async () => {
   const { manager, made } = makeManager();
   await manager.ensureStarted({ serial_path: 'COM3' });
   let seen = null;
   manager.on('driver-error', (e) => { seen = e; });
   made[0].emit('error', new Error('mid-flight failure'));
   assert.strictEqual(seen.message, 'mid-flight failure');
-  assert.strictEqual(manager.isRunning(), true); // manager does not self-stop
+  // Self-heal contract: a dead driver must never claim to be running (that
+  // used to hand a stale driver to every caller until app restart).
+  assert.strictEqual(manager.isRunning(), false);
+  assert.strictEqual(manager.status().restart_pending, true);
+  await manager.stop(); // cancel the pending self-heal for test isolation
+});
+
+// ---------------------------------------------------------------------------
+// Self-healing restart loop (unattended-rack requirement)
+// ---------------------------------------------------------------------------
+
+test('a driver error auto-restarts the driver: down then restarted', async () => {
+  const { manager, made } = makeManagerWith({ restartBaseMs: 10, restartMaxMs: 20 });
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  const events = [];
+  manager.on('driver-down', () => events.push('down'));
+  manager.on('driver-restarted', () => events.push('restarted'));
+  made[0].emit('error', new Error('serial gone'));
+  assert.strictEqual(manager.isRunning(), false, 'dead driver torn down immediately');
+  await new Promise((r) => setTimeout(r, 80));
+  assert.strictEqual(made.length, 2, 'a fresh driver was started');
+  assert.strictEqual(manager.isRunning(), true);
+  assert.deepStrictEqual(events, ['down', 'restarted']);
+  assert.strictEqual(made[0].destroyed, true, 'old driver destroyed (no port leak)');
+  assert.strictEqual(manager.status().auto_restarts, 1);
+  await manager.stop();
+});
+
+test('the restart loop keeps retrying with backoff until the port returns', async () => {
+  let calls = 0;
+  const made = [];
+  const manager = new ZwaveManager({
+    logger: { warn() {}, info() {} },
+    restartBaseMs: 5,
+    restartMaxMs: 10,
+    driverFactory: () => {
+      calls++;
+      const d = new MockDriver({ failStart: calls === 2 || calls === 3 }); // stick "unplugged" for two attempts
+      made.push(d);
+      return d;
+    },
+    loadKeys: () => ({ classic: {}, longRange: {} }),
+  });
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  made[0].emit('error', new Error('unplugged'));
+  await new Promise((r) => setTimeout(r, 200));
+  assert.ok(calls >= 4, `expected retries until success, saw ${calls} starts`);
+  assert.strictEqual(manager.isRunning(), true, 'healed once the port came back');
+  await manager.stop();
+});
+
+test('stop() cancels a pending self-heal restart (operator decision wins)', async () => {
+  const { manager, made } = makeManagerWith({ restartBaseMs: 20, restartMaxMs: 20 });
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  made[0].emit('error', new Error('gone'));
+  await manager.stop();
+  await new Promise((r) => setTimeout(r, 80));
+  assert.strictEqual(made.length, 1, 'no restart after an explicit stop');
+  assert.strictEqual(manager.isRunning(), false);
 });
 
 test('ensureStarted requires a serial path', async () => {
   const { manager } = makeManager();
   await assert.rejects(() => manager.ensureStarted({}), /No Z-Wave serial path/);
+});
+
+test('driver options carry the Yale user-code interview guard', async () => {
+  const { manager, made } = makeManager();
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  // zwave-js issue 2725: querying all user codes can drain Yale batteries.
+  // No PINs are used here, so the guard must be explicit in the options.
+  assert.strictEqual(made[0].options.interview.queryAllUserCodes, false);
 });
 
 // ---------------------------------------------------------------------------

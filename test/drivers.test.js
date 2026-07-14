@@ -76,7 +76,9 @@ class MockNode extends EventEmitter {
 async function makeZwave(nodeOpts = {}, cfg = {}) {
   const node = new MockNode(nodeOpts);
   const lock = new ZwaveLock(
-    Object.assign({ node_id: 2, verify_timeout_ms: 40, verify_retries: 1 }, cfg),
+    // retry_backoff_ms is tiny here so retry tests stay fast; backoff timing
+    // itself has a dedicated test below.
+    Object.assign({ node_id: 2, verify_timeout_ms: 40, verify_retries: 1, retry_backoff_ms: 5 }, cfg),
     { node, logger: { warn() {} } }
   );
   await lock.init();
@@ -106,11 +108,12 @@ test('ZwaveLock: unlock() sets UNSECURED and verifies', async () => {
   assert.deepEqual(node.setCalls, [0x00]);
 });
 
-test('ZwaveLock: a jam yields failure with JAMMED state', async () => {
+test('ZwaveLock: a jam yields failure with JAMMED state and a jam-specific error', async () => {
   const { lock } = await makeZwave({ current: 0x00, jam: true }, { verify_retries: 0 });
   const r = await lock.lock('lockup');
   assert.equal(r.success, false);
   assert.equal(r.boltState, LockState.JAMMED);
+  assert.match(r.error, /jammed/i, 'error explains the jam instead of "not verified"');
 });
 
 test('ZwaveLock: no confirmation times out and retries, then fails', async () => {
@@ -243,6 +246,170 @@ test('ZwaveLock: reinterview calls node.refreshInfo, throws when unavailable', a
   assert.equal(called, 1);
   const bare = new ZwaveLock({ node_id: 2 }, { node: new MockNode() });
   assert.throws(() => bare.reinterview(), /re-interview unavailable/);
+});
+
+// ---------------------------------------------------------------------------
+// Verification hardening: retry backoff, periodic polling, and device-origin
+// alerts (low battery, jam).
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: retries back off between attempts', async () => {
+  const times = [];
+  const node = new MockNode({ current: 0x00, confirm: false });
+  const origSet = node.commandClasses['Door Lock'].set;
+  node.commandClasses['Door Lock'].set = async (mode) => { times.push(Date.now()); return origSet(mode); };
+  const lock = new ZwaveLock(
+    { node_id: 2, verify_timeout_ms: 10, verify_retries: 1, retry_backoff_ms: 60 },
+    { node, logger: { warn() {} } }
+  );
+  await lock.init();
+  const r = await lock.lock('test');
+  assert.equal(r.success, false);
+  assert.equal(times.length, 2, 'two attempts');
+  assert.ok(times[1] - times[0] >= 50, `expected a backoff pause, got ${times[1] - times[0]}ms`);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: periodic poll notices silent bolt and battery drift', async () => {
+  const node = new MockNode({ status: 2 /* Awake */, values: {}, current: 0xff, battery: 77 });
+  node.ready = true;
+  const lock = new ZwaveLock(
+    { node_id: 2, poll_minutes: 0.001 }, // 60ms for the test
+    { node, logger: { warn() {} } }
+  );
+  await lock.init();
+  assert.equal((await lock.getState()).boltState, LockState.LOCKED);
+  // Drift with NO value-updated event: only the poll can notice this.
+  node.current = 0x00;
+  node.batteryLevel = 55;
+  await tick(200);
+  const s = await lock.getState();
+  assert.equal(s.boltState, LockState.UNLOCKED, 'poll picked up the silent bolt change');
+  assert.equal(s.battery, 55, 'poll refreshed battery');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: poll_minutes 0 disables polling', async () => {
+  const { lock } = await makeZwave({ status: 2, values: {} }, { poll_minutes: 0 });
+  assert.equal(lock._pollTimer, null);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: low battery alert is edge triggered and re-arms on recovery', async () => {
+  const { node, lock } = await makeZwave({ current: 0xff }, { low_battery_pct: 25 });
+  const alerts = [];
+  lock.on('alert', (a) => alerts.push(a));
+  const report = (level) => node.emit('value updated', node, { commandClassName: 'Battery', property: 'level', newValue: level });
+  report(24); // crossing: alert
+  report(23); // still low: no repeat
+  report(80); // recovered: re-arms
+  report(20); // crossing again: alert
+  const low = alerts.filter((a) => a.type === 'deadbolt_low_battery');
+  assert.equal(low.length, 2);
+  assert.match(low[0].detail, /24%/);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: spontaneous jam emits deadbolt_jammed once per transition', async () => {
+  const { node, lock } = await makeZwave({ current: 0xff });
+  const alerts = [];
+  lock.on('alert', (a) => alerts.push(a));
+  node.emit('notification', node, 0x71, { type: 6, event: 0x0b });
+  node.emit('notification', node, 0x71, { type: 6, event: 0x0b }); // unchanged state: no repeat
+  assert.equal(alerts.filter((a) => a.type === 'deadbolt_jammed').length, 1);
+  await lock.shutdown();
+});
+
+// ---------------------------------------------------------------------------
+// Self-healing: fail-fast preflight, dead-node revival ladder, pre-command
+// ping, and the measured health check (unattended-rack requirement).
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: commands fail fast when the driver never started', async () => {
+  const lock = new ZwaveLock({ node_id: 2 }, { node: new MockNode() });
+  // init() never called, so _node is null (the boot-failure zombie case)
+  const r = await lock.unlock('test');
+  assert.equal(r.success, false);
+  assert.match(r.error, /driver is not running/i);
+});
+
+test('ZwaveLock: revival ladder pings a dead node until it answers', async () => {
+  const node = new MockNode({ status: ST.DEAD, values: {} });
+  node.ready = true;
+  let pings = 0;
+  node.ping = async () => {
+    pings++;
+    if (pings < 3) return false;
+    node.status = ST.ALIVE;
+    return true;
+  };
+  const lock = new ZwaveLock(
+    { node_id: 2, revive_base_ms: 5, revive_max_ms: 10 },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  await tick(150);
+  assert.ok(pings >= 3, `expected the ladder to keep pinging, saw ${pings}`);
+  const s = await lock.getState();
+  assert.equal(s.online, true, 'revived node is back online');
+  assert.equal(s.linkState, 'online');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: revived node that never interviewed gets an automatic re-interview', async () => {
+  const node = new MockNode({ status: ST.DEAD, values: {} });
+  node.ready = false;
+  let refreshed = 0;
+  node.refreshInfo = async () => { refreshed++; };
+  node.ping = async () => { node.status = ST.ALIVE; return true; };
+  const lock = new ZwaveLock(
+    { node_id: 2, revive_base_ms: 5, revive_max_ms: 10 },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  await tick(60);
+  assert.equal(refreshed, 1, 'exactly one auto re-interview (rate limited)');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: a dead node gets one ping before a command (revival chance)', async () => {
+  const node = new MockNode({ status: ST.DEAD, values: {}, current: 0x00 });
+  node.ready = true;
+  let pinged = 0;
+  node.ping = async () => { pinged++; node.status = ST.ALIVE; return true; };
+  const lock = new ZwaveLock(
+    { node_id: 2, verify_timeout_ms: 60, revive_base_ms: 60000 },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const r = await lock.lock('test');
+  assert.ok(pinged >= 1, 'pinged before commanding');
+  assert.equal(r.success, true, 'command succeeded after the revival ping');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: healthCheck returns ping, stats, and lifeline numbers', async () => {
+  const node = new MockNode({ status: ST.ALIVE, values: {} });
+  node.ready = true;
+  node.ping = async () => true;
+  node.statistics = { rtt: 55.5, rssi: -61, lwr: { repeaters: [] }, commandsDroppedTX: 0, timeoutResponse: 1 };
+  node.lastSeen = new Date('2026-07-14T00:00:00Z');
+  node.checkLifelineHealth = async () => ({
+    rating: 9,
+    results: [{ latency: 40, numNeighbors: 2, failedPingsNode: 0, routeChanges: 0, snrMargin: 17 }],
+  });
+  const lock = new ZwaveLock({ node_id: 2 }, { node, logger: { warn() {}, info() {} } });
+  await lock.init();
+  const h = await lock.healthCheck();
+  assert.equal(h.ping_ok, true);
+  assert.equal(h.statistics.rtt_ms, 55.5);
+  assert.equal(h.statistics.rssi_dbm, -61);
+  assert.deepEqual(h.statistics.route_repeaters, []);
+  assert.equal(h.lifeline.rating, 9);
+  assert.equal(h.lifeline.snr_margin_db, 17);
+  await lock.shutdown();
+  const bare = new ZwaveLock({ node_id: 2 }, { node: new MockNode() });
+  await assert.rejects(() => bare.healthCheck(), /driver is not running/);
 });
 
 test('ZwaveLock: capabilities include lock/unlock/state', () => {
