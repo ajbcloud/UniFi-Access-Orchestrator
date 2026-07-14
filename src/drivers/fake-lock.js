@@ -45,6 +45,22 @@ class FakeLock extends LockDriver {
     return this._snapshot();
   }
 
+  /** Mirrors ZwaveLock.autoRelockInfo so the dashboard control works in dev. */
+  autoRelockInfo() {
+    return {
+      supported: true,
+      model_key: 'fake-lock',
+      note: 'FakeLock: setting is recorded but drives no hardware',
+      configured: this._autoRelock == null ? null : this._autoRelock,
+    };
+  }
+
+  async setAutoRelock(enabled) {
+    this.calls.push({ action: 'set_auto_relock', reason: enabled ? 'on' : 'off' });
+    this._autoRelock = !!enabled;
+    return { enabled: !!enabled, confirmed: true };
+  }
+
   /** Synchronous snapshot (mirrors ZwaveLock.snapshot for getStatus callers). */
   snapshot() {
     return this._snapshot();

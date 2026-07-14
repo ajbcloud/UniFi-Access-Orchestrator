@@ -61,6 +61,17 @@ test('configured + paired: Test Lock / Test Unlock / Re-interview / Unpair, no P
   assert.ok(!out.includes('Pair New Lock'), 'no Pair New Lock while paired');
 });
 
+test('paired action buttons carry expected-result tooltips', () => {
+  const build = load();
+  const out = build({ configured: true, paired: true, node_id: 8, lock_id: 'front' });
+  const buttons = out.match(/<button[^>]*>/g) || [];
+  for (const b of buttons) {
+    assert.ok(/title="[^"]+"/.test(b), `button needs a tooltip stating the expected result: ${b}`);
+  }
+  assert.match(out, /within a few seconds/i, 'test buttons state the expected timing');
+  assert.match(out, /auto-relock/i, 'the unlock tooltip explains the ~30s self re-lock');
+});
+
 test('pairing_active disables every button in both configured states', () => {
   const build = load();
   for (const paired of [true, false]) {

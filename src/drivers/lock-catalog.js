@@ -19,6 +19,13 @@
  * could not pin to an authoritative source; the UI labels those "verify
  * against the lock's manual" rather than presenting them as certain.
  *
+ * `auto_relock` describes the lock's OWN auto-relock feature as a Z-Wave
+ * configuration parameter ({ parameter, size, on, off }) where the model
+ * exposes one, so the app can offer "stay unlocked after an unlock" as a
+ * per-lock setting. Models that manage it on the device (interior switch,
+ * app, keypad menu) get `auto_relock: null` plus an `auto_relock_note`
+ * telling the operator where to change it instead.
+ *
  * Sources: manufacturer manuals (Schlage/Allegion, Yale, Kwikset, Ultraloq,
  * Weiser/Baldwin), z-wavealliance.org product pages, Alarm Grid / True Home
  * KБ inclusion+reset guides, and zwave-js device-DB ids. Security classes:
@@ -33,6 +40,8 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'schlage-be469zp',
+        auto_relock: { parameter: 15, size: 1, on: 255, off: 0 },
+        auto_relock_note: 'Built-in auto-lock re-throws the bolt about 30 seconds after an unlock when enabled.',
         name: 'Schlage BE469ZP Touchscreen Deadbolt',
         match: ['0x003b:0x0001:0x0469'],
         default_security: 's2',
@@ -44,6 +53,8 @@ const CATALOG = Object.freeze([
       },
       {
         key: 'schlage-be469',
+        auto_relock: { parameter: 15, size: 1, on: 255, off: 0 },
+        auto_relock_note: 'Built-in auto-lock re-throws the bolt about 30 seconds after an unlock when enabled.',
         name: 'Schlage BE469 / BE468 (non-ZP)',
         match: [],
         default_security: 's0',
@@ -61,6 +72,8 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'yale-assure-zw2',
+        auto_relock: { parameter: 2, size: 1, on: 255, off: 0 },
+        auto_relock_note: 'Auto relock is parameter 2; the relock delay (parameter 3, 5-255s) keeps its last value.',
         name: 'Yale Assure Deadbolt (ZW2)',
         match: ['0x0129:0x8002:0x0600', '0x0129:0x8002:0x1600', '0x0129:0x8002:0x4600'],
         default_security: 's0',
@@ -72,6 +85,8 @@ const CATALOG = Object.freeze([
       },
       {
         key: 'yale-assure-zw3',
+        auto_relock: { parameter: 2, size: 1, on: 255, off: 0 },
+        auto_relock_note: 'Auto relock is parameter 2; the relock delay (parameter 3, 5-255s) keeps its last value.',
         name: 'Yale Assure (ZW3 / 700-series)',
         match: [],
         default_security: 's2',
@@ -89,6 +104,8 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'kwikset-smartcode',
+        auto_relock: null,
+        auto_relock_note: 'auto-relock is the switch on the interior panel (Kwikset SmartCode), not a Z-Wave setting',
         name: 'Kwikset SmartCode (910/912/914/916)',
         match: [],
         default_security: 's0',
@@ -100,6 +117,8 @@ const CATALOG = Object.freeze([
       },
       {
         key: 'kwikset-620',
+        auto_relock: null,
+        auto_relock_note: 'auto-relock is not exposed over Z-Wave on this model; see the lock manual',
         name: 'Kwikset Home Connect 620',
         match: [],
         default_security: 's2',
@@ -117,6 +136,8 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'ultraloq-ubolt-pro',
+        auto_relock: null,
+        auto_relock_note: 'set auto-lock timing in the U-tec app; it is not exposed over Z-Wave',
         name: 'Ultraloq U-Bolt Pro Z-Wave',
         match: ['0x0452:0x0004:0x0001'],
         default_security: 's2',
@@ -134,6 +155,8 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'weiser-baldwin',
+        auto_relock: null,
+        auto_relock_note: 'auto-relock is the switch on the interior panel (Kwikset stack), not a Z-Wave setting',
         name: 'Weiser / Baldwin (Home Connect)',
         match: [],
         default_security: 's0',
@@ -151,6 +174,8 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'alfred-db',
+        auto_relock: null,
+        auto_relock_note: 'set auto re-lock from the keypad menu (see the Alfred manual); it is not exposed over Z-Wave',
         name: 'Alfred DB1 / DB2 (Z-Wave module)',
         match: [],
         default_security: 'auto',
@@ -168,6 +193,8 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'generic',
+        auto_relock: null,
+        auto_relock_note: "check the lock's manual; auto-relock is not managed over Z-Wave for unlisted models",
         name: 'Generic Z-Wave deadbolt',
         match: [],
         default_security: 'auto',

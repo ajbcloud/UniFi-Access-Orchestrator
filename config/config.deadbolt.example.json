@@ -75,8 +75,10 @@
           "verify_timeout_ms": 12000,
           "verify_retries": 1,
           "retry_backoff_ms": 1500,
+          "early_verify_read_ms": 2500,
           "poll_minutes": 20,
-          "low_battery_pct": 25
+          "low_battery_pct": 25,
+          "auto_relock": null
         }
       }
     }

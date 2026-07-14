@@ -271,6 +271,19 @@ function buildDeadbolt() {
   // every rebuild, so this listener never stacks.
   if (lockDriver && typeof lockDriver.on === 'function') {
     lockDriver.on('alert', (a) => monitorAlert(a.type, a.detail || ''));
+    // A command that verified AFTER its wait window closed: correct the
+    // record in the event feed (the door visibly moved while the app had
+    // already said "failed"). Feed-only on purpose; not an alert/email.
+    lockDriver.on('late-confirm', (e) => {
+      logger.info(`Deadbolt: ${e.action} confirmed late (${Math.round((e.after_ms || 0) / 1000)}s after the wait window)`);
+      broadcastEvent({
+        type: 'deadbolt.late_confirm',
+        actor: 'Deadbolt Controller',
+        location: 'Deadbolt',
+        action: `${e.action} completed late; bolt is now ${e.boltState}`,
+        success: true,
+      });
+    });
   }
   deadboltController = new DeadboltController(config, {
     lockDriver,
@@ -773,7 +786,8 @@ function zwaveSummary() {
   const locks = zw.locks || {};
   const lockId = (config.deadbolt_rules && config.deadbolt_rules.lock_id)
     || Object.keys(locks)[0] || 'front_deadbolt';
-  const nodeId = (locks[lockId] && locks[lockId].node_id) || 0;
+  const lc = locks[lockId] || {};
+  const nodeId = lc.node_id || 0;
   return {
     configured: !!zw.serial_path,
     enabled: zw.enabled === true,
@@ -782,6 +796,12 @@ function zwaveSummary() {
     paired: nodeId > 0,
     manager_running: zwaveManager.isRunning(),
     pairing_active: zwavePairing.isActive(),
+    // After-unlock behavior: the saved preference (null until first applied)
+    // and the driver's capability report for the paired model, so the
+    // dashboard can offer "stay unlocked" only where it actually works.
+    auto_relock: lc.auto_relock == null ? null : !!lc.auto_relock,
+    auto_relock_support: (lockDriver && typeof lockDriver.autoRelockInfo === 'function')
+      ? lockDriver.autoRelockInfo() : null,
   };
 }
 
@@ -1056,6 +1076,47 @@ app.post('/api/deadbolt/control', async (req, res) => {
     res.json({ action, success: !!(result && result.success), boltState: result && result.boltState, error: (result && result.error) || null });
   } catch (err) {
     res.status(500).json({ action, success: false, error: err.message });
+  }
+});
+
+// Per-lock after-unlock behavior. "Stay unlocked" (enabled=false) turns off
+// the lock's OWN auto-relock feature by writing its configuration parameter
+// over Z-Wave (the ~30s re-throw after an unlock is the lock's built-in
+// behavior, not this app). The choice is persisted on the saved lock entry so
+// the driver re-applies it after restarts and re-pairing.
+app.post('/api/deadbolt/auto-relock', async (req, res) => {
+  const enabled = req.body && req.body.enabled;
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'enabled must be true or false' });
+  }
+  if (zwavePairing.isActive()) {
+    return res.status(409).json({ error: 'A pairing session is in progress' });
+  }
+  if (!lockDriver || typeof lockDriver.setAutoRelock !== 'function') {
+    return res.status(503).json({ error: 'No lock driver is active (pair a lock first)' });
+  }
+  try {
+    const result = await lockDriver.setAutoRelock(enabled);
+    // Persist on the ACTIVE lock entry, resolved the same way buildDeadbolt
+    // binds the driver (deadbolt_rules.lock_id, else the first saved lock).
+    persistZwaveMutation((cfg) => {
+      const zwc = cfg.devices && cfg.devices.zwave;
+      if (!zwc || !zwc.locks) return;
+      const lockId = (cfg.deadbolt_rules && cfg.deadbolt_rules.lock_id) || Object.keys(zwc.locks)[0];
+      if (lockId && zwc.locks[lockId]) zwc.locks[lockId].auto_relock = enabled;
+    });
+    broadcastEvent({
+      type: 'deadbolt.auto_relock',
+      actor: 'GUI Admin',
+      location: 'Deadbolt',
+      action: enabled
+        ? 'Auto-relock enabled (lock re-locks itself after an unlock)'
+        : 'Auto-relock disabled (lock stays unlocked until a lock command)',
+      success: result.confirmed !== false,
+    });
+    res.json({ enabled, confirmed: result.confirmed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
