@@ -109,6 +109,16 @@ class ZwaveLock extends LockDriver {
     this.verifyTimeoutMs = cfg.verify_timeout_ms == null ? 12000 : cfg.verify_timeout_ms;
     this.verifyRetries = cfg.verify_retries == null ? 1 : cfg.verify_retries;
     this.lowBatteryPct = cfg.low_battery_pct == null ? 25 : cfg.low_battery_pct;
+
+    // Dead-node revival ladder (self-healing for an unattended box): while the
+    // node reads Dead, ping it on a capped backoff forever. Base/cap are
+    // configurable so tests run in milliseconds.
+    this.reviveBaseMs = cfg.revive_base_ms == null ? 30000 : cfg.revive_base_ms;
+    this.reviveMaxMs = cfg.revive_max_ms == null ? 600000 : cfg.revive_max_ms;
+    this._reviveTimer = null;
+    this._reviveAttempt = 0;
+    this._lastRefreshInfoAt = 0;
+    this._stopped = false;
   }
 
   get capabilities() {
@@ -163,6 +173,9 @@ class ZwaveLock extends LockDriver {
         this.logger.warn && this.logger.warn(`ZwaveLock: live state refresh failed: ${err.message}`);
       }
     }
+    // A node that comes up Dead (e.g. it browned out during the pairing
+    // interview) must start healing immediately, not wait for an operator.
+    if (this._nodeStatus() === NODE_STATUS.DEAD) this._scheduleRevive();
     this.emit(this._state.online ? 'online' : 'offline');
   }
 
@@ -275,12 +288,62 @@ class ZwaveLock extends LockDriver {
   _onNodeDead() {
     this._state.linkState = 'offline';
     this._setOnline(false);
+    this._scheduleRevive();
   }
 
   _onNodeReachable() {
+    this._reviveAttempt = 0; // healed: next outage starts the ladder fresh
     this._refreshLink();
     this._seedFromCache();
     if (this._shouldLiveRead()) this._refreshLive().catch(() => { /* best effort */ });
+  }
+
+  /**
+   * Dead-node revival ladder. The box is unattended, so nobody is around to
+   * press Re-interview / Heal: ping the node on a capped backoff forever.
+   * A successful ping makes zwave-js flip the node alive, which lands in
+   * _onNodeReachable and re-seeds state; if the node was never fully
+   * interviewed (the pairing-time brownout case) force a fresh interview,
+   * rate-limited to once an hour so a flapping node cannot interview-storm.
+   * The sustained offline monitor still alerts if the ladder keeps failing.
+   */
+  _scheduleRevive() {
+    if (this._reviveTimer || this._stopped) return;
+    const delay = Math.min(this.reviveBaseMs * 2 ** this._reviveAttempt, this.reviveMaxMs);
+    this._reviveAttempt++;
+    this._reviveTimer = setTimeout(() => {
+      this._reviveTimer = null;
+      this._reviveTick().catch(() => { /* never throws into the timer */ });
+    }, delay);
+    if (typeof this._reviveTimer.unref === 'function') this._reviveTimer.unref();
+  }
+
+  async _reviveTick() {
+    if (this._stopped) return;
+    const node = this._node;
+    if (!node || this._nodeStatus() !== NODE_STATUS.DEAD) {
+      this._reviveAttempt = 0;
+      return;
+    }
+    let alive = false;
+    if (typeof node.ping === 'function') {
+      try { alive = await node.ping(); } catch (e) { alive = false; }
+    }
+    if (!alive) {
+      this._scheduleRevive();
+      return;
+    }
+    this.logger.info && this.logger.info(`ZwaveLock: node ${this.nodeId} revived by ping`);
+    this._reviveAttempt = 0;
+    this._onNodeReachable();
+    if (node.ready !== true && typeof node.refreshInfo === 'function'
+        && Date.now() - this._lastRefreshInfoAt > 3600000) {
+      this._lastRefreshInfoAt = Date.now();
+      this.logger.info && this.logger.info(`ZwaveLock: node ${this.nodeId} answered but was never fully interviewed; re-interviewing`);
+      Promise.resolve(node.refreshInfo()).catch((e) => {
+        this.logger.warn && this.logger.warn(`ZwaveLock: auto re-interview failed: ${e.message}`);
+      });
+    }
   }
 
   _onNodeReady() {
@@ -420,12 +483,87 @@ class ZwaveLock extends LockDriver {
     return 'not verified';
   }
 
+  /**
+   * Fail fast with the truth when the transport never came up: a null _node
+   * used to surface as a generic "not verified" after two 12s windows, which
+   * made a driver-side outage indistinguishable from a dead lock.
+   */
+  _preflightError() {
+    if (!this._node) {
+      return 'Z-Wave driver is not running (stick unplugged or failed to start). '
+        + 'It retries automatically; check Download Diagnostics if this persists';
+    }
+    return null;
+  }
+
+  /** One immediate ping before commanding a Dead node: cheap revival chance. */
+  async _preCommandRevive() {
+    const node = this._node;
+    if (this._nodeStatus() === NODE_STATUS.DEAD && node && typeof node.ping === 'function') {
+      try { await node.ping(); } catch (e) { /* the set attempt will tell */ }
+    }
+  }
+
   async lock(reason) {
+    const err = this._preflightError();
+    if (err) return { success: false, boltState: this._state.boltState, error: err };
+    await this._preCommandRevive();
     return this._setVerified(DOOR_LOCK_MODE.SECURED, LockState.LOCKED, 'lock', reason);
   }
 
   async unlock(reason) {
+    const err = this._preflightError();
+    if (err) return { success: false, boltState: this._state.boltState, error: err };
+    await this._preCommandRevive();
     return this._setVerified(DOOR_LOCK_MODE.UNSECURED, LockState.UNLOCKED, 'unlock', reason);
+  }
+
+  /**
+   * On-demand measured health: answers "why is it dropping" with numbers
+   * instead of vibes. Every step is best-effort so a dead node still returns
+   * a useful partial report. checkLifelineHealth(1) is a real RF probe and
+   * can take a few seconds; callers should not hold a UI thread on it.
+   */
+  async healthCheck() {
+    const node = this._node;
+    if (!node) throw new Error('Z-Wave driver is not running');
+    const out = {
+      node_id: this.nodeId,
+      status: this._nodeStatus(),
+      link_state: this._state.linkState,
+      ready: node.ready === true,
+      last_seen: node.lastSeen || null,
+    };
+    if (typeof node.ping === 'function') {
+      try { out.ping_ok = await node.ping(); } catch (e) { out.ping_ok = false; out.ping_error = e.message; }
+    }
+    const st = node.statistics;
+    if (st) {
+      out.statistics = {
+        rtt_ms: st.rtt != null ? st.rtt : null,
+        rssi_dbm: st.rssi != null ? st.rssi : null,
+        route_repeaters: (st.lwr && Array.isArray(st.lwr.repeaters)) ? st.lwr.repeaters : null,
+        commands_dropped_tx: st.commandsDroppedTX != null ? st.commandsDroppedTX : null,
+        timeouts: st.timeoutResponse != null ? st.timeoutResponse : null,
+      };
+    }
+    if (typeof node.checkLifelineHealth === 'function') {
+      try {
+        const h = await node.checkLifelineHealth(1);
+        const r = (h && Array.isArray(h.results) && h.results[0]) || {};
+        out.lifeline = {
+          rating: h && h.rating != null ? h.rating : null, // 0..10, 10 best
+          latency_ms: r.latency != null ? r.latency : null,
+          neighbors: r.numNeighbors != null ? r.numNeighbors : null,
+          failed_pings: r.failedPingsNode != null ? r.failedPingsNode : null,
+          route_changes: r.routeChanges != null ? r.routeChanges : null,
+          snr_margin_db: r.snrMargin != null ? r.snrMargin : null,
+        };
+      } catch (e) {
+        out.lifeline_error = e.message;
+      }
+    }
+    return out;
   }
 
   /**
@@ -453,6 +591,11 @@ class ZwaveLock extends LockDriver {
   }
 
   async shutdown() {
+    this._stopped = true;
+    if (this._reviveTimer) {
+      clearTimeout(this._reviveTimer);
+      this._reviveTimer = null;
+    }
     this._state.linkState = 'offline';
     this._setOnline(false);
     this._unwireNode();

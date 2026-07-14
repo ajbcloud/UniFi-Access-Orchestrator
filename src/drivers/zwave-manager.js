@@ -17,7 +17,16 @@ const fs = require('fs');
  *                   native package.
  *   loadKeys      - () => { classic, longRange } security keys (Buffers).
  *
- * Events: 'driver-error' (err), 'stopped'.
+ * Events: 'driver-error' (err), 'driver-down' (err), 'driver-restarted',
+ * 'stopped'.
+ *
+ * Self-healing: this box runs unattended in a network rack. A driver 'error'
+ * used to only be logged, leaving a dead driver that still claimed to be
+ * running until someone restarted the app. Now a driver error tears the
+ * driver down and enters a capped-backoff restart loop that keeps retrying
+ * forever (5s doubling to 60s), which also covers the stick being unplugged
+ * and replugged: the loop simply fails until the serial path exists again.
+ * An explicit stop() cancels the loop (an operator decision beats healing).
  */
 class ZwaveManager extends EventEmitter {
   constructor(deps = {}) {
@@ -35,9 +44,18 @@ class ZwaveManager extends EventEmitter {
     this._driver = null;
     this._serialPath = null;
     this._starting = null; // in-flight ensureStarted promise, shared by callers
+    // Restart-loop state. Base/cap are configurable so tests run in ms.
+    this._restartBaseMs = deps.restartBaseMs == null ? 5000 : deps.restartBaseMs;
+    this._restartMaxMs = deps.restartMaxMs == null ? 60000 : deps.restartMaxMs;
+    this._restartInfo = null; // { serial_path, cache_dir } from the last good start
+    this._restartTimer = null;
+    this._restartAttempt = 0;
+    this._restartCount = 0; // lifetime successful auto-restarts, for diagnostics
+    this._lastDriverError = null;
     this._onDriverError = (err) => {
       this.logger.warn && this.logger.warn(`Z-Wave driver error: ${err && err.message}`);
       this.emit('driver-error', err);
+      this._handleDriverDown(err);
     };
   }
 
@@ -48,6 +66,60 @@ class ZwaveManager extends EventEmitter {
   get serialPath() { return this._serialPath; }
 
   isRunning() { return !!this._driver; }
+
+  /** Diagnostics snapshot: running state plus the self-heal loop's history. */
+  status() {
+    return {
+      running: !!this._driver,
+      serial_path: this._serialPath,
+      restart_pending: !!this._restartTimer,
+      restart_attempt: this._restartAttempt,
+      auto_restarts: this._restartCount,
+      last_driver_error: this._lastDriverError,
+    };
+  }
+
+  /**
+   * A live driver errored (stick unplugged, serial stall, SDK fault). Tear it
+   * down so isRunning() tells the truth, tell subscribers, and start the
+   * restart loop. Idempotent: a second error while already down is ignored.
+   */
+  _handleDriverDown(err) {
+    const driver = this._driver;
+    if (!driver) return;
+    this._driver = null;
+    this._serialPath = null;
+    this._lastDriverError = (err && err.message) || String(err);
+    if (typeof driver.removeListener === 'function') driver.removeListener('error', this._onDriverError);
+    // Destroy asynchronously and best-effort: the port may already be gone.
+    Promise.resolve()
+      .then(() => (typeof driver.destroy === 'function' ? driver.destroy() : null))
+      .catch(() => { /* already dead */ });
+    this.emit('driver-down', err);
+    this._scheduleRestart();
+  }
+
+  _scheduleRestart() {
+    if (this._restartTimer || !this._restartInfo) return;
+    const delay = Math.min(this._restartBaseMs * 2 ** this._restartAttempt, this._restartMaxMs);
+    this._restartAttempt++;
+    this.logger.warn && this.logger.warn(
+      `Z-Wave: driver down; auto-restart attempt ${this._restartAttempt} in ${Math.round(delay / 1000)}s`);
+    this._restartTimer = setTimeout(() => {
+      this._restartTimer = null;
+      this.ensureStarted(this._restartInfo)
+        .then(() => {
+          this._restartCount++;
+          this.logger.info && this.logger.info('Z-Wave: driver auto-restarted after failure');
+          this.emit('driver-restarted');
+        })
+        .catch((e) => {
+          this.logger.warn && this.logger.warn(`Z-Wave: driver auto-restart failed: ${e.message}`);
+          this._scheduleRestart();
+        });
+    }, delay);
+    if (typeof this._restartTimer.unref === 'function') this._restartTimer.unref();
+  }
 
   getNode(nodeId) {
     const nodes = this._driver && this._driver.controller && this._driver.controller.nodes;
@@ -161,10 +233,26 @@ class ZwaveManager extends EventEmitter {
     if (typeof driver.on === 'function') driver.on('error', this._onDriverError);
     this._driver = driver;
     this._serialPath = serialPath;
+    // Remember how to start so the restart loop can heal without help, and
+    // reset the loop: a successful start (from any caller) ends the outage.
+    this._restartInfo = { serial_path: serialPath, cache_dir: cacheDir };
+    this._restartAttempt = 0;
+    if (this._restartTimer) {
+      clearTimeout(this._restartTimer);
+      this._restartTimer = null;
+    }
     return driver;
   }
 
   async stop() {
+    // An explicit stop is an operator decision: cancel any pending self-heal
+    // so we do not resurrect a driver someone deliberately shut down.
+    if (this._restartTimer) {
+      clearTimeout(this._restartTimer);
+      this._restartTimer = null;
+    }
+    this._restartInfo = null;
+    this._restartAttempt = 0;
     const driver = this._driver;
     this._driver = null;
     this._serialPath = null;

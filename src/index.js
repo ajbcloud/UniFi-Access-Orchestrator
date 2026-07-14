@@ -95,6 +95,21 @@ const zwaveManager = new ZwaveManager({
     return { classic: k.classic, longRange: k.longRange };
   },
 });
+
+// Self-healing, layer 1: when the manager auto-restarts the driver after a
+// stick loss or driver crash, rebuild the lock driver against the fresh
+// driver instance. Deferred while a pairing session is live (the session owns
+// the controller) and retried by the init-retry loop below if it fails.
+zwaveManager.on('driver-restarted', () => {
+  if (zwavePairing.isActive()) {
+    logger.info('Z-Wave: driver restarted during a pairing session; deadbolt rebuild deferred');
+    return;
+  }
+  bringDeadboltOnline()
+    .then(() => logger.info('Deadbolt: rebuilt after driver auto-restart'))
+    .catch((e) => logger.warn(`Deadbolt: rebuild after driver restart failed: ${e.message}`));
+});
+
 const zwavePairing = new ZwavePairing({
   manager: zwaveManager,
   logger,
@@ -241,16 +256,52 @@ async function bringDeadboltOnline() {
   }
   deadboltController = null;
   buildDeadbolt();
+  let initOk = !!lockDriver; // a FakeLock (or no driver configured) needs no init retry
   if (lockDriver) {
     try {
       await lockDriver.init();
       logger.info('Deadbolt lock driver initialized');
     } catch (err) {
+      initOk = false;
       logger.error(`Deadbolt lock driver failed to initialize: ${err.message}`);
       notifier.notify({ type: 'deadbolt_no_transport', detail: `lock driver init failed after pairing: ${err.message}` });
+      scheduleDeadboltInitRetry();
     }
   }
   applyEventTaps();
+  return initOk;
+}
+
+// Self-healing, layer 1b: a failed lock-driver init (serial port not there
+// yet after a power outage, stick enumerating late, port briefly busy) used
+// to stay dead until an app restart. Retry on a capped backoff forever; a
+// success or an explicit unpair ends the loop. Skips (and re-arms) while a
+// pairing session owns the controller.
+let _deadboltInitRetryTimer = null;
+let _deadboltInitRetryAttempt = 0;
+function scheduleDeadboltInitRetry() {
+  if (_deadboltInitRetryTimer) return;
+  const delay = Math.min(10000 * 2 ** _deadboltInitRetryAttempt, 300000);
+  _deadboltInitRetryAttempt++;
+  logger.warn(`Deadbolt: lock driver init retry ${_deadboltInitRetryAttempt} in ${Math.round(delay / 1000)}s`);
+  _deadboltInitRetryTimer = setTimeout(async () => {
+    _deadboltInitRetryTimer = null;
+    const dbCfg = config.deadbolt_rules;
+    const zw = config.devices && config.devices.zwave;
+    if (!dbCfg || !zw || zw.enabled !== true) return; // no longer configured
+    if (zwavePairing.isActive()) { scheduleDeadboltInitRetry(); return; }
+    try {
+      const ok = await bringDeadboltOnline();
+      if (ok) {
+        _deadboltInitRetryAttempt = 0;
+        logger.info('Deadbolt: lock driver recovered by init retry');
+      }
+    } catch (e) {
+      logger.warn(`Deadbolt: init retry failed: ${e.message}`);
+      scheduleDeadboltInitRetry();
+    }
+  }, delay);
+  if (typeof _deadboltInitRetryTimer.unref === 'function') _deadboltInitRetryTimer.unref();
 }
 
 // Route every raw UniFi event to the capture recorder and the deadbolt
@@ -785,7 +836,9 @@ app.get('/api/diagnostics', (req, res) => {
       driver_running: zwaveManager.isRunning(),
       serial_path: zwaveManager.serialPath || null,
       crypto_patched: zwaveManager.cryptoPatched, // ciphers replaced by the shim (null = driver never started)
+      self_heal: zwaveManager.status(), // restart loop state + lifetime auto-restarts
       pairing: zwavePairing.status(),
+      last_health_check: lastDeadboltHealth, // ping/RSSI/route numbers, null until run
     },
     logs: {
       app: appLog ? tailFile(appLog, 256 * 1024) : { error: 'no access log found' },
@@ -808,12 +861,102 @@ app.post('/api/deadbolt/pair/cancel', async (req, res) => {
   res.json({ status: r.status, state: zwavePairing.state });
 });
 
+// Unpair. With a node_id whose node the controller reports FAILED, remove it
+// directly (no exclusion sequence possible on a dead device); otherwise start
+// a normal exclusion session. Either way the saved lock entry for that node
+// is cleared (exclusion clears it via onExcludeDone when the node leaves).
 app.post('/api/deadbolt/unpair', async (req, res) => {
+  const nodeId = req.body && Number(req.body.node_id);
+  if (nodeId && zwaveManager.isRunning()) {
+    try {
+      const ctrl = zwaveManager.controller;
+      if (ctrl && typeof ctrl.isFailedNode === 'function' && await ctrl.isFailedNode(nodeId)) {
+        await ctrl.removeFailedNode(nodeId);
+        persistZwaveMutation((cfg) => {
+          const locks = (cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks) || {};
+          for (const id of Object.keys(locks)) {
+            if (locks[id] && locks[id].node_id === nodeId) locks[id].node_id = 0;
+          }
+        });
+        await bringDeadboltOnline();
+        logger.info(`Z-Wave: failed node ${nodeId} removed directly (no exclusion needed)`);
+        return res.json({ status: 'removed', node_id: nodeId });
+      }
+    } catch (err) {
+      logger.warn(`Z-Wave: direct removal of node ${nodeId} failed (${err.message}); falling back to exclusion`);
+    }
+  }
   try {
     const status = await zwavePairing.startExclusion();
     res.json({ status: 'started', mode: 'exclude', state: status.state });
   } catch (err) {
     res.status(pairingErrorStatus(err)).json({ error: err.message, state: zwavePairing.state });
+  }
+});
+
+// Paired-locks inventory for the Smart Deadbolt panel: the saved locks map
+// merged with what is actually on the stick, so ghosts (on the stick but not
+// saved) and orphans (saved but gone from the stick) are both visible.
+app.get('/api/deadbolt/locks', (req, res) => {
+  const zw = (config.devices && config.devices.zwave) || {};
+  const saved = zw.locks || {};
+  const ctrl = zwaveManager.controller;
+  const ownNodeId = ctrl && ctrl.ownNodeId != null ? ctrl.ownNodeId : null;
+  const boundNodeId = (lockDriver && lockDriver.nodeId) || 0;
+  const snap = lockDriver && typeof lockDriver.snapshot === 'function' ? lockDriver.snapshot() : null;
+  const seen = new Set();
+  const locks = [];
+  for (const [lockId, lc] of Object.entries(saved)) {
+    const nodeId = (lc && lc.node_id) || 0;
+    if (nodeId) seen.add(nodeId);
+    const bound = nodeId > 0 && nodeId === boundNodeId && snap;
+    locks.push({
+      lock_id: lockId,
+      node_id: nodeId,
+      paired: nodeId > 0,
+      on_stick: !!(nodeId && zwaveManager.getNode(nodeId)),
+      bolt: bound ? snap.boltState : null,
+      battery: bound ? snap.battery : null,
+      battery_low: bound ? !!snap.batteryLow : false,
+      link_state: bound ? snap.linkState : null,
+    });
+  }
+  const nodes = ctrl && ctrl.nodes;
+  if (nodes && typeof nodes.forEach === 'function') {
+    nodes.forEach((node, id) => {
+      if (id === ownNodeId || seen.has(id)) return;
+      locks.push({
+        lock_id: null,
+        node_id: id,
+        paired: false,
+        on_stick: true,
+        foreign: true, // on the stick but not saved as a lock (ghost / other device)
+        bolt: null,
+        battery: null,
+        battery_low: false,
+        link_state: null,
+      });
+    });
+  }
+  res.json({ locks, controller_node_id: ownNodeId, driver_running: zwaveManager.isRunning() });
+});
+
+// Measured node health (ping, RTT/RSSI/route stats, one lifeline probe).
+// Fire from the dashboard to answer "why is the link dropping" with numbers.
+let lastDeadboltHealth = null;
+app.post('/api/deadbolt/health-check', async (req, res) => {
+  if (zwavePairing.isActive()) {
+    return res.status(409).json({ error: 'A pairing session is in progress' });
+  }
+  if (!lockDriver || typeof lockDriver.healthCheck !== 'function') {
+    return res.status(503).json({ error: 'No lock driver is active (pair a lock first)' });
+  }
+  try {
+    const result = await lockDriver.healthCheck();
+    lastDeadboltHealth = Object.assign({ checked_at: new Date().toISOString() }, result);
+    res.json(lastDeadboltHealth);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -2226,7 +2369,8 @@ async function start() {
       await lockDriver.init();
       logger.info('Deadbolt lock driver initialized');
     } catch (err) {
-      logger.error(`Deadbolt lock driver init failed: ${err.message}. Deadbolt actions unavailable; cascade unlock is unaffected.`);
+      logger.error(`Deadbolt lock driver init failed: ${err.message}. Retrying automatically; cascade unlock is unaffected.`);
+      scheduleDeadboltInitRetry();
     }
   }
   applyEventTaps();

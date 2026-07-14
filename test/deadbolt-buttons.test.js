@@ -55,6 +55,8 @@ test('configured + paired: Test Lock / Test Unlock / Re-interview / Unpair, no P
   assert.match(out, /Test Unlock/);
   assert.match(out, /onclick="startReinterview\(\)"/);
   assert.match(out, /Re-interview \/ Heal/);
+  assert.match(out, /onclick="startHealthCheck\(\)"/);
+  assert.match(out, /Health Check/);
   assert.match(out, /onclick="startUnpair\(\)"/);
   assert.ok(!out.includes('Pair New Lock'), 'no Pair New Lock while paired');
 });

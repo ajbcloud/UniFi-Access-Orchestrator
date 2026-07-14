@@ -2731,6 +2731,8 @@ function renderZwaveSetup() {
       <div style="display:flex;gap:8px;flex-wrap:wrap" id="zwaveDeadboltButtons"></div>
       <div id="zwavePairPanel" style="margin-top:10px"></div>
       <div id="zwaveDeadboltLive" style="margin-top:10px"></div>
+      <div id="zwaveDeadboltLocks" style="margin-top:10px"></div>
+      <div id="zwaveDeadboltHealth" style="margin-top:10px;font-size:12px"></div>
     </div>
 
     <div id="zwaveRulesBlock" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);display:none">
@@ -2855,6 +2857,33 @@ function _setDeadboltButtonsBusy(busy) {
 // the next inclusion. Without this control the operator has no way to run the
 // exclusion the app is telling them to run. A still-responsive node is never
 // auto-removed as a failed ghost, so exclusion is the only recovery.
+// Pure builder for the paired-locks inventory table: every saved lock plus
+// every node on the stick that is not saved (ghosts show up instead of
+// silently blocking the next pairing). Each row gets its own Unpair, so a
+// specific lock can be removed without touching the others. lock ids come
+// from config (operator-typed) and are escaped.
+function buildDeadboltLocksTable(locks, pairingActive) {
+  const rows = Array.isArray(locks) ? locks : [];
+  if (!rows.length) return '';
+  const dis = pairingActive ? ' disabled' : '';
+  const cells = rows.map((l) => {
+    const name = l.lock_id ? escapeHtml(l.lock_id) : '<em>unrecognized device</em>';
+    const node = l.node_id ? `node ${escapeHtml(l.node_id)}` : 'not paired';
+    const state = l.link_state
+      ? `${escapeHtml(l.bolt || 'unknown')} / ${l.battery == null ? 'battery n/a' : escapeHtml(l.battery) + '%'} / ${escapeHtml(l.link_state)}`
+      : (l.foreign ? 'on stick, not managed' : (l.on_stick ? 'on stick' : (l.paired ? 'saved, missing from stick' : '-')));
+    const unpair = (l.node_id || l.paired)
+      ? `<button class="btn btn-sm btn-secondary" onclick="startUnpairNode(${Number(l.node_id) || 0})"${dis}>Unpair</button>`
+      : '';
+    return `<tr><td style="padding:4px 10px 4px 0">${name}</td>`
+      + `<td style="padding:4px 10px 4px 0">${node}</td>`
+      + `<td style="padding:4px 10px 4px 0;color:var(--text-muted)">${state}</td>`
+      + `<td style="padding:4px 0">${unpair}</td></tr>`;
+  }).join('');
+  return `<div style="font-size:12px"><div style="font-weight:600;margin-bottom:4px">Paired locks</div>`
+    + `<table style="border-collapse:collapse;font-size:12px"><tbody>${cells}</tbody></table></div>`;
+}
+
 function buildDeadboltButtons(zw) {
   const z = zw || {};
   if (!z.configured) return '';
@@ -2866,6 +2895,7 @@ function buildDeadboltButtons(zw) {
     return `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('lock')"${dis}>Test Lock</button>`
       + `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('unlock')"${dis}>Test Unlock</button>`
       + `<button class="btn btn-sm btn-secondary" onclick="startReinterview()"${dis}>Re-interview / Heal</button>`
+      + `<button class="btn btn-sm btn-secondary" onclick="startHealthCheck()"${dis}>Health Check</button>`
       + `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis}>Unpair</button>`;
   }
   return `<button class="btn btn-sm btn-primary" onclick="startPairing()"${dis}>Pair New Lock</button>`
@@ -2888,6 +2918,14 @@ async function refreshZwaveDeadbolt() {
       return;
     }
     btns.innerHTML = buildDeadboltButtons(zw);
+    // Locks inventory: saved locks merged with what the stick actually holds.
+    const locksEl = document.getElementById('zwaveDeadboltLocks');
+    if (locksEl) {
+      try {
+        const inv = await api('GET', '/api/deadbolt/locks');
+        locksEl.innerHTML = buildDeadboltLocksTable(inv.locks, pairingActive);
+      } catch (e) { /* inventory is optional detail; leave the panel as-is */ }
+    }
     if (zw.paired) {
       line.textContent = `Lock paired (node ${zw.node_id}, "${zw.lock_id}").`;
       if (live) {
@@ -2996,6 +3034,65 @@ async function downloadDiagnostics() {
     toast('Diagnostics saved to your Downloads folder.', 'success');
   } catch (e) {
     toast('Diagnostics failed: ' + e.message, 'error');
+  }
+}
+
+// Per-lock unpair from the inventory table. A node the controller reports
+// FAILED is removed directly (no exclusion sequence is possible on a dead
+// device); a live node falls back to a normal exclusion session.
+async function startUnpairNode(nodeId) {
+  const ok = confirm(`Unpair node ${nodeId}?\n\nIf the device is dead it is removed immediately; otherwise the exclusion sequence must be run on that lock.`);
+  if (!ok) return;
+  _setDeadboltButtonsBusy(true);
+  try {
+    const r = await api('POST', '/api/deadbolt/unpair', { node_id: nodeId });
+    if (r.error) { toast(r.error, 'error'); refreshZwaveDeadbolt(); return; }
+    if (r.status === 'removed') {
+      toast(`Node ${nodeId} removed`, 'success');
+      refreshZwaveDeadbolt();
+      return;
+    }
+    // Live node: a normal exclusion session started; show the panel and poll.
+    _lastPairPanelHtml = null;
+    setPairPanel(renderZwavePairPanel({ mode: 'exclude', state: r.state || 'starting', seconds_in_state: 0 }));
+    toast('Exclusion started; run the exclusion sequence on that lock', 'info');
+    pollPairingStatus();
+  } catch (e) {
+    toast(`Unpair failed: ${e.message}`, 'error');
+    refreshZwaveDeadbolt();
+  }
+}
+
+// Measured link health: ping + RTT/RSSI/route + one lifeline probe. This is
+// the "why is it dropping" button; results also land in diagnostics.
+async function startHealthCheck() {
+  const out = document.getElementById('zwaveDeadboltHealth');
+  if (out) out.textContent = 'Running health check (a few seconds)...';
+  try {
+    const r = await api('POST', '/api/deadbolt/health-check');
+    if (r.error) {
+      if (out) out.textContent = '';
+      toast(r.error, 'error');
+      return;
+    }
+    const bits = [];
+    bits.push(`Ping: ${r.ping_ok ? 'ok' : 'FAILED'}`);
+    const st = r.statistics || {};
+    if (st.rtt_ms != null) bits.push(`RTT ${Math.round(st.rtt_ms)}ms`);
+    if (st.rssi_dbm != null) bits.push(`RSSI ${st.rssi_dbm}dBm`);
+    if (st.route_repeaters) bits.push(st.route_repeaters.length ? `route via ${st.route_repeaters.join(', ')}` : 'direct route');
+    const lf = r.lifeline || {};
+    if (lf.rating != null) bits.push(`health ${lf.rating}/10`);
+    if (lf.latency_ms != null) bits.push(`latency ${lf.latency_ms}ms`);
+    if (lf.snr_margin_db != null) bits.push(`SNR margin ${lf.snr_margin_db}dB`);
+    if (r.lifeline_error) bits.push(`lifeline probe failed: ${r.lifeline_error}`);
+    if (out) {
+      out.innerHTML = `<span style="color:${r.ping_ok ? 'var(--green)' : 'var(--red)'}">${escapeHtml(bits.join(' | '))}</span>`
+        + `<span style="color:var(--text-muted)"> (${escapeHtml(new Date(r.checked_at).toLocaleTimeString())})</span>`;
+    }
+  } catch (e) {
+    if (out) out.textContent = '';
+    toast(`Health check failed: ${e.message}`, 'error');
   }
 }
 

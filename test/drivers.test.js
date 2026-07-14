@@ -245,6 +245,98 @@ test('ZwaveLock: reinterview calls node.refreshInfo, throws when unavailable', a
   assert.throws(() => bare.reinterview(), /re-interview unavailable/);
 });
 
+// ---------------------------------------------------------------------------
+// Self-healing: fail-fast preflight, dead-node revival ladder, pre-command
+// ping, and the measured health check (unattended-rack requirement).
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: commands fail fast when the driver never started', async () => {
+  const lock = new ZwaveLock({ node_id: 2 }, { node: new MockNode() });
+  // init() never called, so _node is null (the boot-failure zombie case)
+  const r = await lock.unlock('test');
+  assert.equal(r.success, false);
+  assert.match(r.error, /driver is not running/i);
+});
+
+test('ZwaveLock: revival ladder pings a dead node until it answers', async () => {
+  const node = new MockNode({ status: ST.DEAD, values: {} });
+  node.ready = true;
+  let pings = 0;
+  node.ping = async () => {
+    pings++;
+    if (pings < 3) return false;
+    node.status = ST.ALIVE;
+    return true;
+  };
+  const lock = new ZwaveLock(
+    { node_id: 2, revive_base_ms: 5, revive_max_ms: 10 },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  await tick(150);
+  assert.ok(pings >= 3, `expected the ladder to keep pinging, saw ${pings}`);
+  const s = await lock.getState();
+  assert.equal(s.online, true, 'revived node is back online');
+  assert.equal(s.linkState, 'online');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: revived node that never interviewed gets an automatic re-interview', async () => {
+  const node = new MockNode({ status: ST.DEAD, values: {} });
+  node.ready = false;
+  let refreshed = 0;
+  node.refreshInfo = async () => { refreshed++; };
+  node.ping = async () => { node.status = ST.ALIVE; return true; };
+  const lock = new ZwaveLock(
+    { node_id: 2, revive_base_ms: 5, revive_max_ms: 10 },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  await tick(60);
+  assert.equal(refreshed, 1, 'exactly one auto re-interview (rate limited)');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: a dead node gets one ping before a command (revival chance)', async () => {
+  const node = new MockNode({ status: ST.DEAD, values: {}, current: 0x00 });
+  node.ready = true;
+  let pinged = 0;
+  node.ping = async () => { pinged++; node.status = ST.ALIVE; return true; };
+  const lock = new ZwaveLock(
+    { node_id: 2, verify_timeout_ms: 60, revive_base_ms: 60000 },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const r = await lock.lock('test');
+  assert.ok(pinged >= 1, 'pinged before commanding');
+  assert.equal(r.success, true, 'command succeeded after the revival ping');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: healthCheck returns ping, stats, and lifeline numbers', async () => {
+  const node = new MockNode({ status: ST.ALIVE, values: {} });
+  node.ready = true;
+  node.ping = async () => true;
+  node.statistics = { rtt: 55.5, rssi: -61, lwr: { repeaters: [] }, commandsDroppedTX: 0, timeoutResponse: 1 };
+  node.lastSeen = new Date('2026-07-14T00:00:00Z');
+  node.checkLifelineHealth = async () => ({
+    rating: 9,
+    results: [{ latency: 40, numNeighbors: 2, failedPingsNode: 0, routeChanges: 0, snrMargin: 17 }],
+  });
+  const lock = new ZwaveLock({ node_id: 2 }, { node, logger: { warn() {}, info() {} } });
+  await lock.init();
+  const h = await lock.healthCheck();
+  assert.equal(h.ping_ok, true);
+  assert.equal(h.statistics.rtt_ms, 55.5);
+  assert.equal(h.statistics.rssi_dbm, -61);
+  assert.deepEqual(h.statistics.route_repeaters, []);
+  assert.equal(h.lifeline.rating, 9);
+  assert.equal(h.lifeline.snr_margin_db, 17);
+  await lock.shutdown();
+  const bare = new ZwaveLock({ node_id: 2 }, { node: new MockNode() });
+  await assert.rejects(() => bare.healthCheck(), /driver is not running/);
+});
+
 test('ZwaveLock: capabilities include lock/unlock/state', () => {
   const lock = new ZwaveLock({ node_id: 2 }, { node: new MockNode() });
   for (const c of ['lock', 'unlock', 'state', 'battery']) assert.ok(lock.capabilities.has(c));
