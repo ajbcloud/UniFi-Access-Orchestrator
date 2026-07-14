@@ -37,7 +37,11 @@
   --bg-elev: #E2E3DE;
   --bg-hover: #BCBDB7;
   --bg-input: #D4D5D0;
-  --banner-bg: #CFD0CB;
+  --banner-bg: #1B5E33;      /* dark green banner on the concrete body */
+  --banner-fg: #EDF3ED;      /* light text on the green banner */
+  --banner-fg-dim: #B7CDBE;  /* muted light text (inactive tabs, uptime) */
+  --banner-accent: #C7E62E;  /* neon logo/active accent on the banner */
+  --card-accent: #1B5E33;    /* dark-green edge stripe on cards */
   --border: #A7A9A3;
   --border-light: #B8BAB4;
   --text-primary: #0C2414;
@@ -105,6 +109,10 @@
   --bg-hover: #0D3318;
   --bg-input: #010805;
   --banner-bg: #020C07;
+  --banner-fg: #E9F3E9;
+  --banner-fg-dim: #9FC1AB;
+  --banner-accent: #D4FF3B;
+  --card-accent: #2B6A45;
   --border: #123E20;
   --border-light: #1C5A32;
   --text-primary: #E9F3E9;
@@ -165,6 +173,10 @@
     --bg-hover: #0D3318;
     --bg-input: #010805;
     --banner-bg: #020C07;
+    --banner-fg: #E9F3E9;
+    --banner-fg-dim: #9FC1AB;
+    --banner-accent: #D4FF3B;
+    --card-accent: #2B6A45;
     --border: #123E20;
     --border-light: #1C5A32;
     --text-primary: #E9F3E9;
@@ -247,11 +259,11 @@ body {
 .logo {
   font-size: 15px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--banner-fg);
   letter-spacing: -0.3px;
 }
 
-.logo span { color: var(--accent); }
+.logo span { color: var(--banner-accent); }
 
 .status-pill {
   display: inline-flex;
@@ -266,6 +278,13 @@ body {
 .status-pill.online { background: var(--green-dim); color: var(--green); }
 .status-pill.offline { background: var(--red-dim); color: var(--red); }
 .status-pill.reconnecting { background: var(--yellow-dim); color: var(--yellow); }
+
+/* The status pill lives on the banner; keep its text bright enough to read on
+   the dark-green (light mode) or near-black (dark mode) banner background. */
+.header .status-pill { background: rgba(255,255,255,0.10); }
+.header .status-pill.online { color: #7FD69A; }
+.header .status-pill.offline { color: #FF8F7C; }
+.header .status-pill.reconnecting { color: #F0C24A; }
 
 .status-dot {
   width: 6px; height: 6px;
@@ -289,15 +308,15 @@ body {
   padding: 12px 20px;
   font-size: 13px;
   font-weight: 500;
-  color: var(--text-secondary);
+  color: var(--banner-fg-dim);
   cursor: pointer;
   border-bottom: 2px solid transparent;
   transition: all 0.15s;
   user-select: none;
 }
 
-.tab:hover { color: var(--text-primary); }
-.tab.active { color: var(--accent); border-bottom-color: var(--neon); }
+.tab:hover { color: var(--banner-fg); }
+.tab.active { color: var(--banner-fg); border-bottom-color: var(--neon); }
 
 /* Main content */
 .main { padding: 24px; max-width: 1400px; margin: 0 auto; }
@@ -313,6 +332,7 @@ body {
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--card-accent);
   border-radius: var(--radius);
   padding: 20px;
 }
@@ -467,6 +487,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .config-section {
   background: var(--bg-card);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--card-accent);
   border-radius: var(--radius);
   margin-bottom: 16px;
 }
@@ -1161,7 +1182,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:12px">
-    <div style="font-size:12px;color:var(--text-muted)" id="uptimeDisplay"></div>
+    <div style="font-size:12px;color:var(--banner-fg-dim)" id="uptimeDisplay"></div>
     <button class="btn btn-sm btn-secondary" id="themeToggle" onclick="toggleTheme()" title="Switch color theme" aria-label="Switch color theme">&#127769; Theme</button>
     <button class="btn btn-sm btn-secondary" id="headerSetupBtn" onclick="showSetupWizard()" title="Controller connection and setup">&#9881; Setup</button>
   </div>
