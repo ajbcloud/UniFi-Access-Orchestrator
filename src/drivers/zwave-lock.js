@@ -4,6 +4,7 @@ const { LockDriver, LockState } = require('./lock-driver');
 const { ZwaveManager } = require('./zwave-manager');
 const { loadSecurityKeys } = require('./zwave-keys');
 const { SECURITY_CLASS_LABELS } = require('./zwave-pairing');
+const lockCatalog = require('./lock-catalog');
 
 // Z-Wave Door Lock CC (0x62) target modes.
 const DOOR_LOCK_MODE = Object.freeze({ UNSECURED: 0x00, SECURED: 0xff });
@@ -44,17 +45,11 @@ function modeToState(mode) {
 // radio cannot deliver a frame right now.
 const NODE_STATUS = Object.freeze({ UNKNOWN: 0, ASLEEP: 1, AWAKE: 2, DEAD: 3, ALIVE: 4 });
 
-// Known lock models, keyed by manufacturerId:productType:productId. The
-// zwave-js device db labels the Yale ZW2 module with one combined multi-model
-// string ("YRD226 / YRC226 / ... / YRD446"), so this map supplies clean names
-// for the models we deploy; anything unmapped falls back to the db label and
-// then the raw ids, never a bare "unknown". Keys are lower-case hex.
-const LOCK_PROFILES = Object.freeze({
-  '0x003b:0x0001:0x0469': 'Schlage BE469ZP Touchscreen Deadbolt',
-  '0x0129:0x8002:0x0600': 'Yale Assure Deadbolt (ZW2)',
-  '0x0129:0x8002:0x1600': 'Yale Assure Deadbolt (ZW2)',
-  '0x0129:0x8002:0x4600': 'Yale Assure Deadbolt (ZW2)',
-});
+// Clean model names come from the shared lock catalog (src/lock-catalog.js),
+// keyed by manufacturerId:productType:productId. The zwave-js device db labels
+// the Yale ZW2 module with one combined multi-model string, so the catalog
+// supplies deployment-clean names; anything unmapped falls back to the db
+// label and then the raw ids, never a bare "unknown".
 
 function hex4(n) {
   return '0x' + Number(n).toString(16).padStart(4, '0');
@@ -394,7 +389,7 @@ class ZwaveLock extends LockDriver {
     const prodId = typeof node.productId === 'number' ? node.productId : null;
     let model = null;
     if (mfgId != null && prodType != null && prodId != null) {
-      model = LOCK_PROFILES[`${hex4(mfgId)}:${hex4(prodType)}:${hex4(prodId)}`] || null;
+      model = lockCatalog.modelNameForIds(mfgId, prodType, prodId) || null;
     }
     if (!model && dc && dc.label) model = String(dc.label);
     if (!model && typeof node.label === 'string' && node.label) model = node.label;

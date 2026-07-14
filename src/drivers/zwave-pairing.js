@@ -110,6 +110,9 @@ class ZwavePairing {
     this.nodeId = null;
     this.security = null;
     this.securityMode = 'auto';   // 'auto' | 's2' | 's0' (operator-selected)
+    this.lockId = null;           // operator-chosen target lock id (Add Deadbolt)
+    this.modelKey = null;         // catalog model key selected for this pairing
+    this.lockName = null;         // operator-typed friendly name for the lock
     this.error = null;
     this.lastResult = null;       // 'done' | 'failed' | 'cancelled'
     this._timer = null;
@@ -134,6 +137,8 @@ class ZwavePairing {
       node_id: this.nodeId,
       security: this.security,
       security_mode: this.securityMode,
+      lock_id: this.lockId,
+      model_key: this.modelKey,
       error: this.error,
       last_result: this.lastResult,
       keys_generated: this._keysGenerated,
@@ -358,6 +363,13 @@ class ZwavePairing {
     this.mode = 'include';
     this.securityMode = Object.prototype.hasOwnProperty.call(SECURITY_MODES, options.security)
       ? options.security : 'auto';
+    // Add Deadbolt: the operator can target a NEW lock id and pick a catalog
+    // model. Both are carried through the session so onIncludeDone stores the
+    // node under the chosen id (never clobbering an existing lock) with its
+    // model recorded. Absent = today's single-lock behavior (default id).
+    this.lockId = typeof options.lock_id === 'string' && options.lock_id ? options.lock_id : null;
+    this.modelKey = typeof options.model_key === 'string' && options.model_key ? options.model_key : null;
+    this.lockName = typeof options.name === 'string' && options.name ? options.name : null;
     this._stage('starting', this.timeouts.starting,
       () => this._fail('the Z-Wave controller did not start in time'));
 
@@ -552,30 +564,52 @@ class ZwavePairing {
   async _onNodeAdded(node, result) {
     if (!this.isActive()) return;
     const cls = this._resolveJoinedClass(node);
-    let label = cls != null ? SECURITY_CLASS_LABELS[cls] : null;
-    if (result && result.lowSecurity && !label) {
-      // Joined without ANY encrypted class: a deadbolt must never operate
-      // unencrypted. Fail loud with the recovery path, naming the Yale case
-      // since a wedged S2 bootstrap cannot fall back to S0 in-session.
+    const label = cls != null ? SECURITY_CLASS_LABELS[cls] : null;
+
+    // Positive-security gate (fail-secure): a deadbolt is accepted ONLY when
+    // the join is encrypted. Two insecure cases must FAIL loud, never be
+    // relabelled as secure:
+    //   - The class RESOLVED to a non-encrypted value (None = -1, Temporary =
+    //     -2, or anything absent from the label map). This is the hole the
+    //     old code left open: a lock that lacks the Security-2 CC joins at
+    //     None while zwave-js reports result.lowSecurity === false, so gating
+    //     on lowSecurity alone let it through and fabricated an 'S2 Access
+    //     Control' label for an UNENCRYPTED deadbolt.
+    //   - zwave-js flagged lowSecurity and no encrypted class resolved.
+    const resolvedButInsecure = cls != null && !label;
+    const flaggedInsecure = !!(result && result.lowSecurity) && !label;
+    if (resolvedButInsecure || flaggedInsecure) {
       this.nodeId = node && node.id;
       await this._fail('the lock joined WITHOUT encryption (S2 bootstrap failed or was skipped). '
         + 'Unpair it (exclusion), move the stick close to the lock, and pair again; '
         + 'for a Yale YRD256 choose the S0 security option when retrying.');
       return;
     }
-    if (!label) {
-      // Controller reported a fully-secure join but the class is not readable
-      // (some stacks cache it late). Trust the strategy that was requested.
-      label = this.securityMode === 's0' ? 'S0 Legacy' : 'S2 Access Control';
+
+    let finalLabel = label;
+    if (!finalLabel) {
+      // Only reachable when the class is UNREADABLE (cls === null) and the
+      // controller did NOT flag low security: some stacks cache the class a
+      // beat after 'node added'. An actually-insecure join resolves to None
+      // (-1) and was rejected above, so trusting the requested strategy here
+      // cannot accept an unencrypted lock.
+      finalLabel = this.securityMode === 's0' ? 'S0 Legacy' : 'S2 Access Control';
     }
     this.nodeId = node && node.id;
-    this.security = label;
+    this.security = finalLabel;
     this.lastResult = 'done';
     this._setState('done');
-    this.logger.info && this.logger.info(`Z-Wave inclusion complete: node ${this.nodeId} (${label})`);
+    this.logger.info && this.logger.info(`Z-Wave inclusion complete: node ${this.nodeId} (${finalLabel})`);
     await this._teardown({ stopRadio: true });
     try {
-      await this.onIncludeDone({ nodeId: this.nodeId, securityClass: this.security });
+      // Only attach the Add-Deadbolt fields when the operator supplied them,
+      // so a plain single-lock pairing keeps the original {nodeId,
+      // securityClass} callback shape.
+      const donePayload = { nodeId: this.nodeId, securityClass: this.security };
+      if (this.lockId) donePayload.lockId = this.lockId;
+      if (this.modelKey) donePayload.modelKey = this.modelKey;
+      if (this.lockName) donePayload.name = this.lockName;
+      await this.onIncludeDone(donePayload);
     } catch (err) {
       // Paired on the radio but the app could not persist/activate: surface it.
       this.lastResult = 'failed';

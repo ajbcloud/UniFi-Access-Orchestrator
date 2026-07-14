@@ -68,6 +68,8 @@
       "locks": {
         "front_deadbolt": {
           "name": "Front Door Deadbolt",
+          "manufacturer": "Yale",
+          "model_key": "yale-assure-zw2",
           "node_id": 0,
           "security_class": null,
           "verify_timeout_ms": 12000,

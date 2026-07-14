@@ -37,6 +37,7 @@ const DeadboltController = require('./deadbolt-controller');
 const FakeLock = require('./drivers/fake-lock');
 const { ZwaveLock } = require('./drivers/zwave-lock');
 const { ZwaveManager } = require('./drivers/zwave-manager');
+const lockCatalog = require('./drivers/lock-catalog');
 const { ZwavePairing } = require('./drivers/zwave-pairing');
 const { loadSecurityKeys, ensureSecurityKeys } = require('./drivers/zwave-keys');
 const { SustainedFlagMonitor } = require('./alert-monitors');
@@ -128,29 +129,56 @@ const zwavePairing = new ZwavePairing({
     logger.info('Z-Wave: generated and stored new S2 security keys (kept in config; do not delete after pairing)');
     return { generated: true };
   },
-  onIncludeDone: async ({ nodeId, securityClass }) => {
+  onIncludeDone: async ({ nodeId, securityClass, lockId: chosenId, modelKey, name }) => {
+    // Resolve the target lock id. Add Deadbolt supplies an explicit id so a
+    // second lock is stored under its OWN key; without one we keep today's
+    // single-lock behavior (the rules' lock id, else the first saved, else
+    // the default). A chosen id that collides with an existing DIFFERENT node
+    // is de-duplicated so pairing never silently clobbers another lock.
+    let resolvedId = null;
     persistZwaveMutation((cfg) => {
       cfg.devices = cfg.devices || {};
       const zw = cfg.devices.zwave = cfg.devices.zwave || {};
       zw.locks = zw.locks || {};
-      const lockId = (cfg.deadbolt_rules && cfg.deadbolt_rules.lock_id)
+      let lockId = chosenId
+        || (cfg.deadbolt_rules && cfg.deadbolt_rules.lock_id)
         || Object.keys(zw.locks)[0] || 'front_deadbolt';
+      // Never overwrite a different, still-paired lock that happens to share
+      // the requested id: pick a free suffix instead.
+      if (chosenId && zw.locks[lockId] && zw.locks[lockId].node_id
+          && zw.locks[lockId].node_id !== nodeId) {
+        let n = 2;
+        while (zw.locks[`${lockId}_${n}`] && zw.locks[`${lockId}_${n}`].node_id
+               && zw.locks[`${lockId}_${n}`].node_id !== nodeId) n++;
+        lockId = `${lockId}_${n}`;
+      }
+      resolvedId = lockId;
+      const model = modelKey && lockCatalog.profileForKey(modelKey);
       zw.locks[lockId] = Object.assign(
         { verify_timeout_ms: 12000, verify_retries: 1, retry_backoff_ms: 1500, poll_minutes: 20, low_battery_pct: 25 },
         zw.locks[lockId],
-        // security_class persists the class the join actually granted (S2
-        // Access Control for the Schlage, S0 Legacy for the Yale) so the UI
-        // can show it after restarts without a live node read.
-        { node_id: nodeId, security_class: securityClass || null }
+        // security_class persists the class the join actually granted so the
+        // UI shows it after restarts without a live node read. manufacturer /
+        // model_key record the operator's catalog choice for the locks table
+        // and the per-model exclude/reset guidance.
+        {
+          node_id: nodeId,
+          security_class: securityClass || null,
+          name: name || (zw.locks[lockId] && zw.locks[lockId].name) || null,
+          manufacturer: (model && model.manufacturer) || (zw.locks[lockId] && zw.locks[lockId].manufacturer) || null,
+          model_key: modelKey || (zw.locks[lockId] && zw.locks[lockId].model_key) || null,
+        }
       );
       zw.enabled = true;
       // buildDeadbolt() activates on deadbolt_rules; seed the minimal block so
-      // the freshly-paired lock is manageable (rules stay inert without a
-      // trigger_door, which the operator configures separately).
-      cfg.deadbolt_rules = Object.assign({ lock_id: lockId }, cfg.deadbolt_rules);
+      // the freshly-paired lock is manageable. Only default the active control
+      // lock id when none is set yet, so adding a SECOND lock does not
+      // repoint the door away from the first.
+      cfg.deadbolt_rules = cfg.deadbolt_rules || {};
+      if (!cfg.deadbolt_rules.lock_id) cfg.deadbolt_rules.lock_id = lockId;
     });
     await bringDeadboltOnline();
-    logger.info(`Z-Wave: lock paired as node ${nodeId} (${securityClass || 'class unknown'}) and brought online`);
+    logger.info(`Z-Wave: lock paired as node ${nodeId} (${securityClass || 'class unknown'}) under "${resolvedId}" and brought online`);
   },
   onExcludeDone: async ({ nodeId }) => {
     const zw = config.devices && config.devices.zwave;
@@ -786,13 +814,28 @@ function pairingErrorStatus(err) {
 
 app.post('/api/deadbolt/pair/start', async (req, res) => {
   try {
+    const b = req.body || {};
     // security: 'auto' (default) | 's2' | 's0'. s0 exists for locks like the
     // Yale YRD256 whose S2 bootstrap wedges and cannot fall back in-session.
-    const status = await zwavePairing.startInclusion({ security: req.body && req.body.security });
+    // lock_id + model_key drive Add Deadbolt: pair a NEW named lock of a
+    // chosen catalog model (both optional; absent = single-lock behavior).
+    const status = await zwavePairing.startInclusion({
+      security: b.security,
+      lock_id: b.lock_id,
+      model_key: b.model_key,
+      name: b.name,
+    });
     res.json({ status: 'started', mode: 'include', state: status.state, keys_generated: status.keys_generated });
   } catch (err) {
     res.status(pairingErrorStatus(err)).json({ error: err.message, state: zwavePairing.state });
   }
+});
+
+// The deadbolt model catalog: manufacturers, models, and per-model enroll /
+// exclude / reset gestures for the Add Deadbolt pickers and the locks table.
+// Static reference data; admin-gated like the rest of /api.
+app.get('/api/deadbolt/catalog', (req, res) => {
+  res.json({ manufacturers: lockCatalog.getCatalog() });
 });
 
 app.get('/api/deadbolt/pair/status', (req, res) => {
@@ -938,6 +981,7 @@ app.get('/api/deadbolt/locks', (req, res) => {
       paired: nodeId > 0,
       on_stick: !!(nodeId && zwaveManager.getNode(nodeId)),
       model: bound ? snap.model : nodeModelLabel(zwaveManager.getNode(nodeId)),
+      model_key: (lc && lc.model_key) || null,
       security_class: bound ? snap.securityClass : ((lc && lc.security_class) || null),
       bolt: bound ? snap.boltState : null,
       battery: bound ? snap.battery : null,

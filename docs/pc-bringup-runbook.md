@@ -48,12 +48,34 @@ release containing in-app pairing).
 
 ## 4. Pair the lock
 
-Both supported locks pair from the same panel. Pick the security mode in the
-dropdown next to Pair New Lock: **Auto** works for both locks (S2 when the
-lock supports it, S0 when that is all it has); **S2 only** matches the
-Schlage; **S0 only** is the fallback for a Yale whose S2 handshake wedges.
-The app persists the security keys in its 0600 config file automatically at
-first pairing; nothing needs to be set in environment variables.
+Use **Add a deadbolt** in the Smart Deadbolt panel: pick the manufacturer and
+model, give it a name (for example "Front Door"), and the panel shows that
+model's exact enroll gesture and pre-selects the right security mode. You can
+add more than one lock; each is stored under its own name and appears in the
+Paired locks table with its own Unpair (which shows that model's exclude and
+factory-reset steps on hover). Security modes: **Auto** works for most locks
+(S2 when supported, S0 otherwise); **S0 only** is the fallback for a Yale
+whose S2 handshake wedges. The app persists the security keys in its 0600
+config file automatically at first pairing; nothing goes in environment
+variables.
+
+### Supported models and procedures (from Add a deadbolt)
+
+| Family | Enroll (controller in Add mode) | Exclude (Remove mode) | Factory reset | Joins at |
+| --- | --- | --- | --- | --- |
+| Schlage BE469ZP / BE468ZP | Schlage button, 6-digit programming code, 0 | Schlage button, programming code | hold inside PCB button ~7s | S2 (often S0) |
+| Yale Assure (ZW/ZW2 module) | Master PIN # 7 # 1 # | Master PIN # 7 # 3 # | hold reset button while repowering (PIN resets to 12345678) | S0 |
+| Yale Assure (ZW3 / 700-series) | Master PIN # 7 # 1 #, scan DSK/QR for S2 | Master PIN # 7 # 3 # | hold reset while repowering | S2 |
+| Kwikset SmartCode 910-916 | interior button A once | button A once | hold Program while reinserting battery ~30s, press Program again | S0 |
+| Kwikset Home Connect 620 | button A once, scan SmartStart QR | button A once | as above | S2 |
+| Ultraloq U-Bolt Pro | keypad button 5 (blue), scan DSK | keypad button 5 (red) | app Delete+Reset, needle reset ~3s | S2 |
+| Weiser / Baldwin (Home Connect) | interior button A once | button A once | hold Program while reinserting battery ~30s | S0 (620/918: S2) |
+| Alfred DB1 / DB2 | Master Mode (** + passcode + #), menu 88, add | menu 88, remove | see lock manual | verify |
+| Other / not listed | run the lock's inclusion sequence per its manual | run its exclusion sequence | see manual | Auto |
+
+Exclusion is generic on the controller side (any brand); only the on-device
+gesture differs, which is why the panel shows the right one per model. Alfred
+and a few field details are marked "verify against the manual" in the UI.
 
 ### Schlage BE469ZP (joins at S2)
 
