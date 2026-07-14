@@ -1,8 +1,32 @@
 'use strict';
 
-// S2 InclusionStrategy.Security_S2 in zwave-js (verified against v15.25.3).
-// Hard-coded so this module never needs to require the native package.
+// zwave-js InclusionStrategy values (verified against v15.25.3). Hard-coded
+// so this module never needs to require the native package.
+// Default: "S2 if supported, otherwise S0 for devices that need encryption";
+// with forceSecurity a lock can never join unencrypted under it.
+const INCLUSION_STRATEGY_DEFAULT = 0;
+const INCLUSION_STRATEGY_SECURITY_S0 = 3;
 const INCLUSION_STRATEGY_SECURITY_S2 = 4;
+
+// zwave-js SecurityClass values -> operator-facing labels. Everything in this
+// map is an ENCRYPTED class and acceptable for a deadbolt; anything else
+// (None = -1, unknown) is not. The Schlage BE469ZP grants S2 Access Control;
+// the Yale YRD256-ZW2 grants S0 Legacy (its S2 bootstrap is known-flaky, and
+// zwave-js cannot retry S0 after a failed S2 in the same session, hence the
+// operator-selectable security mode below).
+const SECURITY_CLASS_LABELS = Object.freeze({
+  0: 'S2 Unauthenticated',
+  1: 'S2 Authenticated',
+  2: 'S2 Access Control',
+  7: 'S0 Legacy',
+});
+
+// Operator-selectable inclusion security mode -> zwave-js strategy.
+const SECURITY_MODES = Object.freeze({
+  auto: INCLUSION_STRATEGY_DEFAULT, // S2 when the lock can, S0 when that is all it has
+  s2: INCLUSION_STRATEGY_SECURITY_S2,
+  s0: INCLUSION_STRATEGY_SECURITY_S0,
+});
 
 /**
  * One-at-a-time Z-Wave pairing (inclusion) / unpairing (exclusion) session,
@@ -85,6 +109,7 @@ class ZwavePairing {
     this.dsk = null;              // partial DSK (PIN block withheld by zwave-js)
     this.nodeId = null;
     this.security = null;
+    this.securityMode = 'auto';   // 'auto' | 's2' | 's0' (operator-selected)
     this.error = null;
     this.lastResult = null;       // 'done' | 'failed' | 'cancelled'
     this._timer = null;
@@ -108,6 +133,7 @@ class ZwavePairing {
       dsk: this.state === 'dsk_pending' ? this.dsk : null,
       node_id: this.nodeId,
       security: this.security,
+      security_mode: this.securityMode,
       error: this.error,
       last_result: this.lastResult,
       keys_generated: this._keysGenerated,
@@ -304,23 +330,19 @@ class ZwavePairing {
     }
 
     if (node) {
-      const S2_ACCESS_CONTROL = 2; // zwave-js SecurityClass.S2_AccessControl
-      let secClass = null;
-      try {
-        secClass = typeof node.getHighestSecurityClass === 'function'
-          ? node.getHighestSecurityClass() : null;
-      } catch (e) { /* security class not known yet */ }
-      if (secClass === S2_ACCESS_CONTROL) {
+      const secClass = this._resolveJoinedClass(node);
+      if (secClass != null && SECURITY_CLASS_LABELS[secClass]) {
         this.logger.warn && this.logger.warn(
-          `Z-Wave include: 'node added' never fired but node ${node.id} joined with S2 Access Control; adopting it`);
+          `Z-Wave include: 'node added' never fired but node ${node.id} joined with `
+          + `${SECURITY_CLASS_LABELS[secClass]}; adopting it`);
         await this._onNodeAdded(node, { lowSecurity: false });
         return;
       }
       this.nodeId = node.id;
       await this._fail(
-        `node ${node.id} joined but not with S2 Access Control (usually a wrong PIN or weak signal). ` +
+        `node ${node.id} joined but without an encrypted class (usually a wrong PIN or weak signal). ` +
         'Run Unpair to remove it, move the stick within a few feet of the lock, ' +
-        'check the 5-digit PIN on the lock label, and pair again.');
+        'check the 5-digit PIN on the lock label (S2 locks only), and pair again.');
       return;
     }
 
@@ -330,10 +352,12 @@ class ZwavePairing {
       'within a few feet. The Z-Wave debug log (Open Log Folder) has the full handshake.');
   }
 
-  async startInclusion() {
+  async startInclusion(options = {}) {
     this._assertCanStart();
     this._reset();
     this.mode = 'include';
+    this.securityMode = Object.prototype.hasOwnProperty.call(SECURITY_MODES, options.security)
+      ? options.security : 'auto';
     this._stage('starting', this.timeouts.starting,
       () => this._fail('the Z-Wave controller did not start in time'));
 
@@ -348,7 +372,8 @@ class ZwavePairing {
       const zw = this.getZwaveConfig() || {};
       this._note(`include session starting on ${zw.serial_path || 'unset port'} `
         + `(driver ${this.manager.isRunning() ? 'already running' : 'cold start'}, `
-        + `S2 keys ${this._keysGenerated ? 'newly generated' : 'existing'})`);
+        + `security mode ${this.securityMode}, `
+        + `keys ${this._keysGenerated ? 'newly generated' : 'existing'})`);
       await this._ensureFreshDriver(zw);
       // The session may have been failed or cancelled while we awaited (e.g.
       // the stage timer fired). Never keep working a dead session: doing so
@@ -434,10 +459,16 @@ class ZwavePairing {
         },
       };
 
-      const accepted = await controller.beginInclusion({
-        strategy: INCLUSION_STRATEGY_SECURITY_S2,
-        userCallbacks,
-      });
+      // Strategy per the operator's choice. auto = zwave-js Default with
+      // forceSecurity, so a lock joins S2 when it can and S0 when that is all
+      // it has, but never unencrypted. s0 exists because a Yale YRD256 whose
+      // S2 bootstrap wedges cannot fall back to S0 in the same session; the
+      // operator excludes and re-pairs with S0 selected. The S2 userCallbacks
+      // are always passed: they only fire when the device actually does an S2
+      // bootstrap, and nothing in this state machine blocks waiting for them.
+      const inclusionOptions = { strategy: SECURITY_MODES[this.securityMode], userCallbacks };
+      if (this.securityMode === 'auto') inclusionOptions.forceSecurity = true;
+      const accepted = await controller.beginInclusion(inclusionOptions);
       if (!this.isActive()) {
         // The session died while beginInclusion was in flight; the radio may
         // now be listening with nobody driving it, so shut it down.
@@ -504,20 +535,44 @@ class ZwavePairing {
     return this.status();
   }
 
+  // The class the node actually joined with, or null when unknown. Reads the
+  // node so it works for every strategy (S2 bootstrap, S0 bootstrap, and the
+  // Default strategy's S0Downgrade case, which zwave-js flags as lowSecurity
+  // even though the join IS encrypted at S0).
+  _resolveJoinedClass(node) {
+    try {
+      const cls = node && typeof node.getHighestSecurityClass === 'function'
+        ? node.getHighestSecurityClass() : null;
+      return typeof cls === 'number' ? cls : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   async _onNodeAdded(node, result) {
     if (!this.isActive()) return;
-    if (result && result.lowSecurity) {
-      // A BE469ZP joined without S2 cannot operate its Door Lock CC securely.
-      // Fail loud with the recovery path rather than reporting success.
+    const cls = this._resolveJoinedClass(node);
+    let label = cls != null ? SECURITY_CLASS_LABELS[cls] : null;
+    if (result && result.lowSecurity && !label) {
+      // Joined without ANY encrypted class: a deadbolt must never operate
+      // unencrypted. Fail loud with the recovery path, naming the Yale case
+      // since a wedged S2 bootstrap cannot fall back to S0 in-session.
       this.nodeId = node && node.id;
-      await this._fail('the lock joined WITHOUT S2 security (usually a wrong PIN or weak signal). Unpair it, move the stick close to the lock, and pair again.');
+      await this._fail('the lock joined WITHOUT encryption (S2 bootstrap failed or was skipped). '
+        + 'Unpair it (exclusion), move the stick close to the lock, and pair again; '
+        + 'for a Yale YRD256 choose the S0 security option when retrying.');
       return;
     }
+    if (!label) {
+      // Controller reported a fully-secure join but the class is not readable
+      // (some stacks cache it late). Trust the strategy that was requested.
+      label = this.securityMode === 's0' ? 'S0 Legacy' : 'S2 Access Control';
+    }
     this.nodeId = node && node.id;
-    this.security = 'S2 Access Control';
+    this.security = label;
     this.lastResult = 'done';
     this._setState('done');
-    this.logger.info && this.logger.info(`Z-Wave inclusion complete: node ${this.nodeId}`);
+    this.logger.info && this.logger.info(`Z-Wave inclusion complete: node ${this.nodeId} (${label})`);
     await this._teardown({ stopRadio: true });
     try {
       await this.onIncludeDone({ nodeId: this.nodeId, securityClass: this.security });
@@ -560,4 +615,10 @@ class ZwavePairing {
   }
 }
 
-module.exports = { ZwavePairing, INCLUSION_STRATEGY_SECURITY_S2 };
+module.exports = {
+  ZwavePairing,
+  INCLUSION_STRATEGY_DEFAULT,
+  INCLUSION_STRATEGY_SECURITY_S0,
+  INCLUSION_STRATEGY_SECURITY_S2,
+  SECURITY_CLASS_LABELS,
+};

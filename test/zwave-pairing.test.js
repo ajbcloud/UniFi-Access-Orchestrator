@@ -4,7 +4,12 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { EventEmitter } = require('events');
 
-const { ZwavePairing, INCLUSION_STRATEGY_SECURITY_S2 } = require('../src/drivers/zwave-pairing');
+const {
+  ZwavePairing,
+  INCLUSION_STRATEGY_DEFAULT,
+  INCLUSION_STRATEGY_SECURITY_S0,
+  INCLUSION_STRATEGY_SECURITY_S2,
+} = require('../src/drivers/zwave-pairing');
 
 // Controller mock: captures beginInclusion options so tests can drive the
 // userCallbacks, and lets tests emit 'inclusion started' / 'node added' etc.
@@ -65,7 +70,10 @@ test('happy path: start -> waiting -> dsk -> pin -> provisioning -> done', async
   assert.strictEqual(pairing.state, 'starting');
   assert.strictEqual(calls.keysPersisted, 1);
   const ctl = manager.mockController;
-  assert.strictEqual(ctl.inclusionOpts.strategy, INCLUSION_STRATEGY_SECURITY_S2);
+  // Default mode is auto: zwave-js Default strategy with security forced, so
+  // a lock joins S2 when it can and S0 when that is all it has.
+  assert.strictEqual(ctl.inclusionOpts.strategy, INCLUSION_STRATEGY_DEFAULT);
+  assert.strictEqual(ctl.inclusionOpts.forceSecurity, true);
 
   ctl.emit('inclusion started');
   assert.strictEqual(pairing.state, 'waiting_for_device');
@@ -104,16 +112,64 @@ test('keys are persisted before beginInclusion (ordering)', async () => {
   assert.deepStrictEqual(order, ['keys', 'begin']);
 });
 
-test('lowSecurity join fails loud with the recovery message', async () => {
+test('an unencrypted join fails loud with the recovery message', async () => {
   const { pairing, manager, calls } = makePairing();
   await pairing.startInclusion();
   const ctl = manager.mockController;
   ctl.emit('inclusion started');
-  ctl.emit('node added', { id: 9 }, { lowSecurity: true });
+  // lowSecurity and no encrypted class resolvable: a deadbolt must never
+  // operate unencrypted, so this is a hard failure.
+  ctl.emit('node added', { id: 9, getHighestSecurityClass: () => -1 }, { lowSecurity: true });
   await new Promise((r) => setImmediate(r));
   assert.strictEqual(pairing.state, 'failed');
-  assert.match(pairing.status().error, /WITHOUT S2/);
+  assert.match(pairing.status().error, /WITHOUT encryption/);
   assert.strictEqual(calls.includeDone.length, 0);
+});
+
+test('an S0 join is ACCEPTED and recorded as S0 Legacy (the Yale case)', async () => {
+  const { pairing, manager, calls } = makePairing();
+  await pairing.startInclusion({ security: 'auto' });
+  const ctl = manager.mockController;
+  ctl.emit('inclusion started');
+  // zwave-js flags an S0 join under the Default strategy as lowSecurity
+  // (S0Downgrade) even though it IS encrypted; the class decides, not the flag.
+  ctl.emit('node added', { id: 12, getHighestSecurityClass: () => 7 }, { lowSecurity: true });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(pairing.state, 'done');
+  assert.strictEqual(pairing.status().security, 'S0 Legacy');
+  assert.deepStrictEqual(calls.includeDone, [{ nodeId: 12, securityClass: 'S0 Legacy' }]);
+});
+
+test('security mode s2 and s0 map to the matching zwave-js strategies', async () => {
+  for (const [mode, strategy, wantForce] of [
+    ['s2', INCLUSION_STRATEGY_SECURITY_S2, undefined],
+    ['s0', INCLUSION_STRATEGY_SECURITY_S0, undefined],
+  ]) {
+    const { pairing, manager } = makePairing();
+    await pairing.startInclusion({ security: mode });
+    assert.strictEqual(manager.mockController.inclusionOpts.strategy, strategy, mode);
+    assert.strictEqual(manager.mockController.inclusionOpts.forceSecurity, wantForce, mode);
+    assert.strictEqual(pairing.status().security_mode, mode);
+    await pairing.cancel();
+  }
+  // an unknown mode falls back to auto rather than failing the session
+  const { pairing, manager } = makePairing();
+  await pairing.startInclusion({ security: 'bogus' });
+  assert.strictEqual(manager.mockController.inclusionOpts.strategy, INCLUSION_STRATEGY_DEFAULT);
+  await pairing.cancel();
+});
+
+test('an S0-only lock never blocks on the PIN step (no dsk stage armed)', async () => {
+  const { pairing, manager } = makePairing();
+  await pairing.startInclusion({ security: 's0' });
+  const ctl = manager.mockController;
+  ctl.emit('inclusion started');
+  assert.strictEqual(pairing.state, 'waiting_for_device');
+  // No validateDSKAndEnterPIN callback fires for S0; the node just lands.
+  ctl.emit('node added', { id: 4, getHighestSecurityClass: () => 7 }, { lowSecurity: false });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(pairing.state, 'done');
+  assert.strictEqual(pairing.status().security, 'S0 Legacy');
 });
 
 test('bad PIN format and wrong-state submissions are rejected', async () => {
@@ -327,7 +383,7 @@ test('provisioning timeout grants one grace period while the join is mid-flight'
   assert.strictEqual(pairing.status().node_id, 9);
 });
 
-test('a late join without S2 Access Control fails with the unpair guidance', async () => {
+test('a late join without ANY encrypted class fails with the unpair guidance', async () => {
   const { pairing, manager } = makePairing({
     timeouts: { starting: 500, waiting: 500, dsk: 500, provisioning: 20, provisioning_grace: 20 },
   });
@@ -336,13 +392,30 @@ test('a late join without S2 Access Control fails with the unpair guidance', asy
   ctl.nodes = new Map([[1, { id: 1 }]]);
   await driveToPin(pairing, ctl);
 
-  ctl.nodes.set(9, { id: 9, getHighestSecurityClass: () => 0 }); // S2_Unauthenticated
+  ctl.nodes.set(9, { id: 9, getHighestSecurityClass: () => -1 }); // SecurityClass.None
   await new Promise((r) => setTimeout(r, 120));
 
   assert.strictEqual(pairing.state, 'failed');
-  assert.match(pairing.status().error, /not with S2 Access Control/);
+  assert.match(pairing.status().error, /without an encrypted class/);
   assert.match(pairing.status().error, /Unpair/);
   assert.strictEqual(pairing.status().node_id, 9);
+});
+
+test('a late join at S0 Legacy is adopted (the slow Yale case)', async () => {
+  const { pairing, manager, calls } = makePairing({
+    timeouts: { starting: 500, waiting: 500, dsk: 500, provisioning: 20, provisioning_grace: 20 },
+  });
+  const ctl = manager.mockController;
+  ctl.ownNodeId = 1;
+  ctl.nodes = new Map([[1, { id: 1 }]]);
+  await driveToPin(pairing, ctl);
+
+  ctl.nodes.set(11, { id: 11, getHighestSecurityClass: () => 7 }); // S0_Legacy
+  await new Promise((r) => setTimeout(r, 120));
+
+  assert.strictEqual(pairing.state, 'done');
+  assert.strictEqual(pairing.status().security, 'S0 Legacy');
+  assert.deepStrictEqual(calls.includeDone, [{ nodeId: 11, securityClass: 'S0 Legacy' }]);
 });
 
 test('provisioning timeout with no joined node still fails with guidance', async () => {

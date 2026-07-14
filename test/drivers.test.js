@@ -29,6 +29,17 @@ class MockNode extends EventEmitter {
     this.getCalls = 0;
     if (opts.status != null) this.status = opts.status;
     if (opts.ready != null) this.ready = opts.ready;
+    // Identity surface (zwave-js: MaybeNotKnown until interviewed).
+    if (opts.identity) {
+      const idn = opts.identity;
+      if (idn.manufacturerId != null) this.manufacturerId = idn.manufacturerId;
+      if (idn.productType != null) this.productType = idn.productType;
+      if (idn.productId != null) this.productId = idn.productId;
+      if (idn.deviceConfig) this.deviceConfig = idn.deviceConfig;
+      if (idn.label) this.label = idn.label;
+      if (idn.manufacturer) this.manufacturer = idn.manufacturer;
+      if (idn.securityClass != null) this.getHighestSecurityClass = () => idn.securityClass;
+    }
     const self = this;
     // A real node exposes a value cache; only mock it when the test provides
     // one, so the legacy tests keep exercising the no-cache live-read path.
@@ -410,6 +421,76 @@ test('ZwaveLock: healthCheck returns ping, stats, and lifeline numbers', async (
   await lock.shutdown();
   const bare = new ZwaveLock({ node_id: 2 }, { node: new MockNode() });
   await assert.rejects(() => bare.healthCheck(), /driver is not running/);
+});
+
+// ---------------------------------------------------------------------------
+// Lock identity: model auto-detect, security class, friendly name. The model
+// must never be a bare "unknown" once identity is readable.
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: known Schlage ids resolve to the clean profile name', async () => {
+  const { lock } = await makeZwave({
+    identity: {
+      manufacturerId: 0x003b, productType: 0x0001, productId: 0x0469,
+      deviceConfig: { manufacturer: 'Allegion', label: 'BE469ZP', description: 'Touchscreen Deadbolt Z-Wave Plus' },
+      securityClass: 2,
+    },
+  });
+  const s = await lock.getState();
+  assert.equal(s.model, 'Schlage BE469ZP Touchscreen Deadbolt');
+  assert.equal(s.manufacturer, 'Allegion');
+  assert.equal(s.securityClass, 'S2 Access Control');
+});
+
+test('ZwaveLock: known Yale ZW2 ids resolve to the Yale profile, S0 class', async () => {
+  const { lock } = await makeZwave({
+    identity: {
+      manufacturerId: 0x0129, productType: 0x8002, productId: 0x1600,
+      deviceConfig: { manufacturer: 'Yale', label: 'YRD226 / YRC226 / YRC246 / YRD256 / YRC256 / YRD446' },
+      securityClass: 7,
+    },
+  });
+  const s = await lock.getState();
+  assert.equal(s.model, 'Yale Assure Deadbolt (ZW2)');
+  assert.equal(s.securityClass, 'S0 Legacy');
+});
+
+test('ZwaveLock: unmapped device falls back to the device-db label, then raw ids', async () => {
+  const { lock } = await makeZwave({
+    identity: {
+      manufacturerId: 0x0266, productType: 0x0001, productId: 0x0001,
+      deviceConfig: { manufacturer: 'Kwikset', label: 'SmartCode 916' },
+    },
+  });
+  assert.equal((await lock.getState()).model, 'SmartCode 916');
+
+  const { lock: rawLock } = await makeZwave({
+    identity: { manufacturerId: 0x0abc, productType: 0x0002, productId: 0x0def },
+  });
+  assert.equal((await rawLock.getState()).model, 'manufacturer 0x0abc product 0x0def');
+});
+
+test('ZwaveLock: config name and persisted security_class seed the snapshot', async () => {
+  const { lock } = await makeZwave({}, { name: 'Front Door Deadbolt', security_class: 'S0 Legacy' });
+  const s = await lock.getState();
+  assert.equal(s.name, 'Front Door Deadbolt');
+  assert.equal(s.securityClass, 'S0 Legacy', 'config value holds until the node can confirm');
+});
+
+test('ZwaveLock: identity arrives late via interview completed (was not known at init)', async () => {
+  const node = new MockNode({ status: 1 /* Asleep */, values: {} });
+  const lock = new ZwaveLock({ node_id: 2 }, { node, logger: { warn() {} } });
+  await lock.init();
+  assert.equal((await lock.getState()).model, null, 'nothing to show yet');
+  node.manufacturerId = 0x003b;
+  node.productType = 0x0001;
+  node.productId = 0x0469;
+  node.getHighestSecurityClass = () => 2;
+  node.emit('interview completed', node);
+  const s = await lock.getState();
+  assert.equal(s.model, 'Schlage BE469ZP Touchscreen Deadbolt');
+  assert.equal(s.securityClass, 'S2 Access Control');
+  await lock.shutdown();
 });
 
 test('ZwaveLock: capabilities include lock/unlock/state', () => {

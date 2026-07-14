@@ -1428,6 +1428,8 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <div class="card" id="deadboltCard" style="margin-top:16px;display:none">
       <div class="card-title" style="display:flex;align-items:center;gap:8px">Smart Deadbolt <span id="deadboltState" class="badge">-</span></div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px">
+        <div><span style="color:var(--text-muted)">Lock:</span> <span id="deadboltModel">-</span></div>
+        <div><span style="color:var(--text-muted)">Security:</span> <span id="deadboltSecurity">-</span></div>
         <div><span style="color:var(--text-muted)">Battery:</span> <span id="deadboltBattery">-</span></div>
         <div><span style="color:var(--text-muted)">Link:</span> <span id="deadboltLink">-</span></div>
         <div><span style="color:var(--text-muted)">Trigger door:</span> <span id="deadboltDoor">-</span></div>
@@ -2175,6 +2177,28 @@ function describeLockBattery(ls) {
   if (l.batteryLow) return { label: l.battery + '% (low)', color: 'var(--red)' };
   return { label: l.battery + '%', color: '' };
 }
+// Identity: friendly name first, detected model second, raw ids as the floor;
+// never a bare "unknown" once a lock is paired. Accepts both snapshot
+// (camelCase) and locks-route (snake_case) field names.
+function describeLockModel(ls) {
+  const l = ls || {};
+  const model = l.model || null;
+  if (l.name) return l.name + (model ? ' (' + model + ')' : '');
+  return model || 'identifying...';
+}
+function describeLockSecurity(ls) {
+  const l = ls || {};
+  return l.securityClass || l.security_class || 'pending';
+}
+// Bolt label softened: a link that is up but not yet read shows a transient
+// "reading..." instead of "unknown" (the recovery path re-seeds it shortly).
+function describeLockBolt(ls) {
+  const l = ls || {};
+  const bolt = l.boltState || l.bolt || 'unknown';
+  if (bolt !== 'unknown') return bolt;
+  const link = l.linkState || l.link_state;
+  return (link === 'online' || link === 'asleep') ? 'reading...' : 'unknown';
+}
 
 // Renders the Smart Deadbolt card from /health. Hidden unless the add-on is
 // enabled. Controller-derived strings (last-action detail carries event actor
@@ -2187,10 +2211,15 @@ function renderDeadbolt(h) {
   card.style.display = '';
 
   const lock = db.lock || {};
-  const bolt = lock.boltState || 'unknown';
+  const bolt = describeLockBolt(lock);
   const stateEl = document.getElementById('deadboltState');
   stateEl.className = 'badge ' + (bolt === 'locked' ? 'success' : bolt === 'unlocked' ? 'warning' : bolt === 'jammed' ? 'error' : 'info');
   stateEl.textContent = bolt;
+
+  const modelEl = document.getElementById('deadboltModel');
+  if (modelEl) modelEl.textContent = describeLockModel(lock);
+  const secEl = document.getElementById('deadboltSecurity');
+  if (secEl) secEl.textContent = describeLockSecurity(lock);
 
   const battEl = document.getElementById('deadboltBattery');
   const batt = describeLockBattery(lock);
@@ -2757,9 +2786,9 @@ function renderZwavePairPanel(st) {
     case 'starting':
       return box(`<strong>${modeWord}:</strong> starting the Z-Wave controller... <span style="color:var(--text-muted)">(${st.seconds_in_state || 0}s)</span><div style="margin-top:8px">${cancelBtn}</div>`);
     case 'waiting_for_device': {
-      const instr = st.mode === 'exclude'
-        ? 'On the lock: enter the 6-digit programming code, press the Schlage button, then press <strong>0</strong>.'
-        : 'On the lock: enter the 6-digit programming code, press the Schlage button, then press <strong>0</strong>. Keep the lock within a few feet of the USB stick during pairing.';
+      const gestures = '<div style="margin-top:4px"><strong>Schlage BE469ZP:</strong> enter the 6-digit programming code, press the Schlage button, then press <strong>0</strong>.</div>'
+        + `<div style="margin-top:4px"><strong>Yale Assure (YRD256):</strong> Master PIN, <strong>#</strong>, <strong>7</strong>, <strong>#</strong>, <strong>${st.mode === 'exclude' ? '3' : '1'}</strong>, <strong>#</strong>.${st.mode === 'exclude' ? '' : ' Exclude or factory-reset the Yale first if it was ever paired; it typically joins at S0, which is normal for this lock.'}</div>`;
+      const instr = gestures + (st.mode === 'exclude' ? '' : '<div style="margin-top:4px">Keep the lock within a few feet of the USB stick during pairing.</div>');
       return box(`<strong>${modeWord}:</strong> waiting for the lock <span style="color:var(--text-muted)">(${st.seconds_in_state || 0}s)</span><div style="margin-top:6px">${instr}</div><div style="margin-top:8px">${cancelBtn}</div>`);
     }
     case 'dsk_pending':
@@ -2771,12 +2800,12 @@ function renderZwavePairPanel(st) {
         + `<button class="btn btn-sm btn-primary" onclick="submitPairPin()">Submit PIN</button>${cancelBtn}</div>`
       );
     case 'provisioning':
-      return box(`<strong>Securely joining (S2)...</strong> this can take up to a minute. <span style="color:var(--text-muted)">(${st.seconds_in_state || 0}s)</span>`);
+      return box(`<strong>Securely joining...</strong> this can take up to a minute. <span style="color:var(--text-muted)">(${st.seconds_in_state || 0}s)</span>`);
     case 'done':
       return box(
         st.mode === 'exclude'
           ? `<strong style="color:var(--green)">Unpaired.</strong> Node ${escapeHtml(st.node_id)} was removed. Pair a lock to use the deadbolt again.`
-          : `<strong style="color:var(--green)">Paired!</strong> The lock joined as node ${escapeHtml(st.node_id)} with ${escapeHtml(st.security || 'S2')}. The deadbolt is now active.`,
+          : `<strong style="color:var(--green)">Paired!</strong> The lock joined as node ${escapeHtml(st.node_id)} with ${escapeHtml(st.security || 'security pending')}. The deadbolt is now active.`,
         'var(--green)'
       );
     case 'failed': {
@@ -2867,16 +2896,20 @@ function buildDeadboltLocksTable(locks, pairingActive) {
   if (!rows.length) return '';
   const dis = pairingActive ? ' disabled' : '';
   const cells = rows.map((l) => {
-    const name = l.lock_id ? escapeHtml(l.lock_id) : '<em>unrecognized device</em>';
+    const name = l.name ? escapeHtml(l.name)
+      : (l.lock_id ? escapeHtml(l.lock_id) : '<em>unrecognized device</em>');
     const node = l.node_id ? `node ${escapeHtml(l.node_id)}` : 'not paired';
+    const model = escapeHtml(l.model || (l.paired || l.foreign ? 'identifying...' : '-'))
+      + (l.security_class ? ` <span style="color:var(--text-muted)">(${escapeHtml(l.security_class)})</span>` : '');
     const state = l.link_state
-      ? `${escapeHtml(l.bolt || 'unknown')} / ${l.battery == null ? 'battery n/a' : escapeHtml(l.battery) + '%'} / ${escapeHtml(l.link_state)}`
+      ? `${escapeHtml(describeLockBolt(l))} / ${l.battery == null ? 'battery n/a' : escapeHtml(l.battery) + '%'} / ${escapeHtml(l.link_state)}`
       : (l.foreign ? 'on stick, not managed' : (l.on_stick ? 'on stick' : (l.paired ? 'saved, missing from stick' : '-')));
     const unpair = (l.node_id || l.paired)
       ? `<button class="btn btn-sm btn-secondary" onclick="startUnpairNode(${Number(l.node_id) || 0})"${dis}>Unpair</button>`
       : '';
     return `<tr><td style="padding:4px 10px 4px 0">${name}</td>`
       + `<td style="padding:4px 10px 4px 0">${node}</td>`
+      + `<td style="padding:4px 10px 4px 0">${model}</td>`
       + `<td style="padding:4px 10px 4px 0;color:var(--text-muted)">${state}</td>`
       + `<td style="padding:4px 0">${unpair}</td></tr>`;
   }).join('');
@@ -2898,7 +2931,16 @@ function buildDeadboltButtons(zw) {
       + `<button class="btn btn-sm btn-secondary" onclick="startHealthCheck()"${dis}>Health Check</button>`
       + `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis}>Unpair</button>`;
   }
-  return `<button class="btn btn-sm btn-primary" onclick="startPairing()"${dis}>Pair New Lock</button>`
+  // Security mode for the next pairing attempt. Auto covers both locks
+  // (S2 when the lock can, S0 when that is all it has). S0-only exists
+  // because a Yale YRD256 whose S2 bootstrap wedges cannot fall back in the
+  // same session; exclude it, pick S0, and pair again.
+  return `<select id="zwavePairSecurity" style="font-size:12px;padding:5px"${dis}>`
+    + `<option value="auto">Security: Auto (recommended)</option>`
+    + `<option value="s2">S2 only (Schlage)</option>`
+    + `<option value="s0">S0 only (Yale YRD256)</option>`
+    + `</select>`
+    + `<button class="btn btn-sm btn-primary" onclick="startPairing()"${dis}>Pair New Lock</button>`
     + `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis}>Unpair / Exclude Device</button>`;
 }
 
@@ -2927,10 +2969,11 @@ async function refreshZwaveDeadbolt() {
       } catch (e) { /* inventory is optional detail; leave the panel as-is */ }
     }
     if (zw.paired) {
-      line.textContent = `Lock paired (node ${zw.node_id}, "${zw.lock_id}").`;
+      const lsForLine = r.lock_state || {};
+      line.textContent = `${describeLockModel(lsForLine)} paired as node ${zw.node_id} ("${zw.lock_id}", ${describeLockSecurity(lsForLine)}).`;
       if (live) {
         const ls = r.lock_state || {};
-        const bolt = ls.boltState || 'unknown';
+        const bolt = describeLockBolt(ls);
         const boltBadge = bolt === 'locked' ? 'success' : bolt === 'unlocked' ? 'warning' : bolt === 'jammed' ? 'error' : 'info';
         const batt = describeLockBattery(ls);
         const link = describeLockLink(ls);
@@ -2976,7 +3019,8 @@ async function startPairing() {
   _lastPairPanelHtml = null; // fresh session: always paint the first panel
   setPairPanel(renderZwavePairPanel({ mode: 'include', state: 'starting', seconds_in_state: 0 }));
   try {
-    const r = await api('POST', '/api/deadbolt/pair/start');
+    const security = document.getElementById('zwavePairSecurity')?.value || 'auto';
+    const r = await api('POST', '/api/deadbolt/pair/start', { security });
     if (r.error) { toast(r.error, 'error'); await showPairFailure(); return; }
     toast('Pairing started', 'info');
     setPairPanel(renderZwavePairPanel({ mode: 'include', state: r.state || 'starting', seconds_in_state: 0 }));

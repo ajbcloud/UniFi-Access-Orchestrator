@@ -33,6 +33,10 @@ const LockState = Object.freeze({
  * @property {boolean} online     device reachable (an asleep battery lock counts as up)
  * @property {string} linkState   'online' | 'asleep' | 'offline'
  * @property {string|null} lastSeen  ISO timestamp of the last confirmed report
+ * @property {string|null} name   operator-assigned friendly name (config)
+ * @property {string|null} model  detected model (profile/device-db/raw ids)
+ * @property {string|null} manufacturer  detected brand
+ * @property {string|null} securityClass  class the lock joined with (e.g. 'S2 Access Control', 'S0 Legacy')
  */
 
 /**
@@ -83,6 +87,10 @@ class LockDriver extends EventEmitter {
       online: false,
       linkState: 'offline',
       lastSeen: null,
+      name: null,
+      model: null,
+      manufacturer: null,
+      securityClass: null,
     };
   }
 }

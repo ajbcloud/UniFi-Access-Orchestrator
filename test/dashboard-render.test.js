@@ -27,15 +27,28 @@ function extractFn(name) {
 
 function loadRenderer() {
   const src = extractFn('escapeHtml') + '\n' + extractFn('describeLockLink')
-    + '\n' + extractFn('describeLockBattery') + '\n' + extractFn('renderDeadbolt');
+    + '\n' + extractFn('describeLockBattery') + '\n' + extractFn('describeLockModel')
+    + '\n' + extractFn('describeLockSecurity') + '\n' + extractFn('describeLockBolt')
+    + '\n' + extractFn('renderDeadbolt');
   const els = {};
-  for (const id of ['deadboltCard', 'deadboltState', 'deadboltBattery', 'deadboltLink', 'deadboltDoor', 'deadboltLastAction', 'deadboltStats']) {
+  for (const id of ['deadboltCard', 'deadboltState', 'deadboltModel', 'deadboltSecurity', 'deadboltBattery', 'deadboltLink', 'deadboltDoor', 'deadboltLastAction', 'deadboltStats']) {
     els[id] = { textContent: '', innerHTML: '', className: '', style: {} };
   }
   const document = { getElementById: (id) => els[id] || null };
   const factory = new Function('document', src + '; return renderDeadbolt;');
   return { renderDeadbolt: factory(document), els };
 }
+
+test('deadbolt card shows the detected model and security class, never unknown', () => {
+  const { renderDeadbolt, els } = loadRenderer();
+  renderDeadbolt({ deadbolt: { enabled: true, trigger_door: 'Front Door',
+    lock: { boltState: 'unknown', battery: 90, online: true, linkState: 'online',
+      name: 'Front Door Deadbolt', model: 'Yale Assure Deadbolt (ZW2)', securityClass: 'S0 Legacy' },
+    stats: {} } });
+  assert.strictEqual(els.deadboltModel.textContent, 'Front Door Deadbolt (Yale Assure Deadbolt (ZW2))');
+  assert.strictEqual(els.deadboltSecurity.textContent, 'S0 Legacy');
+  assert.strictEqual(els.deadboltState.textContent, 'reading...', 'link up + unread bolt is transient, not unknown');
+});
 
 test('deadbolt card renders /health data', () => {
   const { renderDeadbolt, els } = loadRenderer();
