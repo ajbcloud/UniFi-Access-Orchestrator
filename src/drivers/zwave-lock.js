@@ -6,13 +6,20 @@ const { loadSecurityKeys } = require('./zwave-keys');
 const { SECURITY_CLASS_LABELS } = require('./zwave-pairing');
 const lockCatalog = require('./lock-catalog');
 
-// Z-Wave Door Lock CC (0x62) target modes.
-const DOOR_LOCK_MODE = Object.freeze({ UNSECURED: 0x00, SECURED: 0xff });
+// Z-Wave Door Lock CC (0x62) target modes. UNKNOWN (0xfe) is a legal
+// currentMode in reports: the Schlage BE469ZP answers EVERY operation read
+// with 0xfe and carries the true bolt position only in the report's
+// boltStatus field (confirmed in field diagnostics).
+const DOOR_LOCK_MODE = Object.freeze({ UNSECURED: 0x00, SECURED: 0xff, UNKNOWN: 0xfe });
 
 // Notification CC (0x71) Access Control (type 6) event numbers of interest.
 // Source: zwave-js Notifications registry. "Lock jammed" surfaces as a
 // lock-state value 0x0b rather than a discrete event, but Schlage firmware has
 // been observed to send it as an event arg too, so we treat 0x0b as a jam here.
+// AUTO_LOCK (0x09) is how the BE469ZP announces its built-in auto-relock
+// throwing the bolt ~30s after an unlock; it supports NO RF lock/unlock
+// events (its supported list is 1, 2, 5, 6, 9, 11, 16, 18), so commanded
+// moves never produce a notification at all.
 const AC_NOTIFICATION = Object.freeze({
   MANUAL_LOCK: 0x01,
   MANUAL_UNLOCK: 0x02,
@@ -20,6 +27,7 @@ const AC_NOTIFICATION = Object.freeze({
   RF_UNLOCK: 0x04,
   KEYPAD_LOCK: 0x05,
   KEYPAD_UNLOCK: 0x06,
+  AUTO_LOCK: 0x09,
   LOCK_JAMMED: 0x0b,
 });
 
@@ -27,6 +35,7 @@ const LOCK_EVENTS = new Set([
   AC_NOTIFICATION.MANUAL_LOCK,
   AC_NOTIFICATION.RF_LOCK,
   AC_NOTIFICATION.KEYPAD_LOCK,
+  AC_NOTIFICATION.AUTO_LOCK,
 ]);
 const UNLOCK_EVENTS = new Set([
   AC_NOTIFICATION.MANUAL_UNLOCK,
@@ -34,9 +43,29 @@ const UNLOCK_EVENTS = new Set([
   AC_NOTIFICATION.KEYPAD_UNLOCK,
 ]);
 
+// Supervision CC result statuses (zwave-js SupervisionStatus). An S2 lock
+// answers a supervised Door Lock set with one of these; SUCCESS means the
+// lock itself confirmed the bolt finished moving, which is the fastest and
+// strongest verification available (no need to wait for a separate report).
+const SUPERVISION = Object.freeze({
+  NO_SUPPORT: 0x00,
+  WORKING: 0x01,
+  FAIL: 0x02,
+  SUCCESS: 0xff,
+});
+
 function modeToState(mode) {
   if (mode === DOOR_LOCK_MODE.SECURED) return LockState.LOCKED;
   if (mode === DOOR_LOCK_MODE.UNSECURED) return LockState.UNLOCKED;
+  return LockState.UNKNOWN;
+}
+
+// Door Lock CC report boltStatus field -> LockState. On locks whose
+// currentMode is useless (BE469ZP always answers 0xfe) this is the ONLY
+// truthful position the report carries.
+function boltToState(bolt) {
+  if (bolt === 'locked') return LockState.LOCKED;
+  if (bolt === 'unlocked') return LockState.UNLOCKED;
   return LockState.UNKNOWN;
 }
 
@@ -58,6 +87,7 @@ function hex4(n) {
 // Value ids for cache reads via node.getValue(): instant, never touch the
 // wire, and return undefined until the interview has fetched them once.
 const VALUE_ID_CURRENT_MODE = Object.freeze({ commandClass: 0x62, endpoint: 0, property: 'currentMode' });
+const VALUE_ID_BOLT_STATUS = Object.freeze({ commandClass: 0x62, endpoint: 0, property: 'boltStatus' });
 const VALUE_ID_BATTERY_LEVEL = Object.freeze({ commandClass: 0x80, endpoint: 0, property: 'level' });
 
 /**
@@ -130,6 +160,17 @@ class ZwaveLock extends LockDriver {
     // Backoff before each retry (doubling per attempt): an immediate re-send
     // right after a failure tends to hit the same RF/queue condition.
     this.retryBackoffMs = cfg.retry_backoff_ms == null ? 1500 : cfg.retry_backoff_ms;
+    // Early confirmation read inside the verify window. Field report: a test
+    // unlock took 30+ seconds and still reported "not verified" because the
+    // only fallback read happened AT the timeout, once per attempt. Locks
+    // whose confirming report is lost (or that never send one) now get read
+    // a couple of seconds in, so verification lands near the physical floor.
+    this.earlyVerifyReadMs = cfg.early_verify_read_ms == null ? 2500 : cfg.early_verify_read_ms;
+    // After a verification failure, keep watching for the wanted state a bit
+    // longer. A slow lock that completes AFTER the verify window used to leave
+    // a permanent "failed" record while the door visibly opened; the late
+    // confirmation is emitted so the operator record can be corrected.
+    this.lateConfirmMs = cfg.late_confirm_ms == null ? 45000 : cfg.late_confirm_ms;
     this.lowBatteryPct = cfg.low_battery_pct == null ? 25 : cfg.low_battery_pct;
     // Periodic bolt+battery refresh (minutes, 0 disables): event-driven state
     // is primary, but on an unattended box a silent drift (missed report,
@@ -147,6 +188,16 @@ class ZwaveLock extends LockDriver {
     this._reviveTimer = null;
     this._reviveAttempt = 0;
     this._lastRefreshInfoAt = 0;
+    // Unknown-state recovery ladder: while the bolt reads UNKNOWN and the
+    // node is reachable, re-read state and identity on a capped backoff.
+    // Field report: the dashboard sat on "reading..." until the 20-minute
+    // poll because nothing re-read state after a lost interview race.
+    this.stateRecoveryBaseMs = cfg.state_recovery_base_ms == null ? 3000 : cfg.state_recovery_base_ms;
+    this.stateRecoveryMaxMs = cfg.state_recovery_max_ms == null ? 300000 : cfg.state_recovery_max_ms;
+    this._stateRecoveryTimer = null;
+    this._stateRecoveryAttempt = 0;
+    this._lateWatchCleanup = null;
+    this._autoRelockApplied = false;
     this._stopped = false;
   }
 
@@ -206,6 +257,8 @@ class ZwaveLock extends LockDriver {
     // A node that comes up Dead (e.g. it browned out during the pairing
     // interview) must start healing immediately, not wait for an operator.
     if (this._nodeStatus() === NODE_STATUS.DEAD) this._scheduleRevive();
+    this._scheduleStateRecovery();
+    this._maybeApplyAutoRelock();
     this._startPolling();
     this.emit(this._state.online ? 'online' : 'offline');
   }
@@ -281,7 +334,15 @@ class ZwaveLock extends LockDriver {
   _onValueUpdated(args) {
     const isDoorLock = args.commandClassName === 'Door Lock' || args.commandClass === 0x62;
     if (isDoorLock && args.property === 'currentMode') {
-      this._updateState(modeToState(args.newValue));
+      const st = modeToState(args.newValue);
+      // A non-definitive mode (the BE469ZP answers every read with 0xfe
+      // "unknown") must never stomp a known bolt state; the same report's
+      // boltStatus carries the truth and is handled below.
+      if (st !== LockState.UNKNOWN) this._updateState(st);
+    }
+    if (isDoorLock && args.property === 'boltStatus') {
+      const st = boltToState(args.newValue);
+      if (st !== LockState.UNKNOWN) this._updateState(st);
     }
     const isBattery = args.commandClassName === 'Battery' || args.commandClass === 0x80;
     if (isBattery && args.property === 'level' && typeof args.newValue === 'number') {
@@ -293,6 +354,14 @@ class ZwaveLock extends LockDriver {
     const prev = this._state.boltState;
     this._state.boltState = boltState;
     this._state.lastSeen = new Date().toISOString();
+    // A definitive reading ends the unknown-state recovery ladder.
+    if (boltState !== LockState.UNKNOWN) {
+      this._stateRecoveryAttempt = 0;
+      if (this._stateRecoveryTimer) {
+        clearTimeout(this._stateRecoveryTimer);
+        this._stateRecoveryTimer = null;
+      }
+    }
     this.emit('state-change', this.snapshot());
     // A jam is worth telling a human about even when no command is running
     // (a spontaneous jam used to only change the dashboard badge). Edge
@@ -362,6 +431,8 @@ class ZwaveLock extends LockDriver {
     this._seedIdentity();
     this._seedFromCache();
     if (this._shouldLiveRead()) this._refreshLive().catch(() => { /* best effort */ });
+    this._scheduleStateRecovery();
+    this._maybeApplyAutoRelock();
   }
 
   /**
@@ -463,6 +534,47 @@ class ZwaveLock extends LockDriver {
     this._seedIdentity();
     this._seedFromCache();
     if (this._shouldLiveRead()) this._refreshLive().catch(() => { /* best effort */ });
+    this._scheduleStateRecovery();
+    this._maybeApplyAutoRelock();
+  }
+
+  /**
+   * Unknown-state recovery ladder. "reading..." on the dashboard is honest
+   * for a few seconds after pairing, but nothing used to re-read state until
+   * the 20-minute poll, so a lost interview race left it stuck for ages.
+   * While the bolt is UNKNOWN: re-seed identity + cache every tick, and go to
+   * the wire when the node is reachable, on a doubling backoff (base 3s,
+   * capped at 5 min). The ladder dissolves the moment a definitive reading
+   * lands (see _updateState) and never outlives shutdown().
+   */
+  _scheduleStateRecovery() {
+    if (this._stateRecoveryTimer || this._stopped) return;
+    if (this._state.boltState !== LockState.UNKNOWN) return;
+    const delay = Math.min(
+      this.stateRecoveryBaseMs * 2 ** this._stateRecoveryAttempt,
+      this.stateRecoveryMaxMs
+    );
+    this._stateRecoveryAttempt++;
+    this._stateRecoveryTimer = setTimeout(() => {
+      this._stateRecoveryTimer = null;
+      this._stateRecoveryTick().catch(() => { /* never throws into the timer */ });
+    }, delay);
+    if (typeof this._stateRecoveryTimer.unref === 'function') this._stateRecoveryTimer.unref();
+  }
+
+  async _stateRecoveryTick() {
+    if (this._stopped) return;
+    if (this._state.boltState !== LockState.UNKNOWN) {
+      this._stateRecoveryAttempt = 0;
+      return;
+    }
+    this._seedIdentity();
+    this._seedFromCache();
+    if (this._state.boltState === LockState.UNKNOWN && this._shouldLiveRead()) {
+      try { await this._refreshLive(); } catch (e) { /* next rung retries */ }
+    }
+    if (this._state.boltState === LockState.UNKNOWN) this._scheduleStateRecovery();
+    else this._stateRecoveryAttempt = 0;
   }
 
   /**
@@ -499,7 +611,9 @@ class ZwaveLock extends LockDriver {
     const node = this._node;
     if (!node || typeof node.getValue !== 'function') return;
     const mode = node.getValue(VALUE_ID_CURRENT_MODE);
-    if (mode != null) this._updateState(modeToState(mode));
+    let st = mode != null ? modeToState(mode) : LockState.UNKNOWN;
+    if (st === LockState.UNKNOWN) st = boltToState(node.getValue(VALUE_ID_BOLT_STATUS));
+    if (st !== LockState.UNKNOWN) this._updateState(st);
     const level = node.getValue(VALUE_ID_BATTERY_LEVEL);
     if (typeof level === 'number') this._setBattery(level);
   }
@@ -508,7 +622,10 @@ class ZwaveLock extends LockDriver {
     const dl = this._doorLockCC();
     if (dl && typeof dl.get === 'function') {
       const rep = await dl.get();
-      if (rep && rep.currentMode != null) this._updateState(modeToState(rep.currentMode));
+      if (!rep) return;
+      let st = rep.currentMode != null ? modeToState(rep.currentMode) : LockState.UNKNOWN;
+      if (st === LockState.UNKNOWN) st = boltToState(rep.boltStatus);
+      if (st !== LockState.UNKNOWN) this._updateState(st);
     }
   }
 
@@ -528,17 +645,20 @@ class ZwaveLock extends LockDriver {
   async _commandSet(mode) {
     const dl = this._doorLockCC();
     if (!dl || typeof dl.set !== 'function') throw new Error('Door Lock CC unavailable');
-    await dl.set(mode);
+    // zwave-js returns a SupervisionResult when the set went out supervised
+    // (and undefined otherwise); the caller uses SUCCESS as instant proof.
+    return dl.set(mode);
   }
 
   _waitForState(wantState, timeoutMs) {
     return new Promise((resolve) => {
       if (this._state.boltState === wantState) return resolve(true);
       let done = false;
+      const timers = [];
       const settle = (val) => {
         if (done) return;
         done = true;
-        clearTimeout(timer);
+        for (const t of timers) clearTimeout(t);
         this.removeListener('state-change', onChange);
         resolve(val);
       };
@@ -554,7 +674,20 @@ class ZwaveLock extends LockDriver {
         try { await this._seedState(); } catch (e) { /* best effort */ }
         settle(this._state.boltState === wantState);
       };
-      const timer = setTimeout(finish, timeoutMs);
+      // Early confirmation reads (doubling until the window closes). Locks
+      // that confirm only when read - the BE469ZP sends NO notification for a
+      // commanded move and its currentMode is always "unknown", so the only
+      // confirmation is an operation read's boltStatus - used to sit out the
+      // whole window and fail; now they verify a beat after the motor stops.
+      // The reads feed _updateState, which lands in onChange above.
+      if (this.earlyVerifyReadMs > 0) {
+        for (let at = this.earlyVerifyReadMs; at < timeoutMs; at *= 2) {
+          timers.push(setTimeout(() => {
+            if (!done) this._seedState().catch(() => { /* next read or finish() decides */ });
+          }, at));
+        }
+      }
+      timers.push(setTimeout(finish, timeoutMs));
       this.on('state-change', onChange);
     });
   }
@@ -575,20 +708,70 @@ class ZwaveLock extends LockDriver {
       if (attempt > 0 && this.retryBackoffMs > 0) {
         await this._sleep(this.retryBackoffMs * 2 ** (attempt - 1));
       }
+      let supervision = null;
       try {
-        await this._commandSet(mode);
+        supervision = await this._commandSet(mode);
       } catch (err) {
         this.logger.warn && this.logger.warn(
           `ZwaveLock ${action} attempt ${attempt + 1} set error: ${err.message}`);
         continue;
       }
+      const supStatus = supervision && typeof supervision.status === 'number' ? supervision.status : null;
+      if (supStatus === SUPERVISION.SUCCESS) {
+        // The lock itself confirmed the bolt finished moving: the strongest
+        // and fastest verification there is, no report wait needed.
+        this._updateState(wantState);
+        return { success: true, boltState: this._state.boltState };
+      }
+      if (supStatus === SUPERVISION.FAIL) {
+        // The lock explicitly refused/failed the motion: burning the whole
+        // verify window on a report that will never confirm just adds ~12s
+        // of dead time before the retry.
+        this.logger.warn && this.logger.warn(
+          `ZwaveLock ${action} attempt ${attempt + 1} rejected by the lock (supervision FAIL)`);
+        last = this._state.boltState;
+        continue;
+      }
+      // WORKING, NO_SUPPORT, or an unsupervised send: wait for a confirming
+      // report (with early reads inside the window).
       const ok = await this._waitForState(wantState, this.verifyTimeoutMs);
       last = this._state.boltState;
       if (ok) return { success: true, boltState: last };
       this.logger.warn && this.logger.warn(
         `ZwaveLock ${action} not confirmed (attempt ${attempt + 1}/${this.verifyRetries + 1}), state=${last}`);
     }
+    this._watchLateConfirm(wantState, action);
     return { success: false, boltState: last, error: this._describeFailure() };
+  }
+
+  /**
+   * After a verification failure, keep watching a little longer. A slow lock
+   * that completes AFTER the verify window used to leave a permanent "failed"
+   * record while the door visibly opened (field report); the late
+   * confirmation is emitted so the operator record can be corrected. Only one
+   * watch runs at a time: a newer command replaces an older watch.
+   */
+  _watchLateConfirm(wantState, action) {
+    if (this.lateConfirmMs <= 0 || this._stopped) return;
+    if (this._lateWatchCleanup) this._lateWatchCleanup();
+    const startedAt = Date.now();
+    const onChange = (snap) => {
+      if (snap.boltState !== wantState) return;
+      cleanup();
+      const afterMs = Date.now() - startedAt;
+      this.logger.info && this.logger.info(
+        `ZwaveLock ${action} confirmed late, ${Math.round(afterMs / 1000)}s after the verify window closed`);
+      this.emit('late-confirm', { action, boltState: snap.boltState, after_ms: afterMs });
+    };
+    const timer = setTimeout(() => cleanup(), this.lateConfirmMs);
+    if (typeof timer.unref === 'function') timer.unref();
+    const cleanup = () => {
+      clearTimeout(timer);
+      this.removeListener('state-change', onChange);
+      if (this._lateWatchCleanup === cleanup) this._lateWatchCleanup = null;
+    };
+    this._lateWatchCleanup = cleanup;
+    this.on('state-change', onChange);
   }
 
   /**
@@ -611,7 +794,9 @@ class ZwaveLock extends LockDriver {
     if (st === NODE_STATUS.ASLEEP) {
       return 'lock did not answer in time (it is asleep). Press the keypad to wake it, then retry';
     }
-    return 'not verified';
+    return 'no confirmation from the lock within the wait window. If the bolt moved anyway, '
+      + 'the dashboard updates as soon as its report arrives; a weak Z-Wave link (run Health Check) '
+      + 'is the usual cause';
   }
 
   /**
@@ -713,6 +898,101 @@ class ZwaveLock extends LockDriver {
     return Promise.resolve(node.refreshInfo());
   }
 
+  /**
+   * The lock's catalog profile, preferring the operator-chosen model_key
+   * (persisted at pair time) and falling back to the interviewed node ids.
+   */
+  _modelProfile() {
+    let prof = this.cfg.model_key ? lockCatalog.profileForKey(this.cfg.model_key) : null;
+    if (!prof) {
+      const n = this._node;
+      if (n && typeof n.manufacturerId === 'number' && typeof n.productType === 'number'
+          && typeof n.productId === 'number') {
+        prof = lockCatalog.profileForIds(n.manufacturerId, n.productType, n.productId);
+      }
+    }
+    return prof || null;
+  }
+
+  _configurationCC() {
+    const cc = this._node && this._node.commandClasses;
+    if (!cc) return null;
+    return cc.Configuration || cc.configuration || null;
+  }
+
+  /**
+   * Whether THIS lock's auto-relock is settable over Z-Wave, plus the saved
+   * preference. Drives the dashboard's "After unlock" control; models without
+   * a known parameter get the catalog's per-model note instead of a toggle.
+   */
+  autoRelockInfo() {
+    const prof = this._modelProfile();
+    const ar = (prof && prof.auto_relock) || null;
+    return {
+      supported: !!ar,
+      model_key: prof ? prof.key : null,
+      note: (prof && prof.auto_relock_note) || null,
+      configured: this.cfg.auto_relock == null ? null : !!this.cfg.auto_relock,
+    };
+  }
+
+  /**
+   * Turn the lock's own auto-relock on or off by writing its configuration
+   * parameter (e.g. Schlage BE469ZP parameter 15). "Stay unlocked" for an
+   * office door is exactly auto-relock off: the ~30s re-throw after an unlock
+   * is the LOCK's built-in feature, not this app. Values are read back to
+   * confirm the write landed (best effort; some locks need a wake first).
+   */
+  async setAutoRelock(enabled) {
+    if (!this._node) {
+      throw new Error('Z-Wave driver is not running (stick unplugged or failed to start)');
+    }
+    const prof = this._modelProfile();
+    const ar = prof && prof.auto_relock;
+    if (!ar) {
+      throw new Error((prof && prof.auto_relock_note)
+        || 'this lock model does not expose auto-relock over Z-Wave; change it on the lock itself');
+    }
+    const cc = this._configurationCC();
+    if (!cc || typeof cc.set !== 'function') {
+      throw new Error('Configuration CC unavailable (run Re-interview / Heal, then retry)');
+    }
+    const value = enabled ? ar.on : ar.off;
+    // valueFormat 1 = unsigned integer (zwave-js ConfigValueFormat), needed
+    // because "on" values like 255 overflow a signed byte.
+    await cc.set({ parameter: ar.parameter, value, valueSize: ar.size || 1, valueFormat: 1 });
+    let confirmed = null;
+    if (typeof cc.get === 'function') {
+      try { confirmed = (await cc.get(ar.parameter)) === value; } catch (e) { confirmed = null; }
+    }
+    this.cfg.auto_relock = !!enabled; // keep autoRelockInfo truthful this run
+    this.logger.info && this.logger.info(
+      `ZwaveLock: auto-relock ${enabled ? 'enabled' : 'disabled'} `
+      + `(parameter ${ar.parameter}=${value}`
+      + `${confirmed == null ? '' : confirmed ? ', read-back confirmed' : ', READ-BACK MISMATCH'})`);
+    return { enabled: !!enabled, confirmed };
+  }
+
+  /**
+   * Re-apply the persisted auto-relock preference once per driver lifetime,
+   * the first time the node is actually reachable. This is what makes the
+   * preference survive restarts and re-pairing: the lock's parameter is
+   * re-written from config, not assumed. Best effort: a failure re-arms so
+   * the next ready/reachable event retries.
+   */
+  _maybeApplyAutoRelock() {
+    if (this._autoRelockApplied || this._stopped) return;
+    if (this.cfg.auto_relock == null) return;
+    if (!this._shouldLiveRead()) return;
+    const prof = this._modelProfile();
+    if (!prof || !prof.auto_relock) return;
+    this._autoRelockApplied = true;
+    this.setAutoRelock(!!this.cfg.auto_relock).catch((err) => {
+      this._autoRelockApplied = false;
+      this.logger.warn && this.logger.warn(`ZwaveLock: re-applying auto-relock failed: ${err.message}`);
+    });
+  }
+
   async getState() {
     return this.snapshot();
   }
@@ -727,6 +1007,11 @@ class ZwaveLock extends LockDriver {
       clearTimeout(this._reviveTimer);
       this._reviveTimer = null;
     }
+    if (this._stateRecoveryTimer) {
+      clearTimeout(this._stateRecoveryTimer);
+      this._stateRecoveryTimer = null;
+    }
+    if (this._lateWatchCleanup) this._lateWatchCleanup();
     if (this._pollTimer) {
       clearInterval(this._pollTimer);
       this._pollTimer = null;
@@ -748,4 +1033,4 @@ class ZwaveLock extends LockDriver {
   }
 }
 
-module.exports = { ZwaveLock, DOOR_LOCK_MODE, AC_NOTIFICATION, modeToState };
+module.exports = { ZwaveLock, DOOR_LOCK_MODE, AC_NOTIFICATION, SUPERVISION, modeToState, boltToState };

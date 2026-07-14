@@ -16,7 +16,13 @@ const FakeLock = require('../src/drivers/fake-lock');
  * opts: { current, confirm, jam, failSetOnce,
  *         status, ready,        // NodeStatus number / interview-ready flag
  *         values,               // cache map '<cc>:<property>' -> value for getValue()
- *         battery }             // Battery CC live level
+ *         battery,              // Battery CC live level
+ *         supervision,          // set() resolves { status } (SupervisionResult)
+ *         silentApply,          // set() applies current but emits NO event
+ *         modeUnknown,          // get() reports currentMode 0xfe + boltStatus
+ *                               // (the Schlage BE469ZP wire behavior)
+ *         failGets,             // first N get() calls throw (flaky link)
+ *         configuration }       // expose a Configuration CC (params map)
  */
 class MockNode extends EventEmitter {
   constructor(opts = {}) {
@@ -25,6 +31,10 @@ class MockNode extends EventEmitter {
     this.confirm = opts.confirm !== false;
     this.jam = !!opts.jam;
     this.failSetOnce = !!opts.failSetOnce;
+    this.supervision = opts.supervision;
+    this.silentApply = !!opts.silentApply;
+    this.modeUnknown = !!opts.modeUnknown;
+    this.failGets = opts.failGets || 0;
     this.setCalls = [];
     this.getCalls = 0;
     if (opts.status != null) this.status = opts.status;
@@ -59,7 +69,15 @@ class MockNode extends EventEmitter {
             setImmediate(() => self.emit('notification', self, 0x71, { type: 6, event: 0x0b }));
             return;
           }
-          if (!self.confirm) return;
+          if (self.silentApply) {
+            // The move happens but the lock sends nothing (BE469ZP behavior
+            // for commanded moves: no notification, no unsolicited report).
+            self.current = mode;
+            return typeof self.supervision === 'number' ? { status: self.supervision } : undefined;
+          }
+          if (!self.confirm) {
+            return typeof self.supervision === 'number' ? { status: self.supervision } : undefined;
+          }
           setImmediate(() => {
             self.current = mode;
             self.emit('value updated', self, {
@@ -68,9 +86,17 @@ class MockNode extends EventEmitter {
               newValue: mode,
             });
           });
+          return typeof self.supervision === 'number' ? { status: self.supervision } : undefined;
         },
         get: async () => {
           self.getCalls++;
+          if (self.failGets > 0) {
+            self.failGets--;
+            throw new Error('get timed out');
+          }
+          if (self.modeUnknown) {
+            return { currentMode: 0xfe, boltStatus: self.current === 0xff ? 'locked' : 'unlocked' };
+          }
           return { currentMode: self.current };
         },
       },
@@ -79,6 +105,18 @@ class MockNode extends EventEmitter {
       this.batteryLevel = opts.battery;
       this.commandClasses.Battery = {
         get: async () => ({ level: self.batteryLevel }),
+      };
+    }
+    if (opts.configuration) {
+      this.configParams = Object.assign({}, opts.configuration.params);
+      this.configSetCalls = [];
+      this.commandClasses.Configuration = {
+        set: async (o) => {
+          self.configSetCalls.push(o);
+          if (opts.configuration.failSet) throw new Error('config set failed');
+          self.configParams[o.parameter] = o.value;
+        },
+        get: async (parameter) => self.configParams[parameter],
       };
     }
   }
@@ -328,6 +366,151 @@ test('ZwaveLock: spontaneous jam emits deadbolt_jammed once per transition', asy
   node.emit('notification', node, 0x71, { type: 6, event: 0x0b });
   node.emit('notification', node, 0x71, { type: 6, event: 0x0b }); // unchanged state: no repeat
   assert.equal(alerts.filter((a) => a.type === 'deadbolt_jammed').length, 1);
+  await lock.shutdown();
+});
+
+// ---------------------------------------------------------------------------
+// Fast, truthful verification. Field diagnostics (Schlage BE469ZP): the lock
+// answers EVERY operation read with currentMode 0xfe ("unknown"), carries the
+// real position only in the report's boltStatus, and sends NO notification
+// for commanded moves, so verification must read early and trust boltStatus;
+// its built-in auto-relock announces itself as Access Control event 9.
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: BE469ZP-style lock (currentMode always 0xfe) verifies via a boltStatus early read', async () => {
+  const { lock } = await makeZwave(
+    { current: 0xff, modeUnknown: true, silentApply: true },
+    { verify_timeout_ms: 500, verify_retries: 0, early_verify_read_ms: 15 }
+  );
+  const t0 = Date.now();
+  const r = await lock.unlock('entry');
+  assert.equal(r.success, true);
+  assert.equal(r.boltState, LockState.UNLOCKED);
+  assert.ok(Date.now() - t0 < 400, 'confirmed by an early read, not the window timeout');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: a currentMode 0xfe report never stomps a known bolt state', async () => {
+  const { node, lock } = await makeZwave({ current: 0xff });
+  assert.equal((await lock.getState()).boltState, LockState.LOCKED);
+  node.emit('value updated', node, { commandClassName: 'Door Lock', property: 'currentMode', newValue: 0xfe });
+  assert.equal((await lock.getState()).boltState, LockState.LOCKED, '0xfe must not reset a known state');
+  node.emit('value updated', node, { commandClassName: 'Door Lock', property: 'boltStatus', newValue: 'unlocked' });
+  assert.equal((await lock.getState()).boltState, LockState.UNLOCKED, 'boltStatus is a first-class state source');
+});
+
+test('ZwaveLock: auto-lock notification (event 9) flips state to locked', async () => {
+  const { node, lock } = await makeZwave({ current: 0xff });
+  node.emit('notification', node, 0x71, { type: 6, event: 0x02 }); // manual unlock
+  assert.equal((await lock.getState()).boltState, LockState.UNLOCKED);
+  node.emit('notification', node, 0x71, { type: 6, event: 0x09 }); // built-in auto-relock fired
+  assert.equal((await lock.getState()).boltState, LockState.LOCKED);
+});
+
+test('ZwaveLock: supervision SUCCESS verifies instantly with no report wait', async () => {
+  const { node, lock } = await makeZwave(
+    { current: 0xff, confirm: false, supervision: 0xff },
+    { verify_timeout_ms: 5000, verify_retries: 0 }
+  );
+  const t0 = Date.now();
+  const r = await lock.unlock('entry');
+  assert.equal(r.success, true);
+  assert.equal(r.boltState, LockState.UNLOCKED);
+  assert.ok(Date.now() - t0 < 1000, 'no verify window was burned');
+  assert.equal(node.getCalls, 1, 'no verification reads (the init seed is the only get)');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: supervision FAIL skips the dead wait window and retries', async () => {
+  const { node, lock } = await makeZwave(
+    { current: 0xff, confirm: false, supervision: 0x02 },
+    { verify_timeout_ms: 5000, verify_retries: 1, retry_backoff_ms: 5 }
+  );
+  const t0 = Date.now();
+  const r = await lock.unlock('entry');
+  assert.equal(r.success, false);
+  assert.equal(node.setCalls.length, 2, 'both attempts were sent');
+  assert.ok(Date.now() - t0 < 2000, 'neither attempt sat out the 5s window');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: a confirmation arriving after the verify window emits late-confirm', async () => {
+  const { node, lock } = await makeZwave(
+    { current: 0xff, confirm: false },
+    { verify_timeout_ms: 20, verify_retries: 0, late_confirm_ms: 1000 }
+  );
+  const late = new Promise((resolve) => lock.once('late-confirm', resolve));
+  const r = await lock.unlock('entry');
+  assert.equal(r.success, false, 'the window itself still reports failure');
+  node.emit('notification', node, 0x71, { type: 6, event: 0x02 }); // the move lands late
+  const e = await late;
+  assert.equal(e.action, 'unlock');
+  assert.equal(e.boltState, LockState.UNLOCKED);
+  assert.ok(typeof e.after_ms === 'number');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: unknown-state recovery ladder re-reads until the bolt resolves', async () => {
+  const node = new MockNode({ status: ST.ALIVE, values: {}, current: 0xff, failGets: 3 });
+  node.ready = true;
+  const lock = new ZwaveLock(
+    { node_id: 2, state_recovery_base_ms: 10, state_recovery_max_ms: 20, poll_minutes: 0 },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init(); // the first live read fails (flaky link): bolt unknown
+  assert.equal((await lock.getState()).boltState, LockState.UNKNOWN);
+  await tick(300);
+  assert.equal((await lock.getState()).boltState, LockState.LOCKED, 'the ladder recovered the state');
+  assert.equal(lock._stateRecoveryTimer, null, 'the ladder dissolves once state is known');
+  await lock.shutdown();
+});
+
+// ---------------------------------------------------------------------------
+// Auto-relock ("stay unlocked"): the ~30s re-lock after an unlock is the
+// lock's OWN feature, exposed as a configuration parameter where the catalog
+// knows one.
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: setAutoRelock writes the catalog parameter and reads it back', async () => {
+  const node = new MockNode({ configuration: { params: { 15: 255 } } });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const r = await lock.setAutoRelock(false);
+  assert.equal(r.enabled, false);
+  assert.equal(r.confirmed, true);
+  assert.deepEqual(node.configSetCalls[0], { parameter: 15, value: 0, valueSize: 1, valueFormat: 1 });
+  const info = lock.autoRelockInfo();
+  assert.equal(info.supported, true);
+  assert.equal(info.configured, false, 'the applied choice is reflected back');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: setAutoRelock on a model without a parameter throws the catalog note', async () => {
+  const node = new MockNode({ configuration: { params: {} } });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'ultraloq-ubolt-pro' },
+    { node, logger: { warn() {} } }
+  );
+  await lock.init();
+  await assert.rejects(() => lock.setAutoRelock(false), /U-tec app/);
+  assert.equal(lock.autoRelockInfo().supported, false);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: persisted auto_relock preference is re-applied once the node is reachable', async () => {
+  const node = new MockNode({ configuration: { params: { 15: 255 } } });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp', auto_relock: false },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  await tick(30); // the re-apply is fire-and-forget
+  assert.equal(node.configSetCalls.length, 1, 'the saved preference was written to the lock');
+  assert.equal(node.configSetCalls[0].parameter, 15);
+  assert.equal(node.configSetCalls[0].value, 0);
   await lock.shutdown();
 });
 

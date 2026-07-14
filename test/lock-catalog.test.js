@@ -40,6 +40,24 @@ test('profileForKey returns the model, and a generic fallback always exists', ()
   assert.equal(catalog.profileForKey('does-not-exist'), null);
 });
 
+test('auto_relock is a well-formed parameter block or null with a note', () => {
+  for (const m of catalog.ALL_MODELS) {
+    assert.ok('auto_relock' in m, `model ${m.key} must declare auto_relock (or null)`);
+    if (m.auto_relock) {
+      assert.equal(typeof m.auto_relock.parameter, 'number', `model ${m.key} parameter`);
+      assert.ok(m.auto_relock.size >= 1, `model ${m.key} size`);
+      assert.notEqual(m.auto_relock.on, m.auto_relock.off, `model ${m.key} on/off must differ`);
+    } else {
+      assert.ok(m.auto_relock_note, `model ${m.key} without a parameter needs a note for the operator`);
+    }
+  }
+  // The two families with authoritative parameters: Schlage 15, Yale 2.
+  assert.equal(catalog.profileForKey('schlage-be469zp').auto_relock.parameter, 15);
+  assert.equal(catalog.profileForKey('schlage-be469zp').auto_relock.off, 0);
+  assert.equal(catalog.profileForKey('yale-assure-zw2').auto_relock.parameter, 2);
+  assert.equal(catalog.profileForKey('generic').auto_relock, null);
+});
+
 test('getCatalog groups models under manufacturers for the picker', () => {
   const cat = catalog.getCatalog();
   assert.ok(Array.isArray(cat) && cat.length >= 4);

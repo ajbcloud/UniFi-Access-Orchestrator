@@ -2782,6 +2782,7 @@ function renderZwaveSetup() {
       <div id="zwaveAddDeadbolt" style="margin-top:10px"></div>
       <div id="zwavePairPanel" style="margin-top:10px"></div>
       <div id="zwaveDeadboltLive" style="margin-top:10px"></div>
+      <div id="zwaveAutoRelock" style="margin-top:10px"></div>
       <div id="zwaveDeadboltLocks" style="margin-top:10px"></div>
       <div id="zwaveDeadboltHealth" style="margin-top:10px;font-size:12px"></div>
     </div>
@@ -3039,12 +3040,14 @@ function buildDeadboltButtons(zw) {
   if (z.paired) {
     // Re-interview / Heal recovers a lock whose pairing-time interview died
     // partway (bolt/battery stuck at unknown): it forces a fresh interview
-    // and the driver re-seeds state when it completes.
-    return `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('lock')"${dis}>Test Lock</button>`
-      + `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('unlock')"${dis}>Test Unlock</button>`
-      + `<button class="btn btn-sm btn-secondary" onclick="startReinterview()"${dis}>Re-interview / Heal</button>`
-      + `<button class="btn btn-sm btn-secondary" onclick="startHealthCheck()"${dis}>Health Check</button>`
-      + `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis}>Unpair</button>`;
+    // and the driver re-seeds state when it completes. Each button carries a
+    // tooltip stating the EXPECTED result so a first-time operator knows
+    // what success looks like before the bolt moves.
+    return `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('lock')"${dis} title="Sends a real Z-Wave LOCK command. Expected: the bolt extends within a few seconds and the Bolt badge turns locked.">Test Lock</button>`
+      + `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('unlock')"${dis} title="Sends a real Z-Wave UNLOCK command. Expected: the bolt retracts within a few seconds and the Bolt badge turns unlocked. If the lock has auto-relock turned on, it re-locks itself about 30 seconds later; see the After unlock setting below.">Test Unlock</button>`
+      + `<button class="btn btn-sm btn-secondary" onclick="startReinterview()"${dis} title="Re-runs the Z-Wave interview to rebuild the lock readings. Use when Bolt or Battery is stuck on reading or unknown. Takes up to a minute; wake the lock at the keypad to speed it up.">Re-interview / Heal</button>`
+      + `<button class="btn btn-sm btn-secondary" onclick="startHealthCheck()"${dis} title="Pings the lock and runs one RF probe: round-trip time, signal, route, and a 0-10 health rating. Takes a few seconds; results appear below.">Health Check</button>`
+      + `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis} title="Removes this lock from the Z-Wave network. The app stops controlling it until it is paired again.">Unpair</button>`;
   }
   // Security mode for the next pairing attempt. Auto covers both locks
   // (S2 when the lock can, S0 when that is all it has). S0-only exists
@@ -3057,6 +3060,57 @@ function buildDeadboltButtons(zw) {
     + `</select>`
     + `<button class="btn btn-sm btn-primary" onclick="startPairing()"${dis}>Pair New Lock</button>`
     + `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis}>Unpair / Exclude Device</button>`;
+}
+
+// Pure builder for the After-unlock (auto-relock) control. The ~30s re-lock
+// after an unlock is the LOCK's own auto-relock feature; this writes the
+// lock's configuration parameter over Z-Wave so a door can stay unlocked
+// until it gets an explicit lock command. zw.auto_relock is the SAVED
+// tri-state (null until first applied); zw.auto_relock_support is the
+// driver's capability report for the paired model (models without a known
+// parameter get their catalog note instead of a control).
+function buildAutoRelockControl(zw) {
+  const z = zw || {};
+  if (!z.paired) return '';
+  const sup = z.auto_relock_support;
+  if (!sup) return '';
+  if (!sup.supported) {
+    return sup.note
+      ? `<div style="font-size:12px;color:var(--text-muted)">After unlock: ${escapeHtml(sup.note)}</div>`
+      : '';
+  }
+  const saved = z.auto_relock; // true | false | null (never applied)
+  const dis = z.pairing_active ? ' disabled' : '';
+  const opt = (val, label) => `<option value="${val}"${String(saved) === val ? ' selected' : ''}>${label}</option>`;
+  return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px">`
+    + `<span title="Controls the lock's own auto-relock timer over Z-Wave. Stay unlocked means the bolt stays retracted after any unlock until a lock command or the thumbturn.">After unlock:</span>`
+    + `<select id="zwaveAutoRelockSel" style="font-size:12px;padding:5px"${dis}>`
+    + (saved == null ? `<option value="null" selected>Lock default (not managed yet)</option>` : '')
+    + opt('false', 'Stay unlocked until locked')
+    + opt('true', 'Auto-relock (lock timer)')
+    + `</select>`
+    + `<button class="btn btn-sm btn-secondary" onclick="applyAutoRelock()"${dis}>Apply</button>`
+    + `</div>`;
+}
+
+// Write the chosen after-unlock behavior to the lock (and persist it).
+async function applyAutoRelock() {
+  const sel = document.getElementById('zwaveAutoRelockSel');
+  if (!sel || sel.value === 'null') return; // "not managed" is not an action
+  const enabled = sel.value === 'true';
+  toast(`Writing auto-relock ${enabled ? 'on' : 'off'} to the lock...`, 'info');
+  try {
+    const r = await api('POST', '/api/deadbolt/auto-relock', { enabled });
+    if (r.error) { toast(r.error, 'error'); return; }
+    if (r.confirmed === false) {
+      toast('Setting sent, but the read-back did not match. Wake the lock at the keypad and Apply again.', 'error');
+    } else if (enabled) {
+      toast('Auto-relock is on: the lock re-locks itself about 30 seconds after an unlock.', 'success');
+    } else {
+      toast('Auto-relock is off: the lock stays unlocked until it gets a lock command.', 'success');
+    }
+    refreshZwaveDeadbolt();
+  } catch (e) { toast(`Auto-relock apply failed: ${e.message}`, 'error'); }
 }
 
 async function refreshZwaveDeadbolt() {
@@ -3072,6 +3126,8 @@ async function refreshZwaveDeadbolt() {
       line.textContent = 'Set and save the serial port above, then pair the lock.';
       btns.innerHTML = '';
       if (live) live.innerHTML = '';
+      const ar = document.getElementById('zwaveAutoRelock');
+      if (ar) ar.innerHTML = '';
       return;
     }
     btns.innerHTML = buildDeadboltButtons(zw);
@@ -3094,6 +3150,7 @@ async function refreshZwaveDeadbolt() {
         locksEl.innerHTML = buildDeadboltLocksTable(inv.locks, pairingActive, _lockCatalog);
       } catch (e) { /* inventory is optional detail; leave the panel as-is */ }
     }
+    const arEl = document.getElementById('zwaveAutoRelock');
     if (zw.paired) {
       const lsForLine = r.lock_state || {};
       line.textContent = `${describeLockModel(lsForLine)} paired as node ${zw.node_id} ("${zw.lock_id}", ${describeLockSecurity(lsForLine)}).`;
@@ -3101,17 +3158,24 @@ async function refreshZwaveDeadbolt() {
         const ls = r.lock_state || {};
         const bolt = describeLockBolt(ls);
         const boltBadge = bolt === 'locked' ? 'success' : bolt === 'unlocked' ? 'warning' : bolt === 'jammed' ? 'error' : 'info';
+        // "reading..." is a transient state that now self-heals (the driver
+        // re-reads on a backoff); the tooltip says what to do if it sticks.
+        const boltTitle = bolt === 'reading...'
+          ? ' title="Waiting for the first position report from the lock. This normally resolves within seconds; if it stays like this for over a minute, run Re-interview / Heal."'
+          : '';
         const batt = describeLockBattery(ls);
         const link = describeLockLink(ls);
         live.innerHTML = `<div style="display:flex;gap:14px;align-items:center;font-size:12px">
-          <span>Bolt: <span class="badge ${boltBadge}">${escapeHtml(bolt)}</span></span>
+          <span>Bolt: <span class="badge ${boltBadge}"${boltTitle}>${escapeHtml(bolt)}</span></span>
           <span>Battery: <span style="color:${batt.color || 'inherit'}">${escapeHtml(batt.label)}</span></span>
           <span>Link: <span style="color:${link.color}">${escapeHtml(link.label)}</span></span>
         </div>`;
       }
+      if (arEl) arEl.innerHTML = buildAutoRelockControl(zw);
     } else {
       line.textContent = 'No lock paired yet.';
       if (live) live.innerHTML = '';
+      if (arEl) arEl.innerHTML = '';
     }
     // Resume polling if a session is running (e.g. after a page reload).
     if (pairingActive && !_pairPollTimer) pollPairingStatus();
@@ -3268,9 +3332,22 @@ async function startHealthCheck() {
     if (lf.latency_ms != null) bits.push(`latency ${lf.latency_ms}ms`);
     if (lf.snr_margin_db != null) bits.push(`SNR margin ${lf.snr_margin_db}dB`);
     if (r.lifeline_error) bits.push(`lifeline probe failed: ${r.lifeline_error}`);
+    // Plain-language verdict under the numbers, so the operator does not have
+    // to know what a good RSSI or rating looks like.
+    let verdict = '';
+    if (!r.ping_ok) {
+      verdict = 'Lock unreachable right now. Wake it at the keypad and re-run; if it keeps failing, move the Z-Wave stick closer to the lock or add a mains-powered Z-Wave device between them.';
+    } else if (lf.rating != null && lf.rating <= 3) {
+      verdict = 'Weak link: expect slow or missed commands. Move the Z-Wave stick closer to the lock or add a mains-powered Z-Wave device between them as a repeater.';
+    } else if (lf.rating != null && lf.rating <= 6) {
+      verdict = 'Usable link with some margin to gain; commands should work but a repeater would make them faster and more reliable.';
+    } else if (lf.rating != null) {
+      verdict = 'Link looks healthy.';
+    }
     if (out) {
       out.innerHTML = `<span style="color:${r.ping_ok ? 'var(--green)' : 'var(--red)'}">${escapeHtml(bits.join(' | '))}</span>`
-        + `<span style="color:var(--text-muted)"> (${escapeHtml(new Date(r.checked_at).toLocaleTimeString())})</span>`;
+        + `<span style="color:var(--text-muted)"> (${escapeHtml(new Date(r.checked_at).toLocaleTimeString())})</span>`
+        + (verdict ? `<div style="color:var(--text-muted);margin-top:3px">${escapeHtml(verdict)}</div>` : '');
     }
   } catch (e) {
     if (out) out.textContent = '';
