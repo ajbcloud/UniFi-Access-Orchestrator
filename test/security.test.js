@@ -93,6 +93,16 @@ test('validateConfigUpdates accepts a per-lock friendly name and security_class'
   assert.strictEqual(ok.ok, true);
 });
 
+test('validateConfigUpdates accepts multiple locks with manufacturer/model_key', () => {
+  const ok = validateConfigUpdates({
+    devices: { zwave: { locks: {
+      front_deadbolt: { name: 'Front Door', manufacturer: 'Yale', model_key: 'yale-assure-zw2', node_id: 4 },
+      back_deadbolt: { name: 'Back Door', manufacturer: 'Schlage', model_key: 'schlage-be469zp', node_id: 6 },
+    } } },
+  });
+  assert.strictEqual(ok.ok, true);
+});
+
 test('validateConfigUpdates rejects bad port, mode, and non-array rules', () => {
   assert.strictEqual(validateConfigUpdates({ server: { port: 0 } }).ok, false);
   assert.strictEqual(validateConfigUpdates({ server: { port: 70000 } }).ok, false);

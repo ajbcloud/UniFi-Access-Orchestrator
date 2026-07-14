@@ -2758,6 +2758,7 @@ function renderZwaveSetup() {
       </div>
       <div id="zwaveDeadboltStatusLine" style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Loading...</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap" id="zwaveDeadboltButtons"></div>
+      <div id="zwaveAddDeadbolt" style="margin-top:10px"></div>
       <div id="zwavePairPanel" style="margin-top:10px"></div>
       <div id="zwaveDeadboltLive" style="margin-top:10px"></div>
       <div id="zwaveDeadboltLocks" style="margin-top:10px"></div>
@@ -2786,8 +2787,20 @@ function renderZwavePairPanel(st) {
     case 'starting':
       return box(`<strong>${modeWord}:</strong> starting the Z-Wave controller... <span style="color:var(--text-muted)">(${st.seconds_in_state || 0}s)</span><div style="margin-top:8px">${cancelBtn}</div>`);
     case 'waiting_for_device': {
-      const gestures = '<div style="margin-top:4px"><strong>Schlage BE469ZP:</strong> enter the 6-digit programming code, press the Schlage button, then press <strong>0</strong>.</div>'
-        + `<div style="margin-top:4px"><strong>Yale Assure (YRD256):</strong> Master PIN, <strong>#</strong>, <strong>7</strong>, <strong>#</strong>, <strong>${st.mode === 'exclude' ? '3' : '1'}</strong>, <strong>#</strong>.${st.mode === 'exclude' ? '' : ' Exclude or factory-reset the Yale first if it was ever paired; it typically joins at S0, which is normal for this lock.'}</div>`;
+      // If the operator picked a model for this session, show ONLY that
+      // model's gesture (enroll for include, exclude for unpair). Otherwise
+      // fall back to the two most common gestures so the panel is still
+      // useful for a plain pairing or in the render test (no catalog).
+      const model = (st.mode !== 'exclude') && typeof lockCatalogModel === 'function'
+        && lockCatalogModel(st.model_key);
+      let gestures;
+      if (model) {
+        gestures = `<div style="margin-top:4px"><strong>${escapeHtml(model.name)}:</strong> ${escapeHtml(model.enroll || '')}</div>`
+          + (model.quirk ? `<div style="margin-top:4px;color:var(--text-muted)">${escapeHtml(model.quirk)}</div>` : '');
+      } else {
+        gestures = '<div style="margin-top:4px"><strong>Schlage BE469ZP:</strong> enter the 6-digit programming code, press the Schlage button, then press <strong>0</strong>.</div>'
+          + `<div style="margin-top:4px"><strong>Yale Assure (YRD256):</strong> Master PIN, <strong>#</strong>, <strong>7</strong>, <strong>#</strong>, <strong>${st.mode === 'exclude' ? '3' : '1'}</strong>, <strong>#</strong>.${st.mode === 'exclude' ? '' : ' Exclude or factory-reset the Yale first if it was ever paired; it typically joins at S0, which is normal for this lock.'}</div>`;
+      }
       const instr = gestures + (st.mode === 'exclude' ? '' : '<div style="margin-top:4px">Keep the lock within a few feet of the USB stick during pairing.</div>');
       return box(`<strong>${modeWord}:</strong> waiting for the lock <span style="color:var(--text-muted)">(${st.seconds_in_state || 0}s)</span><div style="margin-top:6px">${instr}</div><div style="margin-top:8px">${cancelBtn}</div>`);
     }
@@ -2891,10 +2904,17 @@ function _setDeadboltButtonsBusy(busy) {
 // silently blocking the next pairing). Each row gets its own Unpair, so a
 // specific lock can be removed without touching the others. lock ids come
 // from config (operator-typed) and are escaped.
-function buildDeadboltLocksTable(locks, pairingActive) {
+function buildDeadboltLocksTable(locks, pairingActive, catalog) {
   const rows = Array.isArray(locks) ? locks : [];
   if (!rows.length) return '';
   const dis = pairingActive ? ' disabled' : '';
+  // Resolve a lock's model profile (for the exclude/reset guidance) from the
+  // catalog by its saved model_key. Optional: no catalog -> no guidance.
+  const profileFor = (key) => {
+    if (!key || !Array.isArray(catalog)) return null;
+    for (const m of catalog) for (const model of (m.models || [])) if (model.key === key) return model;
+    return null;
+  };
   const cells = rows.map((l) => {
     const name = l.name ? escapeHtml(l.name)
       : (l.lock_id ? escapeHtml(l.lock_id) : '<em>unrecognized device</em>');
@@ -2904,8 +2924,15 @@ function buildDeadboltLocksTable(locks, pairingActive) {
     const state = l.link_state
       ? `${escapeHtml(describeLockBolt(l))} / ${l.battery == null ? 'battery n/a' : escapeHtml(l.battery) + '%'} / ${escapeHtml(l.link_state)}`
       : (l.foreign ? 'on stick, not managed' : (l.on_stick ? 'on stick' : (l.paired ? 'saved, missing from stick' : '-')));
+    // Per-model exclude + reset steps as an Unpair tooltip, so the operator
+    // sees the exact on-device gesture for THIS lock (exclusion itself is
+    // generic; only the gesture differs). Falls back to a plain button.
+    const prof = profileFor(l.model_key);
+    const title = prof
+      ? ` title="Exclude: ${escapeHtml(prof.exclude || '')}&#10;Factory reset: ${escapeHtml(prof.reset || '')}"`
+      : '';
     const unpair = (l.node_id || l.paired)
-      ? `<button class="btn btn-sm btn-secondary" onclick="startUnpairNode(${Number(l.node_id) || 0})"${dis}>Unpair</button>`
+      ? `<button class="btn btn-sm btn-secondary" onclick="startUnpairNode(${Number(l.node_id) || 0})"${dis}${title}>Unpair</button>`
       : '';
     return `<tr><td style="padding:4px 10px 4px 0">${name}</td>`
       + `<td style="padding:4px 10px 4px 0">${node}</td>`
@@ -2915,6 +2942,73 @@ function buildDeadboltLocksTable(locks, pairingActive) {
   }).join('');
   return `<div style="font-size:12px"><div style="font-weight:600;margin-bottom:4px">Paired locks</div>`
     + `<table style="border-collapse:collapse;font-size:12px"><tbody>${cells}</tbody></table></div>`;
+}
+
+// The deadbolt model catalog (manufacturers -> models -> per-model gestures),
+// fetched once from /api/deadbolt/catalog and cached for the Add Deadbolt
+// pickers, the pairing gesture, and the locks-table unpair guidance.
+let _lockCatalog = null;
+async function ensureLockCatalog() {
+  if (_lockCatalog) return _lockCatalog;
+  try {
+    const r = await api('GET', '/api/deadbolt/catalog');
+    _lockCatalog = (r && r.manufacturers) || [];
+  } catch (e) { _lockCatalog = []; }
+  return _lockCatalog;
+}
+function lockCatalogModel(key) {
+  if (!key || !Array.isArray(_lockCatalog)) return null;
+  for (const m of _lockCatalog) {
+    for (const model of (m.models || [])) if (model.key === key) return model;
+  }
+  return null;
+}
+
+// Add Deadbolt picker: manufacturer -> model -> friendly name. Pure builder
+// over the catalog so it is unit-testable; the model's enroll gesture and
+// default security are looked up at pair time. Static option text only.
+function buildAddDeadboltForm(catalog) {
+  const cat = Array.isArray(catalog) ? catalog : [];
+  if (!cat.length) return '';
+  const mfrOpts = cat.map((m, i) =>
+    `<option value="${i}">${escapeHtml(m.manufacturer)}</option>`).join('');
+  return `<details style="border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px">`
+    + `<summary style="cursor:pointer;font-size:13px;font-weight:600">Add a deadbolt</summary>`
+    + `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px">`
+    + `<select id="zwaveAddMfr" onchange="onAddMfrChange()" style="font-size:12px;padding:5px">${mfrOpts}</select>`
+    + `<select id="zwaveAddModel" onchange="onAddModelChange()" style="font-size:12px;padding:5px"></select>`
+    + `<input id="zwaveAddName" type="text" maxlength="40" placeholder="Name (e.g. Front Door)" style="font-size:12px;padding:6px;width:170px">`
+    + `<button class="btn btn-sm btn-primary" onclick="startPairing()">Pair this deadbolt</button>`
+    + `</div>`
+    + `<div id="zwaveAddGesture" style="margin-top:8px;font-size:12px;color:var(--text-secondary)"></div>`
+    + `</details>`;
+}
+
+// Repopulate the model <select> for the chosen manufacturer, then refresh the
+// gesture text.
+function onAddMfrChange() {
+  const mfrSel = document.getElementById('zwaveAddMfr');
+  const modelSel = document.getElementById('zwaveAddModel');
+  if (!mfrSel || !modelSel || !Array.isArray(_lockCatalog)) return;
+  const mfr = _lockCatalog[Number(mfrSel.value)] || { models: [] };
+  modelSel.innerHTML = (mfr.models || []).map((m) =>
+    `<option value="${escapeHtml(m.key)}">${escapeHtml(m.name)}</option>`).join('');
+  onAddModelChange();
+}
+
+// Show the selected model's ENROLL gesture (and a note when the gesture is
+// not authoritatively confirmed) so the operator knows the exact sequence.
+function onAddModelChange() {
+  const modelSel = document.getElementById('zwaveAddModel');
+  const out = document.getElementById('zwaveAddGesture');
+  if (!modelSel || !out) return;
+  const model = lockCatalogModel(modelSel.value);
+  if (!model) { out.textContent = ''; return; }
+  const verify = model.confirmed === false
+    ? '<div style="margin-top:4px;color:var(--yellow,#b58900)">Verify these steps against the lock manual.</div>' : '';
+  out.innerHTML = `<strong>Enroll:</strong> ${escapeHtml(model.enroll || '')}`
+    + (model.quirk ? `<div style="margin-top:4px;color:var(--text-muted)">${escapeHtml(model.quirk)}</div>` : '')
+    + verify;
 }
 
 function buildDeadboltButtons(zw) {
@@ -2960,12 +3054,23 @@ async function refreshZwaveDeadbolt() {
       return;
     }
     btns.innerHTML = buildDeadboltButtons(zw);
+    // Add Deadbolt picker (manufacturer/model/name), hidden while pairing.
+    const addEl = document.getElementById('zwaveAddDeadbolt');
+    if (addEl) {
+      if (pairingActive) {
+        addEl.innerHTML = '';
+      } else {
+        const cat = await ensureLockCatalog();
+        addEl.innerHTML = buildAddDeadboltForm(cat);
+        onAddMfrChange(); // populate the model list + first gesture
+      }
+    }
     // Locks inventory: saved locks merged with what the stick actually holds.
     const locksEl = document.getElementById('zwaveDeadboltLocks');
     if (locksEl) {
       try {
         const inv = await api('GET', '/api/deadbolt/locks');
-        locksEl.innerHTML = buildDeadboltLocksTable(inv.locks, pairingActive);
+        locksEl.innerHTML = buildDeadboltLocksTable(inv.locks, pairingActive, _lockCatalog);
       } catch (e) { /* inventory is optional detail; leave the panel as-is */ }
     }
     if (zw.paired) {
@@ -3019,8 +3124,20 @@ async function startPairing() {
   _lastPairPanelHtml = null; // fresh session: always paint the first panel
   setPairPanel(renderZwavePairPanel({ mode: 'include', state: 'starting', seconds_in_state: 0 }));
   try {
-    const security = document.getElementById('zwavePairSecurity')?.value || 'auto';
-    const r = await api('POST', '/api/deadbolt/pair/start', { security });
+    // Add Deadbolt inputs (optional): a chosen model sets the default security
+    // and its enroll gesture; a friendly name becomes the lock's id + label so
+    // a second lock is stored separately. Absent = plain single-lock pairing.
+    const modelKey = document.getElementById('zwaveAddModel')?.value || '';
+    const name = (document.getElementById('zwaveAddName')?.value || '').trim();
+    const model = lockCatalogModel(modelKey);
+    const security = (model && model.default_security)
+      || document.getElementById('zwavePairSecurity')?.value || 'auto';
+    const lockId = name ? name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') : '';
+    const body = { security };
+    if (modelKey) body.model_key = modelKey;
+    if (name) body.name = name;
+    if (lockId) body.lock_id = lockId;
+    const r = await api('POST', '/api/deadbolt/pair/start', body);
     if (r.error) { toast(r.error, 'error'); await showPairFailure(); return; }
     toast('Pairing started', 'info');
     setPairPanel(renderZwavePairPanel({ mode: 'include', state: r.state || 'starting', seconds_in_state: 0 }));

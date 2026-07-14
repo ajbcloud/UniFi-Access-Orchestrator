@@ -103,6 +103,31 @@ test('operator-typed lock ids are escaped', () => {
   assert.match(out, /&lt;img/);
 });
 
+test('per-model exclude + reset gestures show as the Unpair tooltip when a catalog is passed', () => {
+  const build = load();
+  const catalog = [{
+    manufacturer: 'Yale',
+    models: [{ key: 'yale-assure-zw2', name: 'Yale Assure (ZW2)',
+      exclude: 'Master PIN # 7 # 3 #', reset: 'hold reset while repowering' }],
+  }];
+  const out = build([{
+    lock_id: 'front_deadbolt', node_id: 10, paired: true, on_stick: true, model_key: 'yale-assure-zw2',
+    bolt: 'locked', battery: 88, battery_low: false, link_state: 'online',
+  }], false, catalog);
+  assert.match(out, /title="Exclude: Master PIN # 7 # 3 #/);
+  assert.match(out, /Factory reset: hold reset while repowering/);
+});
+
+test('no catalog -> a plain Unpair button with no tooltip (back-compat 2-arg call)', () => {
+  const build = load();
+  const out = build([{
+    lock_id: 'front_deadbolt', node_id: 10, paired: true, on_stick: true, model_key: 'yale-assure-zw2',
+    bolt: 'locked', battery: 88, battery_low: false, link_state: 'online',
+  }], false);
+  assert.match(out, /onclick="startUnpairNode\(10\)"/);
+  assert.ok(!out.includes('title="Exclude'));
+});
+
 test('pairing_active disables every Unpair button', () => {
   const build = load();
   const out = build([

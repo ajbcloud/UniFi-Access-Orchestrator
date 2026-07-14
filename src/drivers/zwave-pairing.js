@@ -110,6 +110,9 @@ class ZwavePairing {
     this.nodeId = null;
     this.security = null;
     this.securityMode = 'auto';   // 'auto' | 's2' | 's0' (operator-selected)
+    this.lockId = null;           // operator-chosen target lock id (Add Deadbolt)
+    this.modelKey = null;         // catalog model key selected for this pairing
+    this.lockName = null;         // operator-typed friendly name for the lock
     this.error = null;
     this.lastResult = null;       // 'done' | 'failed' | 'cancelled'
     this._timer = null;
@@ -134,6 +137,8 @@ class ZwavePairing {
       node_id: this.nodeId,
       security: this.security,
       security_mode: this.securityMode,
+      lock_id: this.lockId,
+      model_key: this.modelKey,
       error: this.error,
       last_result: this.lastResult,
       keys_generated: this._keysGenerated,
@@ -358,6 +363,13 @@ class ZwavePairing {
     this.mode = 'include';
     this.securityMode = Object.prototype.hasOwnProperty.call(SECURITY_MODES, options.security)
       ? options.security : 'auto';
+    // Add Deadbolt: the operator can target a NEW lock id and pick a catalog
+    // model. Both are carried through the session so onIncludeDone stores the
+    // node under the chosen id (never clobbering an existing lock) with its
+    // model recorded. Absent = today's single-lock behavior (default id).
+    this.lockId = typeof options.lock_id === 'string' && options.lock_id ? options.lock_id : null;
+    this.modelKey = typeof options.model_key === 'string' && options.model_key ? options.model_key : null;
+    this.lockName = typeof options.name === 'string' && options.name ? options.name : null;
     this._stage('starting', this.timeouts.starting,
       () => this._fail('the Z-Wave controller did not start in time'));
 
@@ -590,7 +602,14 @@ class ZwavePairing {
     this.logger.info && this.logger.info(`Z-Wave inclusion complete: node ${this.nodeId} (${finalLabel})`);
     await this._teardown({ stopRadio: true });
     try {
-      await this.onIncludeDone({ nodeId: this.nodeId, securityClass: this.security });
+      // Only attach the Add-Deadbolt fields when the operator supplied them,
+      // so a plain single-lock pairing keeps the original {nodeId,
+      // securityClass} callback shape.
+      const donePayload = { nodeId: this.nodeId, securityClass: this.security };
+      if (this.lockId) donePayload.lockId = this.lockId;
+      if (this.modelKey) donePayload.modelKey = this.modelKey;
+      if (this.lockName) donePayload.name = this.lockName;
+      await this.onIncludeDone(donePayload);
     } catch (err) {
       // Paired on the radio but the app could not persist/activate: surface it.
       this.lastResult = 'failed';
