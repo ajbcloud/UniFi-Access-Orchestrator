@@ -88,14 +88,21 @@ zombie lock driver after failed boot init, misleading "not verified" for
 driver-side outages, no automatic dead-node revival, no measured node health
 surface.
 
-Known gaps deliberately deferred to the next phases: backoff between verify
-retries, `poll_minutes` periodic state refresh, low-battery and jam alert
-events, an explicit `interview.queryAllUserCodes: false` guard (the Yale
-battery-drain mitigation; the zwave-js default is already safe), notifier
-channels beyond the generic webhook (Slack or Teams, SMTP email, ntfy,
-severity levels), `*_env` secret indirection, an optional UniFi-native
-webhook signature scheme, a webhook-mode event-inactivity monitor,
-lock-on-exit as an opt-in automation, and Windows service packaging notes.
+Also shipped in this change set (originally phase 2 of the plan): backoff
+between verify retries (`retry_backoff_ms`, doubling per attempt),
+`poll_minutes` periodic bolt and battery refresh (drift is noticed within
+one poll instead of at the next entry event), `deadbolt_low_battery` and
+`deadbolt_jammed` alert events (edge triggered, re-armed on recovery, wired
+through the existing notifier de-dupe), a jam-specific command error, and
+the explicit `interview.queryAllUserCodes: false` guard (the Yale
+battery-drain mitigation from zwave-js issue 2725; the default is already
+safe, the guard makes it permanent).
+
+Known gaps deliberately deferred to the next phases: notifier channels
+beyond the generic webhook (Slack or Teams, SMTP email, ntfy, severity
+levels), `*_env` secret indirection, an optional UniFi-native webhook
+signature scheme, a webhook-mode event-inactivity monitor, lock-on-exit as
+an opt-in automation, and Windows service packaging notes.
 
 One release-pipeline finding: every GitHub release ever cut is still a
 draft, so the in-app auto-updater has never had anything to install.

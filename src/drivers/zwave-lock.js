@@ -108,7 +108,17 @@ class ZwaveLock extends LockDriver {
     this.nodeId = cfg.node_id;
     this.verifyTimeoutMs = cfg.verify_timeout_ms == null ? 12000 : cfg.verify_timeout_ms;
     this.verifyRetries = cfg.verify_retries == null ? 1 : cfg.verify_retries;
+    // Backoff before each retry (doubling per attempt): an immediate re-send
+    // right after a failure tends to hit the same RF/queue condition.
+    this.retryBackoffMs = cfg.retry_backoff_ms == null ? 1500 : cfg.retry_backoff_ms;
     this.lowBatteryPct = cfg.low_battery_pct == null ? 25 : cfg.low_battery_pct;
+    // Periodic bolt+battery refresh (minutes, 0 disables): event-driven state
+    // is primary, but on an unattended box a silent drift (missed report,
+    // stale cache) should be noticed within one poll interval, not at the
+    // next entry event.
+    this.pollMinutes = cfg.poll_minutes == null ? 20 : cfg.poll_minutes;
+    this._pollTimer = null;
+    this._wasBatteryLow = false;
 
     // Dead-node revival ladder (self-healing for an unattended box): while the
     // node reads Dead, ping it on a capped backoff forever. Base/cap are
@@ -176,7 +186,22 @@ class ZwaveLock extends LockDriver {
     // A node that comes up Dead (e.g. it browned out during the pairing
     // interview) must start healing immediately, not wait for an operator.
     if (this._nodeStatus() === NODE_STATUS.DEAD) this._scheduleRevive();
+    this._startPolling();
     this.emit(this._state.online ? 'online' : 'offline');
+  }
+
+  _startPolling() {
+    if (this._pollTimer || !this.pollMinutes) return;
+    this._pollTimer = setInterval(() => {
+      // Only touch the wire when the node is reachable right now; a sleeping
+      // lock re-seeds on its next wake anyway, and a dead one is the revival
+      // ladder's job.
+      if (!this._shouldLiveRead()) return;
+      this._refreshLive().catch((err) => {
+        this.logger.warn && this.logger.warn(`ZwaveLock: periodic state poll failed: ${err.message}`);
+      });
+    }, this.pollMinutes * 60000);
+    if (typeof this._pollTimer.unref === 'function') this._pollTimer.unref();
   }
 
   _resolveNode(driver) {
@@ -245,15 +270,35 @@ class ZwaveLock extends LockDriver {
   }
 
   _updateState(boltState) {
+    const prev = this._state.boltState;
     this._state.boltState = boltState;
     this._state.lastSeen = new Date().toISOString();
     this.emit('state-change', this.snapshot());
+    // A jam is worth telling a human about even when no command is running
+    // (a spontaneous jam used to only change the dashboard badge). Edge
+    // triggered: one alert per transition into JAMMED.
+    if (boltState === LockState.JAMMED && prev !== LockState.JAMMED) {
+      this.emit('alert', {
+        type: 'deadbolt_jammed',
+        detail: 'lock reports the bolt jammed (obstruction); check door alignment and the bolt pocket',
+      });
+    }
   }
 
   _setBattery(level) {
     this._state.battery = level;
     this._state.batteryLow = level <= this.lowBatteryPct;
     this.emit('state-change', this.snapshot());
+    // Edge triggered: one alert per crossing into low, re-armed on recovery,
+    // so a battery sitting at 24% does not alert on every report (the
+    // notifier's min-interval de-dupe is the second line of defense).
+    if (this._state.batteryLow && !this._wasBatteryLow) {
+      this.emit('alert', {
+        type: 'deadbolt_low_battery',
+        detail: `lock battery at ${level}% (threshold ${this.lowBatteryPct}%); replace the batteries soon`,
+      });
+    }
+    this._wasBatteryLow = this._state.batteryLow;
   }
 
   _setOnline(online) {
@@ -446,9 +491,22 @@ class ZwaveLock extends LockDriver {
     });
   }
 
+  // Deliberately a ref'd timer: it only exists inside an in-flight command,
+  // and an unref'd sleep can drain the event loop mid-await (the process
+  // would exit with the command's promise still pending).
+  _sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   async _setVerified(mode, wantState, action, reason) {
     let last = this._state.boltState;
     for (let attempt = 0; attempt <= this.verifyRetries; attempt++) {
+      // Backoff before every retry (not the first attempt), doubling per
+      // attempt: an instant re-send hits the same RF/queue condition that
+      // just failed, so give the network a beat to clear.
+      if (attempt > 0 && this.retryBackoffMs > 0) {
+        await this._sleep(this.retryBackoffMs * 2 ** (attempt - 1));
+      }
       try {
         await this._commandSet(mode);
       } catch (err) {
@@ -471,6 +529,11 @@ class ZwaveLock extends LockDriver {
    * people hunting through logs (field report, node presumed dead mid-pair).
    */
   _describeFailure() {
+    // A jam beats every link-level explanation: the radio worked, the bolt
+    // physically could not move.
+    if (this._state.boltState === LockState.JAMMED) {
+      return 'the bolt is jammed (obstruction). Check the door alignment and the bolt pocket, then retry';
+    }
     const st = this._nodeStatus();
     if (st === NODE_STATUS.DEAD || st === NODE_STATUS.UNKNOWN) {
       return 'lock not responding (Z-Wave reports the node dead). Wake it at the keypad; '
@@ -595,6 +658,10 @@ class ZwaveLock extends LockDriver {
     if (this._reviveTimer) {
       clearTimeout(this._reviveTimer);
       this._reviveTimer = null;
+    }
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
     }
     this._state.linkState = 'offline';
     this._setOnline(false);

@@ -76,7 +76,9 @@ class MockNode extends EventEmitter {
 async function makeZwave(nodeOpts = {}, cfg = {}) {
   const node = new MockNode(nodeOpts);
   const lock = new ZwaveLock(
-    Object.assign({ node_id: 2, verify_timeout_ms: 40, verify_retries: 1 }, cfg),
+    // retry_backoff_ms is tiny here so retry tests stay fast; backoff timing
+    // itself has a dedicated test below.
+    Object.assign({ node_id: 2, verify_timeout_ms: 40, verify_retries: 1, retry_backoff_ms: 5 }, cfg),
     { node, logger: { warn() {} } }
   );
   await lock.init();
@@ -106,11 +108,12 @@ test('ZwaveLock: unlock() sets UNSECURED and verifies', async () => {
   assert.deepEqual(node.setCalls, [0x00]);
 });
 
-test('ZwaveLock: a jam yields failure with JAMMED state', async () => {
+test('ZwaveLock: a jam yields failure with JAMMED state and a jam-specific error', async () => {
   const { lock } = await makeZwave({ current: 0x00, jam: true }, { verify_retries: 0 });
   const r = await lock.lock('lockup');
   assert.equal(r.success, false);
   assert.equal(r.boltState, LockState.JAMMED);
+  assert.match(r.error, /jammed/i, 'error explains the jam instead of "not verified"');
 });
 
 test('ZwaveLock: no confirmation times out and retries, then fails', async () => {
@@ -243,6 +246,78 @@ test('ZwaveLock: reinterview calls node.refreshInfo, throws when unavailable', a
   assert.equal(called, 1);
   const bare = new ZwaveLock({ node_id: 2 }, { node: new MockNode() });
   assert.throws(() => bare.reinterview(), /re-interview unavailable/);
+});
+
+// ---------------------------------------------------------------------------
+// Verification hardening: retry backoff, periodic polling, and device-origin
+// alerts (low battery, jam).
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: retries back off between attempts', async () => {
+  const times = [];
+  const node = new MockNode({ current: 0x00, confirm: false });
+  const origSet = node.commandClasses['Door Lock'].set;
+  node.commandClasses['Door Lock'].set = async (mode) => { times.push(Date.now()); return origSet(mode); };
+  const lock = new ZwaveLock(
+    { node_id: 2, verify_timeout_ms: 10, verify_retries: 1, retry_backoff_ms: 60 },
+    { node, logger: { warn() {} } }
+  );
+  await lock.init();
+  const r = await lock.lock('test');
+  assert.equal(r.success, false);
+  assert.equal(times.length, 2, 'two attempts');
+  assert.ok(times[1] - times[0] >= 50, `expected a backoff pause, got ${times[1] - times[0]}ms`);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: periodic poll notices silent bolt and battery drift', async () => {
+  const node = new MockNode({ status: 2 /* Awake */, values: {}, current: 0xff, battery: 77 });
+  node.ready = true;
+  const lock = new ZwaveLock(
+    { node_id: 2, poll_minutes: 0.001 }, // 60ms for the test
+    { node, logger: { warn() {} } }
+  );
+  await lock.init();
+  assert.equal((await lock.getState()).boltState, LockState.LOCKED);
+  // Drift with NO value-updated event: only the poll can notice this.
+  node.current = 0x00;
+  node.batteryLevel = 55;
+  await tick(200);
+  const s = await lock.getState();
+  assert.equal(s.boltState, LockState.UNLOCKED, 'poll picked up the silent bolt change');
+  assert.equal(s.battery, 55, 'poll refreshed battery');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: poll_minutes 0 disables polling', async () => {
+  const { lock } = await makeZwave({ status: 2, values: {} }, { poll_minutes: 0 });
+  assert.equal(lock._pollTimer, null);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: low battery alert is edge triggered and re-arms on recovery', async () => {
+  const { node, lock } = await makeZwave({ current: 0xff }, { low_battery_pct: 25 });
+  const alerts = [];
+  lock.on('alert', (a) => alerts.push(a));
+  const report = (level) => node.emit('value updated', node, { commandClassName: 'Battery', property: 'level', newValue: level });
+  report(24); // crossing: alert
+  report(23); // still low: no repeat
+  report(80); // recovered: re-arms
+  report(20); // crossing again: alert
+  const low = alerts.filter((a) => a.type === 'deadbolt_low_battery');
+  assert.equal(low.length, 2);
+  assert.match(low[0].detail, /24%/);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: spontaneous jam emits deadbolt_jammed once per transition', async () => {
+  const { node, lock } = await makeZwave({ current: 0xff });
+  const alerts = [];
+  lock.on('alert', (a) => alerts.push(a));
+  node.emit('notification', node, 0x71, { type: 6, event: 0x0b });
+  node.emit('notification', node, 0x71, { type: 6, event: 0x0b }); // unchanged state: no repeat
+  assert.equal(alerts.filter((a) => a.type === 'deadbolt_jammed').length, 1);
+  await lock.shutdown();
 });
 
 // ---------------------------------------------------------------------------

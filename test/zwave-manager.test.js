@@ -160,6 +160,14 @@ test('ensureStarted requires a serial path', async () => {
   await assert.rejects(() => manager.ensureStarted({}), /No Z-Wave serial path/);
 });
 
+test('driver options carry the Yale user-code interview guard', async () => {
+  const { manager, made } = makeManager();
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  // zwave-js issue 2725: querying all user codes can drain Yale batteries.
+  // No PINs are used here, so the guard must be explicit in the options.
+  assert.strictEqual(made[0].options.interview.queryAllUserCodes, false);
+});
+
 // ---------------------------------------------------------------------------
 // zwave-js debug file logging (added to diagnose S2 "secure join" failures)
 // ---------------------------------------------------------------------------

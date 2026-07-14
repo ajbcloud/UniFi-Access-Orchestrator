@@ -136,7 +136,7 @@ const zwavePairing = new ZwavePairing({
       const lockId = (cfg.deadbolt_rules && cfg.deadbolt_rules.lock_id)
         || Object.keys(zw.locks)[0] || 'front_deadbolt';
       zw.locks[lockId] = Object.assign(
-        { verify_timeout_ms: 12000, verify_retries: 1, poll_minutes: 20, low_battery_pct: 25 },
+        { verify_timeout_ms: 12000, verify_retries: 1, retry_backoff_ms: 1500, poll_minutes: 20, low_battery_pct: 25 },
         zw.locks[lockId],
         { node_id: nodeId }
       );
@@ -234,6 +234,12 @@ function buildDeadbolt() {
       logger.error('Deadbolt configured but devices.zwave.enabled is not true and dev_fake_lock is not set. Deadbolt LOCK/RETRACT are DISABLED (cascade still active). Set devices.zwave.enabled for hardware, or devices.zwave.dev_fake_lock for dev.');
       notifier.notify({ type: 'deadbolt_no_transport', detail: 'deadbolt configured but no lock transport enabled' });
     }
+  }
+  // Device-origin alerts (low battery, jam) flow from the lock driver itself,
+  // independent of any command in flight. A fresh driver instance is built on
+  // every rebuild, so this listener never stacks.
+  if (lockDriver && typeof lockDriver.on === 'function') {
+    lockDriver.on('alert', (a) => monitorAlert(a.type, a.detail || ''));
   }
   deadboltController = new DeadboltController(config, {
     lockDriver,

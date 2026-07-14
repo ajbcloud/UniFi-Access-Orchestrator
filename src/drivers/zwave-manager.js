@@ -206,6 +206,15 @@ class ZwaveManager extends EventEmitter {
       securityKeysLongRange: keys.longRange,
       storage: cacheDir ? { cacheDir } : undefined,
       logConfig,
+      interview: {
+        // Yale battery-drain guard (zwave-js issue 2725): older Yale locks
+        // loop NodeInfo and flatten their batteries when all user codes are
+        // queried during the interview. This deployment uses no per-user
+        // PINs, so never query them. false matches the zwave-js default;
+        // stating it here makes the guard explicit and survives upstream
+        // default changes.
+        queryAllUserCodes: false,
+      },
     });
 
     try {
