@@ -86,6 +86,13 @@ test('validateConfigUpdates accepts well-formed updates', () => {
   assert.strictEqual(ok.ok, true);
 });
 
+test('validateConfigUpdates accepts a per-lock friendly name and security_class', () => {
+  const ok = validateConfigUpdates({
+    devices: { zwave: { locks: { front_deadbolt: { name: 'Front Door Deadbolt', security_class: 'S0 Legacy', node_id: 4 } } } },
+  });
+  assert.strictEqual(ok.ok, true);
+});
+
 test('validateConfigUpdates rejects bad port, mode, and non-array rules', () => {
   assert.strictEqual(validateConfigUpdates({ server: { port: 0 } }).ok, false);
   assert.strictEqual(validateConfigUpdates({ server: { port: 70000 } }).ok, false);

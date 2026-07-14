@@ -128,7 +128,7 @@ const zwavePairing = new ZwavePairing({
     logger.info('Z-Wave: generated and stored new S2 security keys (kept in config; do not delete after pairing)');
     return { generated: true };
   },
-  onIncludeDone: async ({ nodeId }) => {
+  onIncludeDone: async ({ nodeId, securityClass }) => {
     persistZwaveMutation((cfg) => {
       cfg.devices = cfg.devices || {};
       const zw = cfg.devices.zwave = cfg.devices.zwave || {};
@@ -138,7 +138,10 @@ const zwavePairing = new ZwavePairing({
       zw.locks[lockId] = Object.assign(
         { verify_timeout_ms: 12000, verify_retries: 1, retry_backoff_ms: 1500, poll_minutes: 20, low_battery_pct: 25 },
         zw.locks[lockId],
-        { node_id: nodeId }
+        // security_class persists the class the join actually granted (S2
+        // Access Control for the Schlage, S0 Legacy for the Yale) so the UI
+        // can show it after restarts without a live node read.
+        { node_id: nodeId, security_class: securityClass || null }
       );
       zw.enabled = true;
       // buildDeadbolt() activates on deadbolt_rules; seed the minimal block so
@@ -147,7 +150,7 @@ const zwavePairing = new ZwavePairing({
       cfg.deadbolt_rules = Object.assign({ lock_id: lockId }, cfg.deadbolt_rules);
     });
     await bringDeadboltOnline();
-    logger.info(`Z-Wave: lock paired as node ${nodeId} and brought online`);
+    logger.info(`Z-Wave: lock paired as node ${nodeId} (${securityClass || 'class unknown'}) and brought online`);
   },
   onExcludeDone: async ({ nodeId }) => {
     const zw = config.devices && config.devices.zwave;
@@ -783,7 +786,9 @@ function pairingErrorStatus(err) {
 
 app.post('/api/deadbolt/pair/start', async (req, res) => {
   try {
-    const status = await zwavePairing.startInclusion();
+    // security: 'auto' (default) | 's2' | 's0'. s0 exists for locks like the
+    // Yale YRD256 whose S2 bootstrap wedges and cannot fall back in-session.
+    const status = await zwavePairing.startInclusion({ security: req.body && req.body.security });
     res.json({ status: 'started', mode: 'include', state: status.state, keys_generated: status.keys_generated });
   } catch (err) {
     res.status(pairingErrorStatus(err)).json({ error: err.message, state: zwavePairing.state });
@@ -903,6 +908,16 @@ app.post('/api/deadbolt/unpair', async (req, res) => {
 // Paired-locks inventory for the Smart Deadbolt panel: the saved locks map
 // merged with what is actually on the stick, so ghosts (on the stick but not
 // saved) and orphans (saved but gone from the stick) are both visible.
+// Best-effort model label straight off a live node (device-db label), for
+// rows the lock driver is not bound to. Never throws.
+function nodeModelLabel(node) {
+  if (!node) return null;
+  try {
+    if (node.deviceConfig && node.deviceConfig.label) return String(node.deviceConfig.label);
+  } catch (e) { /* identity not interviewed yet */ }
+  return typeof node.label === 'string' && node.label ? node.label : null;
+}
+
 app.get('/api/deadbolt/locks', (req, res) => {
   const zw = (config.devices && config.devices.zwave) || {};
   const saved = zw.locks || {};
@@ -918,9 +933,12 @@ app.get('/api/deadbolt/locks', (req, res) => {
     const bound = nodeId > 0 && nodeId === boundNodeId && snap;
     locks.push({
       lock_id: lockId,
+      name: (lc && lc.name) || null,
       node_id: nodeId,
       paired: nodeId > 0,
       on_stick: !!(nodeId && zwaveManager.getNode(nodeId)),
+      model: bound ? snap.model : nodeModelLabel(zwaveManager.getNode(nodeId)),
+      security_class: bound ? snap.securityClass : ((lc && lc.security_class) || null),
       bolt: bound ? snap.boltState : null,
       battery: bound ? snap.battery : null,
       battery_low: bound ? !!snap.batteryLow : false,
@@ -933,10 +951,13 @@ app.get('/api/deadbolt/locks', (req, res) => {
       if (id === ownNodeId || seen.has(id)) return;
       locks.push({
         lock_id: null,
+        name: null,
         node_id: id,
         paired: false,
         on_stick: true,
         foreign: true, // on the stick but not saved as a lock (ghost / other device)
+        model: nodeModelLabel(node),
+        security_class: null,
         bolt: null,
         battery: null,
         battery_low: false,

@@ -119,3 +119,16 @@ test('install is memoized and never throws on detector failure', () => {
   assert.strictEqual(res2, res1);
   shim._resetForTests();
 });
+
+// S0 (Security CC) primitive coverage pin. The Yale YRD256 joins at S0, whose
+// crypto path uses OFB (payload), CBC (computeMAC), and ECB (key derivation +
+// nonce DRBG). If a future edit drops any of these from the shim's dependents
+// map, an Electron runtime missing that cipher would brick S0 joins with the
+// same "Unknown cipher" failure the shim was built to prevent for S2.
+test('shim dependents cover every primitive the S0 path needs', () => {
+  const deps = shim.CIPHER_DEPENDENTS;
+  assert.ok(deps['aes-128-ofb'].includes('encryptAES128OFB'));
+  assert.ok(deps['aes-128-ofb'].includes('decryptAES128OFB'));
+  assert.ok(deps['aes-128-cbc'].includes('encryptAES128CBC'));
+  assert.ok(deps['aes-128-ecb'].includes('encryptAES128ECB'));
+});

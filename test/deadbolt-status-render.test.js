@@ -58,6 +58,39 @@ test('describeLockBattery: n/a, normal, and low', () => {
   assert.equal(low.color, 'var(--red)');
 });
 
+function loadIdentityHelpers() {
+  const src = extractFn('describeLockModel') + ';' + extractFn('describeLockSecurity')
+    + ';' + extractFn('describeLockBolt');
+  return new Function(src + '; return { describeLockModel, describeLockSecurity, describeLockBolt };')();
+}
+
+test('describeLockModel: name first, model second, never a bare unknown', () => {
+  const { describeLockModel } = loadIdentityHelpers();
+  assert.equal(describeLockModel({ name: 'Front Door', model: 'Yale Assure Deadbolt (ZW2)' }),
+    'Front Door (Yale Assure Deadbolt (ZW2))');
+  assert.equal(describeLockModel({ model: 'Schlage BE469ZP Touchscreen Deadbolt' }),
+    'Schlage BE469ZP Touchscreen Deadbolt');
+  assert.equal(describeLockModel({ name: 'Bench Lock' }), 'Bench Lock');
+  assert.equal(describeLockModel({}), 'identifying...');
+  assert.ok(!describeLockModel({}).includes('unknown'));
+});
+
+test('describeLockSecurity: snapshot and locks-route field names, pending floor', () => {
+  const { describeLockSecurity } = loadIdentityHelpers();
+  assert.equal(describeLockSecurity({ securityClass: 'S2 Access Control' }), 'S2 Access Control');
+  assert.equal(describeLockSecurity({ security_class: 'S0 Legacy' }), 'S0 Legacy');
+  assert.equal(describeLockSecurity({}), 'pending');
+});
+
+test('describeLockBolt: transient reading state while the link is up', () => {
+  const { describeLockBolt } = loadIdentityHelpers();
+  assert.equal(describeLockBolt({ boltState: 'locked' }), 'locked');
+  assert.equal(describeLockBolt({ boltState: 'unknown', linkState: 'online' }), 'reading...');
+  assert.equal(describeLockBolt({ boltState: 'unknown', linkState: 'asleep' }), 'reading...');
+  assert.equal(describeLockBolt({ boltState: 'unknown', linkState: 'offline' }), 'unknown');
+  assert.equal(describeLockBolt({ bolt: 'jammed', link_state: 'online' }), 'jammed');
+});
+
 function loadRenderZwaveSetup() {
   const src = extractFn('renderZwaveSetup');
   // Parameters stand in for the SPA globals the function touches.

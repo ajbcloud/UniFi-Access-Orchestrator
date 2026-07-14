@@ -3,6 +3,7 @@
 const { LockDriver, LockState } = require('./lock-driver');
 const { ZwaveManager } = require('./zwave-manager');
 const { loadSecurityKeys } = require('./zwave-keys');
+const { SECURITY_CLASS_LABELS } = require('./zwave-pairing');
 
 // Z-Wave Door Lock CC (0x62) target modes.
 const DOOR_LOCK_MODE = Object.freeze({ UNSECURED: 0x00, SECURED: 0xff });
@@ -42,6 +43,22 @@ function modeToState(mode) {
 // normal idle state and still counts as reachable; only Dead/Unknown mean the
 // radio cannot deliver a frame right now.
 const NODE_STATUS = Object.freeze({ UNKNOWN: 0, ASLEEP: 1, AWAKE: 2, DEAD: 3, ALIVE: 4 });
+
+// Known lock models, keyed by manufacturerId:productType:productId. The
+// zwave-js device db labels the Yale ZW2 module with one combined multi-model
+// string ("YRD226 / YRC226 / ... / YRD446"), so this map supplies clean names
+// for the models we deploy; anything unmapped falls back to the db label and
+// then the raw ids, never a bare "unknown". Keys are lower-case hex.
+const LOCK_PROFILES = Object.freeze({
+  '0x003b:0x0001:0x0469': 'Schlage BE469ZP Touchscreen Deadbolt',
+  '0x0129:0x8002:0x0600': 'Yale Assure Deadbolt (ZW2)',
+  '0x0129:0x8002:0x1600': 'Yale Assure Deadbolt (ZW2)',
+  '0x0129:0x8002:0x4600': 'Yale Assure Deadbolt (ZW2)',
+});
+
+function hex4(n) {
+  return '0x' + Number(n).toString(16).padStart(4, '0');
+}
 
 // Value ids for cache reads via node.getValue(): instant, never touch the
 // wire, and return undefined until the interview has fetched them once.
@@ -103,6 +120,13 @@ class ZwaveLock extends LockDriver {
       online: false,
       linkState: 'offline',
       lastSeen: null,
+      // Identity: populated by _seedIdentity() once the interview has run
+      // (cached across restarts by zwave-js). security_class is seeded from
+      // config (persisted at pair time) until the node can confirm it.
+      name: cfg.name || null,
+      model: null,
+      manufacturer: null,
+      securityClass: cfg.security_class || null,
     };
 
     this.nodeId = cfg.node_id;
@@ -175,6 +199,7 @@ class ZwaveLock extends LockDriver {
     // the node is actually reachable; the lifecycle handlers in _wireNode
     // recover state when the interview completes or the lock wakes.
     this._refreshLink();
+    this._seedIdentity();
     this._seedFromCache();
     if (this._shouldLiveRead()) {
       try {
@@ -339,8 +364,55 @@ class ZwaveLock extends LockDriver {
   _onNodeReachable() {
     this._reviveAttempt = 0; // healed: next outage starts the ladder fresh
     this._refreshLink();
+    this._seedIdentity();
     this._seedFromCache();
     if (this._shouldLiveRead()) this._refreshLive().catch(() => { /* best effort */ });
+  }
+
+  /**
+   * Model / manufacturer / security class off the node. All of these are
+   * MaybeNotKnown until the Manufacturer Specific interview stage has run
+   * once, then cached across restarts, so this is called from init AND the
+   * ready/interview-completed/wake/alive handlers, exactly like the
+   * bolt/battery re-seed. Display fallback chain: known profile -> device-db
+   * label -> raw ids. Never writes a bare "unknown".
+   */
+  _seedIdentity() {
+    const node = this._node;
+    if (!node) return;
+    let changed = false;
+    const set = (key, val) => {
+      if (val != null && val !== '' && this._state[key] !== val) {
+        this._state[key] = val;
+        changed = true;
+      }
+    };
+    let dc = null;
+    try { dc = node.deviceConfig || null; } catch (e) { dc = null; }
+    const mfgId = typeof node.manufacturerId === 'number' ? node.manufacturerId : null;
+    const prodType = typeof node.productType === 'number' ? node.productType : null;
+    const prodId = typeof node.productId === 'number' ? node.productId : null;
+    let model = null;
+    if (mfgId != null && prodType != null && prodId != null) {
+      model = LOCK_PROFILES[`${hex4(mfgId)}:${hex4(prodType)}:${hex4(prodId)}`] || null;
+    }
+    if (!model && dc && dc.label) model = String(dc.label);
+    if (!model && typeof node.label === 'string' && node.label) model = node.label;
+    if (!model && mfgId != null && prodId != null) {
+      model = `manufacturer ${hex4(mfgId)} product ${hex4(prodId)}`;
+    }
+    set('model', model);
+    const manufacturer = (dc && dc.manufacturer)
+      || (typeof node.manufacturer === 'string' ? node.manufacturer : null);
+    set('manufacturer', manufacturer);
+    try {
+      const cls = typeof node.getHighestSecurityClass === 'function'
+        ? node.getHighestSecurityClass() : null;
+      if (typeof cls === 'number' && SECURITY_CLASS_LABELS[cls]) {
+        set('securityClass', SECURITY_CLASS_LABELS[cls]);
+      }
+    } catch (e) { /* class not known yet */ }
+    if (changed) this.emit('state-change', this.snapshot());
   }
 
   /**
@@ -393,6 +465,7 @@ class ZwaveLock extends LockDriver {
 
   _onNodeReady() {
     this._refreshLink();
+    this._seedIdentity();
     this._seedFromCache();
     if (this._shouldLiveRead()) this._refreshLive().catch(() => { /* best effort */ });
   }

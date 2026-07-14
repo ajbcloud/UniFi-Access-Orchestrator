@@ -26,7 +26,8 @@ function extractFn(name) {
 }
 
 function load() {
-  const src = extractFn('escapeHtml') + '\n' + extractFn('buildDeadboltLocksTable');
+  const src = extractFn('escapeHtml') + '\n' + extractFn('describeLockBolt')
+    + '\n' + extractFn('buildDeadboltLocksTable');
   return new Function(src + '; return buildDeadboltLocksTable;')();
 }
 
@@ -46,6 +47,29 @@ test('a bound paired lock shows state and its own Unpair button', () => {
   assert.match(out, /node 10/);
   assert.match(out, /locked \/ 88% \/ online/);
   assert.match(out, /onclick="startUnpairNode\(10\)"/);
+});
+
+test('model, security class, and friendly name render; name wins the first cell', () => {
+  const build = load();
+  const out = build([{
+    lock_id: 'front_deadbolt', name: 'Front Door Deadbolt', node_id: 10, paired: true, on_stick: true,
+    model: 'Yale Assure Deadbolt (ZW2)', security_class: 'S0 Legacy',
+    bolt: 'locked', battery: 88, battery_low: false, link_state: 'online',
+  }], false);
+  assert.match(out, /Front Door Deadbolt/);
+  assert.match(out, /Yale Assure Deadbolt \(ZW2\)/);
+  assert.match(out, /S0 Legacy/);
+});
+
+test('a paired lock with no identity yet shows identifying, not unknown', () => {
+  const build = load();
+  const out = build([{
+    lock_id: 'front_deadbolt', node_id: 10, paired: true, on_stick: true,
+    model: null, security_class: null,
+    bolt: 'unknown', battery: null, battery_low: false, link_state: 'online',
+  }], false);
+  assert.match(out, /identifying\.\.\./);
+  assert.match(out, /reading\.\.\./, 'link up + unread bolt shows reading, not unknown');
 });
 
 test('a foreign node on the stick is visible and unpairable', () => {

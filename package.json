@@ -109,6 +109,7 @@
     "electron-builder": "26.15.3"
   },
   "optionalDependencies": {
-    "zwave-js": "15.25.3"
+    "zwave-js": "15.25.3",
+    "nodemailer": "^6.9.16"
   }
 }

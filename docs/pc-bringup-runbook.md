@@ -48,21 +48,49 @@ release containing in-app pairing).
 
 ## 4. Pair the lock
 
-- [ ] Click **Pair New Lock**. The panel says it is starting, then waiting
-      for the lock.
+Both supported locks pair from the same panel. Pick the security mode in the
+dropdown next to Pair New Lock: **Auto** works for both locks (S2 when the
+lock supports it, S0 when that is all it has); **S2 only** matches the
+Schlage; **S0 only** is the fallback for a Yale whose S2 handshake wedges.
+The app persists the security keys in its 0600 config file automatically at
+first pairing; nothing needs to be set in environment variables.
+
+### Schlage BE469ZP (joins at S2)
+
+- [ ] Click **Pair New Lock** (Auto or S2 only).
 - [ ] On the lock: enter the 6-digit programming code, press the Schlage
       button, then press **0**.
 - [ ] The panel shows the lock's device ID and asks for the PIN. Type the
       5-digit label PIN and submit.
-- [ ] Expect "Paired!" with a node number, then live bolt state, battery,
-      and link in the panel.
-- [ ] If it fails with "joined WITHOUT S2 security": run **Unpair** (
-      programming code, Schlage button, **0** puts the lock in exclusion
-      mode), move the stick closer to the lock, double-check the PIN, and
-      pair again.
+- [ ] Expect "Paired!" with a node number and **S2 Access Control**, then
+      live bolt state, battery, and link.
+
+### Yale Assure YRD256 (typically joins at S0; that is normal)
+
+- [ ] If the Yale was EVER paired anywhere (including a failed attempt),
+      exclude it first: click **Unpair / Exclude Device**, then on the lock:
+      Master PIN, **#**, **7**, **#**, **3**, **#**. Or factory reset it.
+- [ ] Click **Pair New Lock** with security mode **Auto** (use **S0 only**
+      on a retry if the first attempt failed partway).
+- [ ] On the lock: Master PIN, **#**, **7**, **#**, **1**, **#**.
+- [ ] There is NO PIN step for an S0 join; the panel goes straight from
+      waiting to done. Expect "Paired!" with **S0 Legacy**. An S2 warning in
+      the logs is normal for this lock and is not a failure.
+- [ ] Known Yale notes: DoorSense does not work over Z-Wave on this model
+      (we do not use it), and configuration parameter 19 has a known gap in
+      community templates (we do not rely on it).
+
+### Either lock
+
+- [ ] If it fails with "joined WITHOUT encryption": exclude the lock, move
+      the stick closer, and pair again (for the Yale, retry with S0 only;
+      a wedged S2 handshake cannot fall back to S0 in the same session).
 - [ ] If the lock was EVER paired to another controller before: exclude it
-      first (Unpair flow works even for locks joined elsewhere) or factory
-      reset it, then pair.
+      first (the Unpair flow works even for locks joined elsewhere) or
+      factory reset it, then pair.
+- [ ] After pairing, the panel and the Smart Deadbolt card show the detected
+      model and the security class it joined with. Set a friendly display
+      name via `devices.zwave.locks.<id>.name` in the config if wanted.
 
 ## 5. Bench tests (lock on the table or installed)
 

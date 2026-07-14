@@ -67,7 +67,9 @@
       "security_keys": {},
       "locks": {
         "front_deadbolt": {
+          "name": "Front Door Deadbolt",
           "node_id": 0,
+          "security_class": null,
           "verify_timeout_ms": 12000,
           "verify_retries": 1,
           "retry_backoff_ms": 1500,
@@ -96,6 +98,19 @@
   "alerts": {
     "enabled": false,
     "webhook_url": "",
+    "chat": {
+      "type": "slack",
+      "webhook_url": ""
+    },
+    "email": {
+      "smtp_host": "",
+      "smtp_port": 587,
+      "smtp_secure": false,
+      "smtp_user": "",
+      "smtp_password": "",
+      "from": "",
+      "to": []
+    },
     "offline_grace_seconds": 60,
     "on": [
       "deadbolt_retract_failed",
@@ -105,6 +120,7 @@
       "deadbolt_lock_online",
       "deadbolt_low_battery",
       "deadbolt_jammed",
+      "deadbolt_no_transport",
       "controller_disconnected",
       "controller_reconnected"
     ]
