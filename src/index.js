@@ -73,24 +73,37 @@ function loadConfig() {
 
 let config = loadConfig();
 
-// One-time on-disk migration of the legacy flat deadbolt_rules shape, so
-// backups/diagnostics and external readers see the same shape the app uses.
-// writeConfigFile is hoisted; configSync does not exist yet, so no
-// markConfigApplied is needed (it initializes later from the migrated file).
-try {
-  const disk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-  const diskMigrated = deadboltRules.toMapShape(
-    disk.deadbolt_rules,
-    disk.devices && disk.devices.zwave && disk.devices.zwave.locks
-  );
-  if (diskMigrated.changed) {
+// Migrate the legacy flat deadbolt_rules shape ON DISK to the per-lock map,
+// so backups/diagnostics and external readers see the shape the app uses and
+// a later PUT never deep-merges a map update into a flat file. loadConfig
+// already migrates IN MEMORY on every load; this canonicalizes the file.
+// Runs at startup AND after any path that can drop a legacy file on disk (a
+// backup restore, a hand-edit). Best-effort: a failure leaves the in-memory
+// (already-migrated) config authoritative. Pass markApplied=true once
+// configSync exists so the write does not trigger a redundant reload.
+function migrateConfigFileOnDisk(markApplied) {
+  try {
+    const disk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const diskMigrated = deadboltRules.toMapShape(
+      disk.deadbolt_rules,
+      disk.devices && disk.devices.zwave && disk.devices.zwave.locks
+    );
+    if (!diskMigrated.changed) return false;
     disk.deadbolt_rules = diskMigrated.rules;
     writeConfigFile(disk);
+    if (markApplied && configSync && typeof configSync.markConfigApplied === 'function') {
+      configSync.markConfigApplied();
+    }
     logger.info('Config: migrated deadbolt_rules to the per-lock map shape (multi-lock support)');
+    return true;
+  } catch (e) {
+    logger.warn(`Config: deadbolt_rules migration skipped (${e.message}); continuing with the in-memory shape`);
+    return false;
   }
-} catch (e) {
-  logger.warn(`Config: deadbolt_rules migration skipped (${e.message}); continuing with the in-memory shape`);
 }
+
+// One-time at startup (configSync does not exist yet, so no markApplied).
+migrateConfigFileOnDisk(false);
 
 // ---------------------------------------------------------------------------
 // Initialize components
@@ -2160,6 +2173,20 @@ app.put('/api/config', async (req, res) => {
     // Read current config (with real secrets)
     const current = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
 
+    // Migrate the MERGE TARGET first. The startup flat->map migration runs
+    // once, but a backup restore or a hand-edit can put the legacy FLAT
+    // deadbolt_rules shape back on disk after that. Deep-merging a map-shaped
+    // update into a flat target produces a mixed object whose stale flat keys
+    // then win on the next reload (toMapShape flat-precedence), silently
+    // reverting the operator's save. Normalizing current here means the merge
+    // is always map-into-map.
+    if (deadboltRules.isFlatShape(current.deadbolt_rules)) {
+      current.deadbolt_rules = deadboltRules.toMapShape(
+        current.deadbolt_rules,
+        current.devices && current.devices.zwave && current.devices.zwave.locks
+      ).rules;
+    }
+
     // Drop any secret still carrying the redaction placeholder, so the UI
     // echoing a redacted GET back on save cannot clobber the real value.
     stripRedactedPlaceholders(updates);
@@ -2277,6 +2304,10 @@ app.post('/api/backups/restore', async (req, res) => {
     const result = restoreBackup(filename, BACKUP_DIR, CONFIG_PATH);
     logger.info(`Config restored from backup: ${filename}`);
     if (configSync) configSync.markConfigApplied();
+    // A restored backup may be a pre-migration (flat) config; canonicalize it
+    // on disk immediately so the reload below and later PUTs work on the map
+    // shape. markApplied so this write does not itself trigger a reload.
+    migrateConfigFileOnDisk(true);
 
     try {
       const reloadResult = await reloadOrchestrator({

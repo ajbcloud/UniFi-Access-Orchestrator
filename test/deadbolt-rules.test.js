@@ -92,6 +92,39 @@ test('automatedLockIds handles both shapes', () => {
   assert.deepEqual(automatedLockIds(null), []);
 });
 
+// Regression for the save-revert bug: when a FLAT config sits on disk (after
+// a backup restore or hand-edit) and the dashboard PUTs a map-shaped update,
+// the PUT handler migrates the merge TARGET first so the merge is map-into-map
+// and the operator's new value survives the reload. This models that exact
+// handler sequence (migrate current, then deep-merge, then the reload's
+// toMapShape) end to end.
+test('flat-on-disk + map PUT keeps the saved trigger through the merge+reload', () => {
+  // deep-merge mirrors the PUT handler's deepMerge (plain-object recursive).
+  const isPlain = (v) => v && typeof v === 'object' && !Array.isArray(v);
+  const deepMerge = (t, s) => {
+    if (!isPlain(s)) return s;
+    if (!isPlain(t)) t = {};
+    for (const k of Object.keys(s)) t[k] = isPlain(s[k]) ? deepMerge(t[k], s[k]) : s[k];
+    return t;
+  };
+
+  // Flat config on disk (pre-migration), the fielded single-Schlage user.
+  const current = { deadbolt_rules: { lock_id: 'front_deadbolt', trigger_door: 'Front Door', require_result: 'ACCESS' } };
+  // F1 fix: migrate the merge target before merging.
+  if (isFlatShape(current.deadbolt_rules)) {
+    current.deadbolt_rules = toMapShape(current.deadbolt_rules, LOCKS).rules;
+  }
+  // Dashboard save changes the trigger (map-shaped, entry-scoped).
+  const update = { front_deadbolt: { trigger_door: 'Side Door' } };
+  current.deadbolt_rules = deepMerge(current.deadbolt_rules, update);
+  // The subsequent reload runs toMapShape again; it must be a no-op passthrough.
+  const reloaded = toMapShape(current.deadbolt_rules, LOCKS);
+  assert.equal(reloaded.changed, false, 'already map-shaped after the fix');
+  assert.equal(current.deadbolt_rules.front_deadbolt.trigger_door, 'Side Door', 'the save survives');
+  assert.equal(current.deadbolt_rules.front_deadbolt.require_result, 'ACCESS', 'sibling fields preserved');
+  assert.ok(!('trigger_door' in current.deadbolt_rules) && !('lock_id' in current.deadbolt_rules), 'no stale flat keys linger to revert it');
+});
+
 test('rulesForLock resolves per lock across both shapes', () => {
   const map = { a: { trigger_door: 'Door A' }, b: { trigger_door: 'Door B' } };
   assert.equal(rulesForLock(map, 'b').trigger_door, 'Door B');
