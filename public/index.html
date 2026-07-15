@@ -3790,7 +3790,10 @@ function renderDeadboltRules() {
   html += `<div id="cascadeRuleFormContainer"></div>
     <button class="btn btn-sm btn-secondary" onclick="showCascadeRuleForm()" style="margin-top:8px">Add Cascade Rule</button>`;
   body.innerHTML = html;
-  armDirtySave('#deadboltTriggerRow', 'button[onclick^="saveDeadboltTrigger"]');
+  // Note: no armDirtySave here. It hides a save button until a change, but
+  // querySelector wires only the FIRST match, so with one Save Trigger button
+  // per lock it hid lock #1's while the rest stayed visible. Every per-lock
+  // Save Trigger button now stays visible for consistent behavior.
 }
 
 function showCascadeRuleForm() {
