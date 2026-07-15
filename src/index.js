@@ -42,6 +42,7 @@ const { ZwavePairing } = require('./drivers/zwave-pairing');
 const { loadSecurityKeys, ensureSecurityKeys } = require('./drivers/zwave-keys');
 const { SustainedFlagMonitor } = require('./alert-monitors');
 const deadboltRules = require('./deadbolt-rules');
+const { planUnifiPinPush, markStaleAfterPush } = require('./user-code-sync');
 const {
   redactSecrets,
   stripRedactedPlaceholders,
@@ -154,6 +155,12 @@ const zwaveManager = new ZwaveManager({
   // Write the zwave-js debug log alongside the app log so a pairing failure
   // (for example "secure join timeout") can be diagnosed from the log folder.
   logDir: process.env.LOG_DIR || path.join(path.dirname(CONFIG_PATH), 'logs'),
+  // Persist the zwave-js network cache alongside the config/logs. zwave-js's
+  // own default (<cwd>/cache) lands inside the install dir on packaged
+  // builds and is wiped by every update; a lost cache forces a full
+  // "initial" interview, which clears every keypad code on the lock (field
+  // diagnostics 2026-07). devices.zwave.cache_dir still wins when set.
+  defaultCacheDir: process.env.ZWAVE_CACHE_DIR || path.join(path.dirname(CONFIG_PATH), 'zwave-cache'),
   logLevel: (config.devices && config.devices.zwave && config.devices.zwave.log_level) || 'debug',
   loadKeys: () => {
     const k = loadSecurityKeys(config.devices && config.devices.zwave);
@@ -373,6 +380,23 @@ function wireDriverEvents(lockId, driver) {
       });
     }
   });
+  // The driver noticed an interview wiped saved keypad codes (zwave-js clears
+  // all codes on a cache-loss initial interview) and rewrote them. Surface
+  // the cause-and-effect pair in the event feed so future diagnostics show
+  // why codes changed without anyone touching the dashboard.
+  driver.on('user-codes-restored', (e) => {
+    const detail = `Restored ${e.restored} keypad code(s) wiped by a node re-interview`
+      + (e.kept ? `, ${e.kept} intact` : '')
+      + (e.failed ? `; ${e.failed} FAILED (use Rewrite Codes to Lock)` : '');
+    logger.warn(`Deadbolt ${label}: ${detail}`);
+    broadcastEvent({
+      type: 'deadbolt.user_code',
+      actor: 'Deadbolt Controller',
+      location: label,
+      action: detail,
+      success: e.failed === 0,
+    });
+  });
 }
 
 // Controllers only (no driver teardown): one per automated lock with ITS
@@ -437,10 +461,18 @@ function buildDeadbolt() {
     const pairedIds = Object.keys(locks).filter((id) => locks[id] && locks[id].node_id > 0);
     for (const lockId of pairedIds) {
       const lockCfg = Object.assign(
-        { serial_path: zw.serial_path, cache_dir: zw.cache_dir },
+        { serial_path: zw.serial_path, cache_dir: zw.cache_dir, id: lockId },
         locks[lockId]
       );
-      const driver = new ZwaveLock(lockCfg, { logger, manager: zwaveManager });
+      const driver = new ZwaveLock(lockCfg, {
+        logger,
+        manager: zwaveManager,
+        // Always-fresh reads: the cfg snapshot above goes stale after PIN
+        // saves and config reloads. lockId is captured per driver, so a
+        // multi-lock interview restores only its own lock's codes.
+        getUserCodes: () => savedUserCodes(lockId),
+        isPairingActive: () => zwavePairing.isActive(),
+      });
       lockDrivers.set(lockId, driver);
       wireDriverEvents(lockId, driver);
     }
@@ -1584,22 +1616,48 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
     // Optional UniFi push, decided per save by the operator ("overwrite the
     // PIN in UniFi for this user?"). Failure keeps the lock code and is
     // reported separately so the UI can explain (e.g. token scope).
+    // UniFi holds ONE PIN per user and errors on re-assigning the PIN it
+    // already holds (field case: same user, same PIN saved to a second lock
+    // came back CODE_SYSTEM_ERROR), so an already-in-sync save skips the API
+    // call and just records the sync.
     let unifi = { attempted: false, success: null, permission_denied: false, error: null };
     if (b.push_to_unifi === true) {
       unifi.attempted = true;
-      if (unifiClient && typeof unifiClient.assignUserPin === 'function') {
+      const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+      const plan = planUnifiPinPush(zwLocks, target.lockId, b.user_id, pin);
+      if (plan.action === 'skip_in_sync') {
+        unifi.success = true;
+        unifi.skipped = 'already in sync';
+        logger.info(`Deadbolt: UniFi already holds this PIN for "${name || b.user_id}" (pushed via "${plan.source_lock}"); skipping the push`);
+        persistZwaveMutation((cfg) => {
+          const lockId = target.lockId;
+          const entry = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
+            && cfg.devices.zwave.locks[lockId] && cfg.devices.zwave.locks[lockId].user_codes
+            && cfg.devices.zwave.locks[lockId].user_codes[String(slot)];
+          if (entry) entry.pushed_to_unifi = true;
+        });
+      } else if (unifiClient && typeof unifiClient.assignUserPin === 'function') {
         const push = await unifiClient.assignUserPin(b.user_id, pin);
         unifi.success = !!push.success;
         unifi.permission_denied = !!push.permission_denied;
         unifi.error = push.error || null;
+        if (push.statusCode) unifi.status_code = push.statusCode;
         if (push.success) {
           persistZwaveMutation((cfg) => {
             const lockId = target.lockId;
-            const entry = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
-              && cfg.devices.zwave.locks[lockId] && cfg.devices.zwave.locks[lockId].user_codes
-              && cfg.devices.zwave.locks[lockId].user_codes[String(slot)];
+            const locks = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks;
+            const entry = locks && locks[lockId] && locks[lockId].user_codes
+              && locks[lockId].user_codes[String(slot)];
             if (entry) entry.pushed_to_unifi = true;
+            // This push just replaced the user's single UniFi PIN: any other
+            // lock that recorded a DIFFERENT pushed PIN for them no longer
+            // matches UniFi and must stop claiming it does.
+            if (locks) markStaleAfterPush(locks, lockId, b.user_id, pin);
           });
+          if (plan.stale_locks.length) {
+            unifi.note = `UniFi keeps one PIN per user; the PIN stored for ${plan.stale_locks.map((l) => `"${lockLabel(l)}"`).join(', ')} no longer matches UniFi`;
+            logger.warn(`Deadbolt: ${unifi.note}`);
+          }
         }
       } else {
         unifi.success = false;

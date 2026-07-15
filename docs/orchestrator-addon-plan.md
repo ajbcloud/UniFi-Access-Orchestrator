@@ -327,7 +327,7 @@ New sections only; existing sections unchanged. S2 keys are intentionally **not*
     "zwave": {
       "enabled": true,
       "serial_path": "/dev/serial/by-id/usb-Silicon_Labs_CP2102N_XXXX-if00-port0", // stable path
-      "cache_dir": "",                 // default: alongside config.json; written 0600
+      "cache_dir": "",                 // default: <config dir>/zwave-cache (persists across app updates)
       "locks": {
         "front_deadbolt": {
           "node_id": 2,                // set after S2 inclusion

@@ -38,6 +38,16 @@ class ZwaveManager extends EventEmitter {
     // debug log there (zwave-js_*.log). This captures the full S2 inclusion
     // handshake, which is the only way to diagnose a "secure join" failure.
     this.logDir = deps.logDir || null;
+    // Persistent fallback for the zwave-js cache when the operator sets no
+    // cache_dir. Without it zwave-js defaults to <cwd>/cache, which sits in
+    // the install dir on a packaged app and is wiped by every update; a lost
+    // cache makes the next node interview "initial", and an initial interview
+    // CLEARS every keypad code on a lock (UserCodeCC: node not bootstrapped
+    // plus queryAllUserCodes false selects the delete action).
+    this.defaultCacheDir = deps.defaultCacheDir || null;
+    // Where zwave-js used to end up caching (test seam; prod is <cwd>/cache).
+    this.legacyCacheDir = deps.legacyCacheDir || path.join(process.cwd(), 'cache');
+    this._effectiveCacheDir = null; // resolved at start, for diagnostics
     const VALID_LEVELS = ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly'];
     this.logLevel = VALID_LEVELS.includes(deps.logLevel) ? deps.logLevel : 'debug';
     this.cryptoPatched = null; // ciphers the crypto shim replaced (null = not checked yet)
@@ -72,6 +82,7 @@ class ZwaveManager extends EventEmitter {
     return {
       running: !!this._driver,
       serial_path: this._serialPath,
+      cache_dir: this._effectiveCacheDir,
       restart_pending: !!this._restartTimer,
       restart_attempt: this._restartAttempt,
       auto_restarts: this._restartCount,
@@ -201,10 +212,21 @@ class ZwaveManager extends EventEmitter {
       };
     }
 
+    // Resolve where zwave-js keeps its network cache. An operator-set dir
+    // always wins verbatim; otherwise fall back to the injected persistent
+    // default (and give any cache stranded in the old <cwd>/cache location a
+    // one-time lift so the move never forces a fresh full interview).
+    const effectiveCacheDir = cacheDir || this.defaultCacheDir || null;
+    if (effectiveCacheDir) {
+      try { fs.mkdirSync(effectiveCacheDir, { recursive: true }); } catch (e) { /* zwave-js reports if unusable */ }
+      if (!cacheDir) this._migrateLegacyCache(effectiveCacheDir);
+    }
+    this._effectiveCacheDir = effectiveCacheDir;
+
     const driver = factory(serialPath, {
       securityKeys: keys.classic,
       securityKeysLongRange: keys.longRange,
-      storage: cacheDir ? { cacheDir } : undefined,
+      storage: effectiveCacheDir ? { cacheDir: effectiveCacheDir } : undefined,
       logConfig,
       interview: {
         // Yale battery-drain guard (zwave-js issue 2725): older Yale locks
@@ -252,6 +274,35 @@ class ZwaveManager extends EventEmitter {
       this._restartTimer = null;
     }
     return driver;
+  }
+
+  /**
+   * One-time, best-effort copy of a zwave-js cache stranded in the legacy
+   * default location (<cwd>/cache) into the persistent dir. Losing the cache
+   * is destructive far beyond slow startups: the next interview is treated as
+   * initial and wipes every keypad code on the lock, so keeping the paired
+   * network's cache across app updates genuinely matters. Never overwrites a
+   * populated target and never fails the driver start.
+   */
+  _migrateLegacyCache(targetDir) {
+    try {
+      const legacy = this.legacyCacheDir;
+      if (!legacy || path.resolve(legacy) === path.resolve(targetDir)) return 0;
+      const jsonlIn = (dir) => {
+        try { return fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl')); } catch (e) { return []; }
+      };
+      if (jsonlIn(targetDir).length) return 0; // already populated: never overwrite
+      const files = jsonlIn(legacy);
+      if (!files.length) return 0;
+      for (const f of files) fs.copyFileSync(path.join(legacy, f), path.join(targetDir, f));
+      this.logger.info && this.logger.info(
+        `Z-Wave: migrated ${files.length} cache file(s) from ${legacy} to ${targetDir} `
+        + '(persistent location; keeps the paired network state across app updates)');
+      return files.length;
+    } catch (e) {
+      this.logger.warn && this.logger.warn(`Z-Wave: legacy cache migration skipped: ${e.message}`);
+      return 0;
+    }
   }
 
   async stop() {
