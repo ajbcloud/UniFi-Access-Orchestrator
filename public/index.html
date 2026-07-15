@@ -228,6 +228,109 @@
   }
 }
 
+/* -------------------------------------------------------------------------
+   Dark mode: concrete-grey cards.
+   The cards render on the light (concrete) palette while the banner and page
+   stay near-black. We re-scope the full token set onto the card containers so
+   everything inside (text, inputs, buttons, badges, the version chip) inherits
+   light-appropriate values; only the card surface is nudged a little darker
+   than the light-mode concrete. Covers both explicit dark and system dark.
+   ------------------------------------------------------------------------- */
+:root[data-theme="dark"] .card,
+:root[data-theme="dark"] .config-section,
+:root[data-theme="dark"] .door-card,
+:root[data-theme="dark"] .rule-card,
+:root[data-theme="dark"] .test-rule-card {
+  --bg-primary: #BABCB6;
+  --bg-card: #BABCB6;
+  --bg-secondary: #C6C7C2;
+  --bg-elev: #CFD0CB;
+  --bg-hover: #ADAFA9;
+  --bg-input: #CDCEC9;
+  --border: #9EA09A;
+  --border-light: #AEB0AA;
+  --text-primary: #0C2414;
+  --text-secondary: #35473C;
+  --text-muted: #566459;
+  --accent: #15522A;
+  --accent-hover: #0E3D1F;
+  --accent-dim: rgba(21,82,42,0.14);
+  --on-accent: #EEF3EC;
+  --neon: #C7E62E;
+  --neon-strong: #B4D822;
+  --neon-dim: #D3E88C;
+  --on-neon: #16320A;
+  --neon-glow: rgba(150,190,20,0.45);
+  --green: #227A43;
+  --green-dim: rgba(34,122,67,0.16);
+  --on-success: #FFFFFF;
+  --yellow: #7E5410;
+  --yellow-dim: rgba(126,84,16,0.16);
+  --red: #CF3A2A;
+  --red-hover: #B22E20;
+  --red-dim: rgba(207,58,42,0.14);
+  --on-danger: #FFFFFF;
+  --sage: #3E6B50;
+  --sage-dim: rgba(62,107,80,0.18);
+  --blue-dim: #D3E88C;
+  --btn2-bg: #A6A8A2;
+  --btn2-fg: #0C2414;
+  --btn2-hover: #999B95;
+  --eyebrow: #566459;
+  --mono-muted: #566459;
+  --card-accent: #1B5E33;
+  --shadow: rgba(20,30,25,0.22);
+  color: var(--text-primary);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .card,
+  :root:not([data-theme]) .config-section,
+  :root:not([data-theme]) .door-card,
+  :root:not([data-theme]) .rule-card,
+  :root:not([data-theme]) .test-rule-card {
+    --bg-primary: #BABCB6;
+    --bg-card: #BABCB6;
+    --bg-secondary: #C6C7C2;
+    --bg-elev: #CFD0CB;
+    --bg-hover: #ADAFA9;
+    --bg-input: #CDCEC9;
+    --border: #9EA09A;
+    --border-light: #AEB0AA;
+    --text-primary: #0C2414;
+    --text-secondary: #35473C;
+    --text-muted: #566459;
+    --accent: #15522A;
+    --accent-hover: #0E3D1F;
+    --accent-dim: rgba(21,82,42,0.14);
+    --on-accent: #EEF3EC;
+    --neon: #C7E62E;
+    --neon-strong: #B4D822;
+    --neon-dim: #D3E88C;
+    --on-neon: #16320A;
+    --neon-glow: rgba(150,190,20,0.45);
+    --green: #227A43;
+    --green-dim: rgba(34,122,67,0.16);
+    --on-success: #FFFFFF;
+    --yellow: #7E5410;
+    --yellow-dim: rgba(126,84,16,0.16);
+    --red: #CF3A2A;
+    --red-hover: #B22E20;
+    --red-dim: rgba(207,58,42,0.14);
+    --on-danger: #FFFFFF;
+    --sage: #3E6B50;
+    --sage-dim: rgba(62,107,80,0.18);
+    --blue-dim: #D3E88C;
+    --btn2-bg: #A6A8A2;
+    --btn2-fg: #0C2414;
+    --btn2-hover: #999B95;
+    --eyebrow: #566459;
+    --mono-muted: #566459;
+    --card-accent: #1B5E33;
+    --shadow: rgba(20,30,25,0.22);
+    color: var(--text-primary);
+  }
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
