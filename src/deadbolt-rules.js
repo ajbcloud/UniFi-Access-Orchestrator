@@ -30,6 +30,13 @@ function isPlainObject(v) {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
+// Lock-id keys that would pollute Object.prototype if ever used to index into
+// a plain object; never valid lock ids, so drop them defensively.
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+function isSafeLockId(k) {
+  return !UNSAFE_KEYS.has(k);
+}
+
 /** True when db carries any legacy flat key at the top level. */
 function isFlatShape(db) {
   if (!isPlainObject(db)) return false;
@@ -50,8 +57,8 @@ function toMapShape(db, locks) {
   const map = {};
   for (const [k, v] of Object.entries(db)) {
     if (FLAT_KEYS.includes(k)) flat[k] = v;
-    else if (isPlainObject(v)) map[k] = v;
-    // anything else (a stray scalar under an unknown key) is dropped
+    else if (isPlainObject(v) && isSafeLockId(k)) map[k] = v;
+    // anything else (a stray scalar, or a prototype-polluting key) is dropped
   }
   const rest = Object.assign({}, flat);
   delete rest.lock_id;
@@ -83,7 +90,7 @@ function automatedLockIds(db) {
   if (isFlatShape(db)) {
     return db.lock_id ? [db.lock_id] : [];
   }
-  return Object.keys(db).filter((k) => isPlainObject(db[k]));
+  return Object.keys(db).filter((k) => isSafeLockId(k) && isPlainObject(db[k]));
 }
 
 /** The rules entry for one lock, shape-agnostic. Null when not automated. */

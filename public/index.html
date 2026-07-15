@@ -3186,9 +3186,15 @@ function buildDeadboltButtons(zw) {
 }
 
 // DOM-id-safe form of an operator-typed lock id (API calls always use the
-// REAL id; only element ids use this).
+// REAL id; only element ids use this). A readable prefix plus a short stable
+// hash of the full id, so two distinct lock ids that sanitize to the same
+// string (e.g. "front-1" vs "front_1") still get DISTINCT element ids. Pure
+// and deterministic, so every call site agrees on the same id per lock.
 function cssId(lockId) {
-  return String(lockId == null ? '' : lockId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const s = String(lockId == null ? '' : lockId);
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return s.replace(/[^a-zA-Z0-9_-]/g, '_') + '_' + h.toString(36);
 }
 
 // Per-lock action-button row for a lock card. Same buttons as the old single
@@ -3197,11 +3203,19 @@ function cssId(lockId) {
 function buildLockCardButtons(l) {
   const dis = l.pairing_active ? ' disabled' : '';
   const arg = escapeHtml(JSON.stringify(String(l.lock_id)));
-  return `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('lock', ${arg})"${dis} title="Sends a real Z-Wave LOCK command. Expected: the bolt extends within a few seconds and the Bolt badge turns locked.">Test Lock</button>`
+  const nodeId = Number(l.node_id) || 0;
+  let html = `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('lock', ${arg})"${dis} title="Sends a real Z-Wave LOCK command. Expected: the bolt extends within a few seconds and the Bolt badge turns locked.">Test Lock</button>`
     + `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('unlock', ${arg})"${dis} title="Sends a real Z-Wave UNLOCK command. Expected: the bolt retracts within a few seconds and the Bolt badge turns unlocked. If the lock has auto-relock turned on, it re-locks itself about 30 seconds later; see the After unlock setting below.">Test Unlock</button>`
     + `<button class="btn btn-sm btn-secondary" onclick="startReinterview(${arg})"${dis} title="Re-runs the Z-Wave interview to rebuild the lock readings. Use when Bolt or Battery is stuck on reading or unknown. Takes up to a minute; wake the lock at the keypad to speed it up.">Re-interview / Heal</button>`
-    + `<button class="btn btn-sm btn-secondary" onclick="startHealthCheck(${arg})"${dis} title="Pings the lock and runs one RF probe: round-trip time, signal, route, and a 0-10 health rating. Takes a few seconds; results appear below.">Health Check</button>`
-    + `<button class="btn btn-sm btn-secondary" onclick="startUnpairNode(${Number(l.node_id) || 0})"${dis} title="Removes this lock from the Z-Wave network. The app stops controlling it until it is paired again.">Unpair</button>`;
+    + `<button class="btn btn-sm btn-secondary" onclick="startHealthCheck(${arg})"${dis} title="Pings the lock and runs one RF probe: round-trip time, signal, route, and a 0-10 health rating. Takes a few seconds; results appear below.">Health Check</button>`;
+  // Unpair only for a real paired node. node_id 0 (a dev FakeLock, or any
+  // unbound render) would send node_id 0 to /api/deadbolt/unpair, which the
+  // server reads as "start a GLOBAL exclusion session" - never what this
+  // per-lock button should do.
+  if (nodeId > 0) {
+    html += `<button class="btn btn-sm btn-secondary" onclick="startUnpairNode(${nodeId})"${dis} title="Removes this lock from the Z-Wave network. The app stops controlling it until it is paired again.">Unpair</button>`;
+  }
+  return html;
 }
 
 // One card per paired lock: identity line, live badges, action buttons,
@@ -3233,6 +3247,7 @@ function buildLockCard(l) {
     + `<span>Link: <span style="color:${link.color}">${escapeHtml(link.label)}</span></span>`
     + `</div>`
     + `<div style="display:flex;gap:8px;flex-wrap:wrap">${buildLockCardButtons(l)}</div>`
+    + `<div id="zwaveDeadboltHealth_${cssId(l.lock_id)}" style="margin-top:8px;font-size:12px"></div>`
     + `<div id="zwaveAutoRelock_${cssId(l.lock_id)}" style="margin-top:10px">${buildAutoRelockControl(l, l.lock_id)}</div>`
     + `<div id="zwaveUserCodes_${cssId(l.lock_id)}" style="margin-top:10px"></div>`
     + `</div>`;
@@ -3598,7 +3613,11 @@ async function startUnpairNode(nodeId) {
 // Measured link health: ping + RTT/RSSI/route + one lifeline probe. This is
 // the "why is it dropping" button; results also land in diagnostics.
 async function startHealthCheck(lockId) {
-  const out = document.getElementById('zwaveDeadboltHealth');
+  // Write into THIS lock's card output (falling back to the shared element
+  // for the single-lock legacy layout), so with several locks each card's
+  // numbers are attributed to the right lock.
+  const out = (lockId && document.getElementById('zwaveDeadboltHealth_' + cssId(lockId)))
+    || document.getElementById('zwaveDeadboltHealth');
   if (out) out.textContent = 'Running health check (a few seconds)...';
   try {
     const r = await api('POST', '/api/deadbolt/health-check', lockId ? { lock_id: lockId } : undefined);
@@ -3771,7 +3790,10 @@ function renderDeadboltRules() {
   html += `<div id="cascadeRuleFormContainer"></div>
     <button class="btn btn-sm btn-secondary" onclick="showCascadeRuleForm()" style="margin-top:8px">Add Cascade Rule</button>`;
   body.innerHTML = html;
-  armDirtySave('#deadboltTriggerRow', 'button[onclick^="saveDeadboltTrigger"]');
+  // Note: no armDirtySave here. It hides a save button until a change, but
+  // querySelector wires only the FIRST match, so with one Save Trigger button
+  // per lock it hid lock #1's while the rest stayed visible. Every per-lock
+  // Save Trigger button now stays visible for consistent behavior.
 }
 
 function showCascadeRuleForm() {

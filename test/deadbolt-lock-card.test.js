@@ -56,15 +56,15 @@ function summary(overrides = {}) {
 test('a card carries identity, live badges, buttons, and the after-unlock control', () => {
   const build = load();
   const out = build(summary());
-  assert.match(out, /id="zwaveLockCard_front_deadbolt"/);
+  assert.match(out, /id="zwaveLockCard_front_deadbolt_/);
   assert.match(out, /Front Door/);
   assert.match(out, /node 14/);
   assert.match(out, /retracts on entry at <strong>Front Door<\/strong>/);
   assert.match(out, /Test Lock/);
   assert.match(out, /After unlock:/);
-  assert.match(out, /id="zwaveAutoRelockSel_front_deadbolt"/, 'auto-relock select id is per-lock');
+  assert.match(out, /id="zwaveAutoRelockSel_front_deadbolt_/, 'auto-relock select id is per-lock');
   assert.match(out, /applyAutoRelock\(&quot;front_deadbolt&quot;\)/, 'apply targets this lock');
-  assert.match(out, /id="zwaveUserCodes_front_deadbolt"/, 'keypad-codes container is per-lock');
+  assert.match(out, /id="zwaveUserCodes_front_deadbolt_/, 'keypad-codes container is per-lock');
 });
 
 test('a manual-only (not automated) lock says so instead of claiming a trigger', () => {
@@ -83,6 +83,21 @@ test('two locks render two independent cards with distinct ids and handlers', ()
   assert.match(b, /deadboltControl\('unlock', &quot;side_deadbolt&quot;\)/);
   assert.ok(!b.includes('front_deadbolt'), 'no cross-contamination between cards');
   assert.match(b, /startUnpairNode\(17\)/);
+});
+
+test('Unpair is omitted for a node_id-0 card (would start a GLOBAL exclusion)', () => {
+  const build = load();
+  const withNode = build(summary({ node_id: 14 }));
+  assert.match(withNode, /startUnpairNode\(14\)/, 'real paired node keeps Unpair');
+  const noNode = build(summary({ node_id: 0, bound: true, paired: false }));
+  assert.ok(!/startUnpairNode/.test(noNode), 'no Unpair button when node_id is 0');
+});
+
+test('cssId gives distinct element ids to lock ids that sanitize alike', () => {
+  const fn = new Function(extractFn('cssId') + '; return cssId;')();
+  assert.notEqual(fn('front-1'), fn('front_1'), 'differ only by a non-alphanumeric -> distinct ids');
+  assert.equal(fn('front_deadbolt'), fn('front_deadbolt'), 'stable for the same id');
+  assert.match(fn('front_deadbolt'), /^front_deadbolt_/, 'keeps a readable prefix');
 });
 
 test('names are escaped and pairing_active disables the whole card', () => {

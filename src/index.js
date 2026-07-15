@@ -73,24 +73,37 @@ function loadConfig() {
 
 let config = loadConfig();
 
-// One-time on-disk migration of the legacy flat deadbolt_rules shape, so
-// backups/diagnostics and external readers see the same shape the app uses.
-// writeConfigFile is hoisted; configSync does not exist yet, so no
-// markConfigApplied is needed (it initializes later from the migrated file).
-try {
-  const disk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-  const diskMigrated = deadboltRules.toMapShape(
-    disk.deadbolt_rules,
-    disk.devices && disk.devices.zwave && disk.devices.zwave.locks
-  );
-  if (diskMigrated.changed) {
+// Migrate the legacy flat deadbolt_rules shape ON DISK to the per-lock map,
+// so backups/diagnostics and external readers see the shape the app uses and
+// a later PUT never deep-merges a map update into a flat file. loadConfig
+// already migrates IN MEMORY on every load; this canonicalizes the file.
+// Runs at startup AND after any path that can drop a legacy file on disk (a
+// backup restore, a hand-edit). Best-effort: a failure leaves the in-memory
+// (already-migrated) config authoritative. Pass markApplied=true once
+// configSync exists so the write does not trigger a redundant reload.
+function migrateConfigFileOnDisk(markApplied) {
+  try {
+    const disk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const diskMigrated = deadboltRules.toMapShape(
+      disk.deadbolt_rules,
+      disk.devices && disk.devices.zwave && disk.devices.zwave.locks
+    );
+    if (!diskMigrated.changed) return false;
     disk.deadbolt_rules = diskMigrated.rules;
     writeConfigFile(disk);
+    if (markApplied && configSync && typeof configSync.markConfigApplied === 'function') {
+      configSync.markConfigApplied();
+    }
     logger.info('Config: migrated deadbolt_rules to the per-lock map shape (multi-lock support)');
+    return true;
+  } catch (e) {
+    logger.warn(`Config: deadbolt_rules migration skipped (${e.message}); continuing with the in-memory shape`);
+    return false;
   }
-} catch (e) {
-  logger.warn(`Config: deadbolt_rules migration skipped (${e.message}); continuing with the in-memory shape`);
 }
+
+// One-time at startup (configSync does not exist yet, so no markApplied).
+migrateConfigFileOnDisk(false);
 
 // ---------------------------------------------------------------------------
 // Initialize components
@@ -123,7 +136,15 @@ let deadboltController = null;
 // Set by /api/deadbolt/reinterview so the driver's 'interview-completed'
 // event can announce the OPERATOR-requested re-interview finishing (the
 // refreshInfo() promise resolves when the interview is merely re-queued).
-let _reinterviewRequested = false;
+// A Set of pending lock ids (not a single flag): with several locks the
+// first interview to complete anywhere must not claim another lock's request.
+let _reinterviewRequested = new Set();
+// Lock ids whose driver.init() is currently failing (self-heal retries just
+// these, never the healthy ones), and the subset we have already alerted for
+// (so a persistent failure does not re-email every retry cycle; edge-triggered
+// per lock, re-armed when the lock recovers).
+let _failedInitLocks = new Set();
+let _alertedInitLocks = new Set();
 
 // Shared Z-Wave plumbing: ONE driver session per serial port, borrowed by both
 // the lock driver and the pairing flow so they never contend for the port.
@@ -339,8 +360,10 @@ function wireDriverEvents(lockId, driver) {
   });
   driver.on('interview-completed', () => {
     logger.info(`Deadbolt ${label}: interview completed; bolt and battery readings are fresh`);
-    if (_reinterviewRequested) {
-      _reinterviewRequested = false;
+    // Announce completion only for the lock whose re-interview was actually
+    // requested (delete returns true only for the pending id), so a different
+    // lock finishing an interview cannot claim (and clear) this one's request.
+    if (_reinterviewRequested.delete(lockId)) {
       broadcastEvent({
         type: 'deadbolt.reinterview',
         actor: 'Deadbolt Controller',
@@ -388,6 +411,15 @@ function buildDeadboltControllers() {
     || deadboltControllers.values().next().value || cascadeController || null;
 }
 
+// The add-on is active when a lock transport is enabled OR any rules exist.
+// Drivers are built from zw.enabled alone (every paired lock is controllable
+// even with no automation), so gates that gate on deadbolt_rules would wrongly
+// disable the self-heal retry for an enabled-but-rules-less config.
+function shouldRunDeadbolt() {
+  const zw = config.devices && config.devices.zwave;
+  return !!(config.deadbolt_rules || config.cascade_rules || (zw && zw.enabled === true));
+}
+
 function buildDeadbolt() {
   const dbCfg = config.deadbolt_rules;
   const cascCfg = config.cascade_rules;
@@ -395,7 +427,7 @@ function buildDeadbolt() {
   const zwEnabled = !!(zw && zw.enabled);
   // Inert unless something is configured: a paired/enabled Z-Wave setup,
   // automation rules, or cascades.
-  if (!dbCfg && !cascCfg && !zwEnabled) return;
+  if (!shouldRunDeadbolt()) return;
 
   if (zwEnabled) {
     // One driver per PAIRED lock, all sharing the one Z-Wave manager. Every
@@ -451,57 +483,91 @@ async function bringDeadboltOnline() {
   cascadeController = null;
   lockDriver = null;
   deadboltController = null;
+  // A full rebuild is a fresh start: clear the failed/alerted tracking so a
+  // lock that recovered by pairing/unpair/reload is not still "failed".
+  _failedInitLocks = new Set();
   buildDeadbolt();
   // Init every driver concurrently: one lock's failure (a dead node, a bad
   // entry) must never block another lock from coming online.
-  let initOk = lockDrivers.size > 0;
   const entries = Array.from(lockDrivers.entries());
   const results = await Promise.allSettled(entries.map(([, driver]) => driver.init()));
+  const succeeded = new Set();
   results.forEach((r, i) => {
     const lockId = entries[i][0];
     if (r.status === 'fulfilled') {
+      succeeded.add(lockId);
       logger.info(`Deadbolt lock driver initialized ("${lockId}")`);
     } else {
-      initOk = false;
-      logger.error(`Deadbolt lock driver "${lockId}" failed to initialize: ${r.reason && r.reason.message}`);
-      notifier.notify({ type: 'deadbolt_no_transport', detail: `lock driver "${lockId}" init failed: ${r.reason && r.reason.message}` });
-      scheduleDeadboltInitRetry();
+      _noteLockInitFailure(lockId, r.reason && r.reason.message);
     }
   });
+  // A lock that just succeeded is no longer in an alerted-failure state.
+  for (const id of succeeded) _alertedInitLocks.delete(id);
+  if (_failedInitLocks.size) scheduleDeadboltInitRetry();
   applyEventTaps();
-  return initOk;
+  return _failedInitLocks.size === 0 && lockDrivers.size > 0;
+}
+
+// Record a per-lock init failure. The alert is EDGE-triggered per lock (fired
+// once when a lock enters the failed state, re-armed only after it recovers),
+// so a permanently-orphaned node no longer emails every retry cycle.
+function _noteLockInitFailure(lockId, message) {
+  _failedInitLocks.add(lockId);
+  logger.error(`Deadbolt lock driver "${lockId}" failed to initialize: ${message}`);
+  if (!_alertedInitLocks.has(lockId)) {
+    _alertedInitLocks.add(lockId);
+    notifier.notify({ type: 'deadbolt_no_transport', detail: `lock driver "${lockId}" init failed: ${message}` });
+  }
 }
 
 // Self-healing, layer 1b: a failed lock-driver init (serial port not there
 // yet after a power outage, stick enumerating late, port briefly busy) used
-// to stay dead until an app restart. Retry on a capped backoff forever; a
-// success or an explicit unpair ends the loop. Skips (and re-arms) while a
+// to stay dead until an app restart. Retry ONLY the failed drivers in place,
+// on a capped backoff, so healthy locks (and their controllers) are never
+// torn down because a different lock is broken. Skips (and re-arms) while a
 // pairing session owns the controller.
 let _deadboltInitRetryTimer = null;
 let _deadboltInitRetryAttempt = 0;
 function scheduleDeadboltInitRetry() {
   if (_deadboltInitRetryTimer) return;
+  if (!_failedInitLocks.size) { _deadboltInitRetryAttempt = 0; return; }
   const delay = Math.min(10000 * 2 ** _deadboltInitRetryAttempt, 300000);
   _deadboltInitRetryAttempt++;
-  logger.warn(`Deadbolt: lock driver init retry ${_deadboltInitRetryAttempt} in ${Math.round(delay / 1000)}s`);
-  _deadboltInitRetryTimer = setTimeout(async () => {
+  logger.warn(`Deadbolt: retrying ${_failedInitLocks.size} failed lock driver(s) in ${Math.round(delay / 1000)}s`);
+  _deadboltInitRetryTimer = setTimeout(() => {
     _deadboltInitRetryTimer = null;
-    const dbCfg = config.deadbolt_rules;
-    const zw = config.devices && config.devices.zwave;
-    if (!dbCfg || !zw || zw.enabled !== true) return; // no longer configured
+    if (!shouldRunDeadbolt()) { _failedInitLocks = new Set(); return; } // no longer configured
     if (zwavePairing.isActive()) { scheduleDeadboltInitRetry(); return; }
-    try {
-      const ok = await bringDeadboltOnline();
-      if (ok) {
-        _deadboltInitRetryAttempt = 0;
-        logger.info('Deadbolt: lock driver recovered by init retry');
-      }
-    } catch (e) {
+    retryFailedLockInits().catch((e) => {
       logger.warn(`Deadbolt: init retry failed: ${e.message}`);
       scheduleDeadboltInitRetry();
-    }
+    });
   }, delay);
   if (typeof _deadboltInitRetryTimer.unref === 'function') _deadboltInitRetryTimer.unref();
+}
+
+// Re-init just the drivers still failing. Each driver object already exists
+// (buildDeadbolt created and wired it; only init() rejected) and its
+// controller already holds the reference, so a bare init() retry is enough:
+// on success the node starts emitting and the controller works. A lock that
+// dropped out of config (unpaired) is pruned from the failed set.
+async function retryFailedLockInits() {
+  for (const lockId of Array.from(_failedInitLocks)) {
+    const driver = lockDrivers.get(lockId);
+    if (!driver) { _failedInitLocks.delete(lockId); _alertedInitLocks.delete(lockId); continue; }
+    try {
+      await driver.init();
+      _failedInitLocks.delete(lockId);
+      _alertedInitLocks.delete(lockId); // recovered: re-arm the alert edge
+      logger.info(`Deadbolt: lock driver "${lockId}" recovered by init retry`);
+    } catch (e) {
+      logger.warn(`Deadbolt: lock driver "${lockId}" still failing: ${e.message}`);
+    }
+  }
+  applyEventTaps();
+  if (_failedInitLocks.size) { scheduleDeadboltInitRetry(); return; }
+  _deadboltInitRetryAttempt = 0;
+  logger.info('Deadbolt: all lock drivers recovered');
 }
 
 // Route every raw UniFi event to the capture recorder and the deadbolt
@@ -523,7 +589,23 @@ function deadboltHealthStatus() {
       stats: ctl ? Object.assign({}, ctl.stats) : null,
     };
   });
-  return base;
+  return withCascadeStats(base);
+}
+
+// Cascade rules run on a dedicated controller, so the per-lock/alias
+// controllers' stats always show 0 cascades. Overlay the real cascade
+// counters (and last_action, when it is the more recent) onto a status
+// payload so the dashboard "cascades N (M failed)" line is truthful.
+function withCascadeStats(status) {
+  if (!status || !status.stats || !cascadeController) return status;
+  const cs = cascadeController.stats;
+  status.stats.cascades = cs.cascades;
+  status.stats.cascades_failed = cs.cascades_failed;
+  if (cs.last_action && (!status.stats.last_action
+      || (cs.last_action.time || '') > (status.stats.last_action.time || ''))) {
+    status.stats.last_action = cs.last_action;
+  }
+  return status;
 }
 
 // Every observer that should see a raw event: one controller per automated
@@ -536,14 +618,17 @@ function deadboltObservers() {
 
 function applyEventTaps() {
   if (!unifiClient || typeof unifiClient.setRawTap !== 'function') return;
-  // Inert by default: only install the tap when the add-on is active, so an
-  // unconfigured deployment's event path is unchanged. Clear it otherwise.
-  if (!deadboltObservers().length) {
+  // Install the tap whenever the add-on is CONFIGURED or a capture is running
+  // (not only when a controller is enabled): the labeled capture recorder
+  // feeds only from this tap in websocket mode, and it must keep recording
+  // while the only lock is unpaired or mid-setup. Clear it only when there is
+  // genuinely nothing to feed, so an unconfigured deployment is unchanged.
+  if (!shouldRunDeadbolt() && !capture.active) {
     unifiClient.setRawTap(null);
     return;
   }
   unifiClient.setRawTap((e) => {
-    capture.add(e);
+    capture.add(e); // no-op unless a capture session is active
     for (const controller of deadboltObservers()) {
       try { controller.observe(e); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
     }
@@ -991,7 +1076,7 @@ app.get('/api/devices', async (req, res) => {
   const zwave = zwaveSummary();
   const zwaveLocks = perLockSummaries();
   if (!deadboltController) return res.json({ enabled: false, devices: [], zwave, zwave_locks: zwaveLocks });
-  const status = deadboltController.getStatus();
+  const status = withCascadeStats(deadboltController.getStatus());
   let liveState = status.lock;
   if (lockDriver && typeof lockDriver.getState === 'function') {
     try { liveState = await lockDriver.getState(); } catch (e) { /* fall back to snapshot */ }
@@ -1621,19 +1706,19 @@ app.post('/api/deadbolt/reinterview', (req, res) => {
     return res.status(503).json({ error: 'the active lock driver does not support re-interview' });
   }
   try {
-    _reinterviewRequested = true;
+    _reinterviewRequested.add(target.lockId);
     target.driver.reinterview().then(
       // refreshInfo resolves when the interview is re-QUEUED, not finished;
       // the driver's 'interview-completed' listener logs actual completion.
-      () => logger.info('Deadbolt: re-interview request accepted (interview re-queued; completion is logged when the node finishes; wake the lock to speed it up)'),
+      () => logger.info(`Deadbolt: re-interview request accepted for "${target.lockId}" (interview re-queued; completion is logged when the node finishes; wake the lock to speed it up)`),
       (err) => {
-        _reinterviewRequested = false;
+        _reinterviewRequested.delete(target.lockId);
         logger.warn(`Deadbolt: re-interview failed: ${err.message}`);
       }
     );
-    res.json({ status: 'started' });
+    res.json({ status: 'started', lock_id: target.lockId });
   } catch (err) {
-    _reinterviewRequested = false;
+    _reinterviewRequested.delete(target.lockId);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1673,10 +1758,14 @@ app.get('/api/deadbolt/serial-ports', async (req, res) => {
 // Start a capture, perform ONE gesture (e.g. a Double-Badge Override), stop,
 // then GET the recorded events. Records ALL raw events, including telemetry.
 app.post('/api/capture/start', (req, res) => {
-  res.json(capture.start((req.body && req.body.label) || 'capture'));
+  const r = capture.start((req.body && req.body.label) || 'capture');
+  applyEventTaps(); // ensure the tap is installed even with no add-on configured
+  res.json(r);
 });
 app.post('/api/capture/stop', (req, res) => {
-  res.json(capture.stop());
+  const r = capture.stop();
+  applyEventTaps(); // tear the tap back down if nothing else needs it
+  res.json(r);
 });
 app.post('/api/capture/label', (req, res) => {
   res.json(capture.setLabel(req.body && req.body.label));
@@ -2160,6 +2249,20 @@ app.put('/api/config', async (req, res) => {
     // Read current config (with real secrets)
     const current = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
 
+    // Migrate the MERGE TARGET first. The startup flat->map migration runs
+    // once, but a backup restore or a hand-edit can put the legacy FLAT
+    // deadbolt_rules shape back on disk after that. Deep-merging a map-shaped
+    // update into a flat target produces a mixed object whose stale flat keys
+    // then win on the next reload (toMapShape flat-precedence), silently
+    // reverting the operator's save. Normalizing current here means the merge
+    // is always map-into-map.
+    if (deadboltRules.isFlatShape(current.deadbolt_rules)) {
+      current.deadbolt_rules = deadboltRules.toMapShape(
+        current.deadbolt_rules,
+        current.devices && current.devices.zwave && current.devices.zwave.locks
+      ).rules;
+    }
+
     // Drop any secret still carrying the redaction placeholder, so the UI
     // echoing a redacted GET back on save cannot clobber the real value.
     stripRedactedPlaceholders(updates);
@@ -2189,10 +2292,16 @@ app.put('/api/config', async (req, res) => {
 
     // recursive merge for plain objects: source values override primitives/arrays
     function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
+    // Keys that would let a crafted PUT body walk into Object.prototype via the
+    // assignment below. JSON.parse makes __proto__ an own enumerable key, so
+    // Object.keys surfaces it; skip the whole dangerous set defensively (this
+    // endpoint is admin-gated, but the guard is free).
+    const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
     function deepMerge(target, source) {
       if (!isPlainObject(source)) return source;
       if (!isPlainObject(target)) target = {};
       for (const k of Object.keys(source)) {
+        if (UNSAFE_KEYS.has(k)) continue;
         const sv = source[k];
         if (isPlainObject(sv)) {
           target[k] = deepMerge(target[k], sv);
@@ -2277,6 +2386,10 @@ app.post('/api/backups/restore', async (req, res) => {
     const result = restoreBackup(filename, BACKUP_DIR, CONFIG_PATH);
     logger.info(`Config restored from backup: ${filename}`);
     if (configSync) configSync.markConfigApplied();
+    // A restored backup may be a pre-migration (flat) config; canonicalize it
+    // on disk immediately so the reload below and later PUTs work on the map
+    // shape. markApplied so this write does not itself trigger a reload.
+    migrateConfigFileOnDisk(true);
 
     try {
       const reloadResult = await reloadOrchestrator({
@@ -2850,7 +2963,9 @@ async function maybeRebuildDeadboltRules(oldSig) {
     return;
   }
   const zw = config.devices && config.devices.zwave;
-  if (!lockDrivers.size && config.deadbolt_rules && zw && zw.enabled) {
+  // Build drivers whenever Z-Wave is enabled, not only when rules exist: a
+  // paired lock is controllable (test/PIN) even with no automation.
+  if (!lockDrivers.size && zw && zw.enabled) {
     await bringDeadboltOnline();
     return;
   }
@@ -3010,10 +3125,10 @@ async function start() {
       if (r.status === 'fulfilled') {
         logger.info(`Deadbolt lock driver initialized ("${lockId}")`);
       } else {
-        logger.error(`Deadbolt lock driver "${lockId}" init failed: ${r.reason && r.reason.message}. Retrying automatically; cascade unlock is unaffected.`);
-        scheduleDeadboltInitRetry();
+        _noteLockInitFailure(lockId, `${r.reason && r.reason.message}. Retrying automatically; cascade unlock is unaffected.`);
       }
     });
+    if (_failedInitLocks.size) scheduleDeadboltInitRetry();
   }
   applyEventTaps();
 
