@@ -125,10 +125,12 @@ class MockNode extends EventEmitter {
       const uc = opts.userCodes;
       this.userCodeSlots = Object.assign({}, uc.slots); // slot -> {status, code}
       this.userCodeSetCalls = [];
+      this.userCodeGetCalls = [];
       this.userCodeClearCalls = [];
       this.commandClasses['User Code'] = {
         set: async (slot, status, code) => {
           self.userCodeSetCalls.push({ slot, status, code });
+          if (uc.failSet) throw new Error('user code set failed');
           if (status === 0) { delete self.userCodeSlots[slot]; return; }
           // Schlage-style silent duplicate rejection: the slot keeps its old
           // value and only the read-back reveals the write did not take.
@@ -137,8 +139,22 @@ class MockNode extends EventEmitter {
             return;
           }
           self.userCodeSlots[slot] = { status, code };
+          // Yale-style announcement: the lock broadcasts "New user code
+          // added" on its own, often before a slow read-back completes.
+          if (uc.notifyOnSet) {
+            setImmediate(() => self.emit('notification', self, 0x71, {
+              type: 6, event: 0x0e, eventLabel: 'New user code added', parameters: { userId: slot },
+            }));
+          }
         },
         get: async (slot) => {
+          self.userCodeGetCalls.push(slot);
+          if (uc.failGet) {
+            // One beat before failing, like a real S0 GET timing out while
+            // the lock's own notification is already on the wire.
+            await new Promise((resolve) => setTimeout(resolve, 2));
+            throw new Error('Timed out while waiting for a response from the node (ZW0201)');
+          }
           const e = self.userCodeSlots[slot];
           if (!e) return { userId: slot, userIdStatus: 0 };
           return { userId: slot, userIdStatus: e.status, userCode: uc.maskReadback ? '****' : e.code };
@@ -153,13 +169,13 @@ class MockNode extends EventEmitter {
   }
 }
 
-async function makeZwave(nodeOpts = {}, cfg = {}) {
+async function makeZwave(nodeOpts = {}, cfg = {}, deps = {}) {
   const node = new MockNode(nodeOpts);
   const lock = new ZwaveLock(
     // retry_backoff_ms is tiny here so retry tests stay fast; backoff timing
     // itself has a dedicated test below.
     Object.assign({ node_id: 2, verify_timeout_ms: 40, verify_retries: 1, retry_backoff_ms: 5 }, cfg),
-    { node, logger: { warn() {} } }
+    Object.assign({ node, logger: { warn() {} } }, deps)
   );
   await lock.init();
   return { node, lock };
@@ -791,6 +807,185 @@ test('ZwaveLock: rewriteUserCodes replays saved codes sequentially', async () =>
   assert.deepEqual(results.map((r) => r.slot), [2, 5]);
   assert.ok(results.every((r) => r.ok && r.confirmed === true));
   assert.equal(node.userCodeSetCalls.length, 2);
+  await lock.shutdown();
+});
+
+// ---------------------------------------------------------------------------
+// Post-interview keypad-code restore (field incident 2026-07): a cache-loss
+// INITIAL interview makes zwave-js clear every code on the lock (with
+// queryAllUserCodes off), so saved codes must come back with no operator.
+// ---------------------------------------------------------------------------
+
+const settle = (ms = 25) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('ZwaveLock: interview completed restores wiped saved codes and emits', async () => {
+  const { node, lock } = await makeZwave(
+    { userCodes: { slots: {} } }, // the interview wiped everything
+    { model_key: 'schlage-be469zp' },
+    { getUserCodes: () => ({ 3: { user_id: 'u1', name: 'A', pin_code: '1234' } }) }
+  );
+  const seen = [];
+  lock.on('user-codes-restored', (e) => seen.push(e));
+  node.emit('interview completed', node);
+  await settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].restored, 1);
+  assert.equal(seen[0].kept, 0);
+  assert.equal(seen[0].failed, 0);
+  assert.deepEqual(node.userCodeSetCalls, [{ slot: 3, status: 1, code: '1234' }]);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: intact saved codes are kept, nothing written, no event', async () => {
+  const { node, lock } = await makeZwave(
+    { userCodes: { slots: { 3: { status: 1, code: '1234' } } } },
+    { model_key: 'schlage-be469zp' },
+    { getUserCodes: () => ({ 3: { user_id: 'u1', pin_code: '1234' } }) }
+  );
+  const seen = [];
+  lock.on('user-codes-restored', (e) => seen.push(e));
+  node.emit('interview completed', node);
+  await settle();
+  assert.equal(node.userCodeSetCalls.length, 0, 'an intact slot is never rewritten');
+  assert.equal(seen.length, 0, 'nothing to announce when nothing was wiped');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: a masked read-back counts as intact (no rewrite storm)', async () => {
+  const { node, lock } = await makeZwave(
+    { userCodes: { maskReadback: true, slots: { 3: { status: 1, code: '1234' } } } },
+    { model_key: 'schlage-be469zp' },
+    { getUserCodes: () => ({ 3: { user_id: 'u1', pin_code: '1234' } }) }
+  );
+  node.emit('interview completed', node);
+  await settle();
+  assert.equal(node.userCodeSetCalls.length, 0, 'masking firmware must not be rewritten every interview');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: no saved codes means zero wire traffic after an interview', async () => {
+  const { node, lock } = await makeZwave(
+    { userCodes: { slots: {} } },
+    { model_key: 'schlage-be469zp' },
+    { getUserCodes: () => ({}) }
+  );
+  node.emit('interview completed', node);
+  await settle();
+  assert.equal(node.userCodeGetCalls.length, 0);
+  assert.equal(node.userCodeSetCalls.length, 0);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: restore defers while a pairing session owns the controller', async () => {
+  const { node, lock } = await makeZwave(
+    { userCodes: { slots: {} } },
+    { model_key: 'schlage-be469zp' },
+    {
+      getUserCodes: () => ({ 3: { user_id: 'u1', pin_code: '1234' } }),
+      isPairingActive: () => true,
+    }
+  );
+  node.emit('interview completed', node);
+  await settle();
+  assert.equal(node.userCodeGetCalls.length, 0);
+  assert.equal(node.userCodeSetCalls.length, 0);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: a failing rewrite logs, reports failed, and does not crash', async () => {
+  const warns = [];
+  const { node, lock } = await makeZwave(
+    { userCodes: { failSet: true, slots: {} } },
+    { model_key: 'schlage-be469zp' },
+    {
+      logger: { warn: (m) => warns.push(m), info() {} },
+      getUserCodes: () => ({ 3: { user_id: 'u1', pin_code: '1234' } }),
+    }
+  );
+  const seen = [];
+  lock.on('user-codes-restored', (e) => seen.push(e));
+  node.emit('interview completed', node);
+  await settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].failed, 1);
+  assert.equal(seen[0].restored, 0);
+  assert.ok(warns.some((m) => /keypad code/i.test(m)), 'the wipe-and-restore warn names the cause');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: overlapping interview-completed events run one restore', async () => {
+  const { node, lock } = await makeZwave(
+    { userCodes: { slots: {} } },
+    { model_key: 'schlage-be469zp' },
+    { getUserCodes: () => ({ 3: { user_id: 'u1', pin_code: '1234' } }) }
+  );
+  node.emit('interview completed', node);
+  node.emit('interview completed', node); // in-flight guard swallows this one
+  await settle();
+  assert.equal(node.userCodeSetCalls.filter((c) => c.slot === 3).length, 1);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: restoreUserCodes returns kept/restored/failed per slot', async () => {
+  const { node, lock } = await makeZwave(
+    { userCodes: { slots: { 2: { status: 1, code: '1111' } } } },
+    { model_key: 'yale-assure-zw2' }
+  );
+  const results = await lock.restoreUserCodes({
+    2: { user_id: 'u1', pin_code: '1111' },   // intact
+    5: { user_id: 'u2', pin_code: '2222' },   // wiped, rewritten
+    251: { user_id: 'u3', pin_code: '9999' }, // Yale admin slot: guard refuses
+  });
+  const bySlot = Object.fromEntries(results.map((r) => [r.slot, r]));
+  assert.equal(bySlot[2].action, 'kept');
+  assert.equal(bySlot[5].action, 'restored');
+  assert.equal(bySlot[251].action, 'failed');
+  assert.match(bySlot[251].error, /admin\/master code/);
+  assert.deepEqual(node.userCodeSetCalls, [{ slot: 5, status: 1, code: '2222' }]);
+  await lock.shutdown();
+});
+
+// ---------------------------------------------------------------------------
+// Notification-confirmed code writes (field: a Yale on S0 announced "New user
+// code added" while the read-back GET timed out, and the app reported the
+// write as merely "queued or masked").
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: the lock\'s own added-notification confirms a write when read-back times out', async () => {
+  const { node, lock } = await makeZwave(
+    { userCodes: { slots: {}, failGet: true, notifyOnSet: true } },
+    { model_key: 'yale-assure-zw2' }
+  );
+  const r = await lock.setUserCode(3, '1234');
+  assert.equal(r.confirmed, true, 'the notification beats an inconclusive read-back');
+  assert.deepEqual(node.userCodeSetCalls, [{ slot: 3, status: 1, code: '1234' }]);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: a duplicate-code notification turns an inconclusive write into a rejection', async () => {
+  const { node, lock } = await makeZwave(
+    { userCodes: { slots: {}, failGet: true } },
+    { model_key: 'yale-assure-zw2' }
+  );
+  const p = lock.setUserCode(2, '1234');
+  setImmediate(() => node.emit('notification', node, 0x71, {
+    type: 6, event: 0x0f, eventLabel: 'New user code not added due to duplicate code',
+  }));
+  const r = await p;
+  assert.equal(r.confirmed, false);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: driver log lines carry the per-lock label', async () => {
+  const infos = [];
+  const { lock } = await makeZwave(
+    { userCodes: { slots: {} } },
+    { node_id: 15, id: 'front_door', model_key: 'yale-assure-zw2' },
+    { logger: { warn() {}, info: (m) => infos.push(m) } }
+  );
+  await lock.setUserCode(3, '1234');
+  assert.ok(infos.some((m) => m.startsWith('ZwaveLock[front_door/node 15]')),
+    `expected a labeled line, got: ${infos.join(' | ')}`);
   await lock.shutdown();
 });
 

@@ -115,6 +115,10 @@ class ZwaveLock extends LockDriver {
     super();
     this.cfg = cfg;
     this.logger = deps.logger || console;
+    // Per-lock log identity: with several locks on one box an unlabeled
+    // "ZwaveLock ..." line is unattributable (field diagnostics 2026-07).
+    const who = cfg.name || cfg.id || null;
+    this._label = who ? `${who}/node ${cfg.node_id}` : `node ${cfg.node_id}`;
     this._injectedNode = deps.node || null;
 
     // A shared manager (production) is owned by the caller; a private one
@@ -198,11 +202,24 @@ class ZwaveLock extends LockDriver {
     this._stateRecoveryAttempt = 0;
     this._lateWatchCleanup = null;
     this._autoRelockApplied = false;
+    // Saved keypad codes, read FRESH from live config on every use (deps
+    // callbacks): the cfg snapshot above goes stale after runtime config
+    // mutations and reloads, and a restore must never write outdated codes.
+    this._getUserCodes = deps.getUserCodes || null; // () => { '<slot>': {pin_code, ...}, ... }
+    this._isPairingActive = deps.isPairingActive || null; // () => bool
+    this._userCodeRestoreInFlight = false;
     this._stopped = false;
   }
 
   get capabilities() {
     return new Set(['lock', 'unlock', 'state', 'battery']);
+  }
+
+  /** Every driver log line carries the lock's identity. Levels degrade
+   *  gracefully on console-like loggers missing a method. */
+  _log(level, msg) {
+    const fn = this.logger && this.logger[level];
+    if (typeof fn === 'function') fn.call(this.logger, `ZwaveLock[${this._label}] ${msg}`);
   }
 
   async init() {
@@ -251,7 +268,7 @@ class ZwaveLock extends LockDriver {
       try {
         await this._refreshLive();
       } catch (err) {
-        this.logger.warn && this.logger.warn(`ZwaveLock: live state refresh failed: ${err.message}`);
+        this._log('warn', `live state refresh failed: ${err.message}`);
       }
     }
     // A node that comes up Dead (e.g. it browned out during the pairing
@@ -271,7 +288,7 @@ class ZwaveLock extends LockDriver {
       // ladder's job.
       if (!this._shouldLiveRead()) return;
       this._refreshLive().catch((err) => {
-        this.logger.warn && this.logger.warn(`ZwaveLock: periodic state poll failed: ${err.message}`);
+        this._log('warn', `periodic state poll failed: ${err.message}`);
       });
     }, this.pollMinutes * 60000);
     if (typeof this._pollTimer.unref === 'function') this._pollTimer.unref();
@@ -307,6 +324,10 @@ class ZwaveLock extends LockDriver {
       'interview completed': () => {
         this.emit('interview-completed', { node_id: this.nodeId });
         this._onNodeReady();
+        // A cache-loss "initial" interview has just CLEARED every keypad code
+        // on the lock (zwave-js UserCodeCC with the queryAllUserCodes guard
+        // off). Verify the saved slots and restore any that were wiped.
+        this._maybeRestoreUserCodes();
       },
     };
     for (const [ev, fn] of Object.entries(this._nodeHandlers)) node.on(ev, fn);
@@ -333,8 +354,8 @@ class ZwaveLock extends LockDriver {
     // never a state change and never an email alert: on this hardware it
     // usually means momentary bolt resistance, not a failure.
     if (args.type === 9 && args.event === 1) {
-      this.logger.info && this.logger.info(
-        'ZwaveLock: lock sent a system/hardware note (V1 alarm type 9); on the BE469ZP this usually means bolt resistance while the bolt still completed');
+      this._log('info',
+        'lock sent a system/hardware note (V1 alarm type 9); on the BE469ZP this usually means bolt resistance while the bolt still completed');
       this.emit('device-note', {
         code: 'system_hardware_note',
         detail: 'the lock reported possible bolt resistance during the last operation; check door alignment if the bolt did not fully move',
@@ -568,15 +589,15 @@ class ZwaveLock extends LockDriver {
       this._scheduleRevive();
       return;
     }
-    this.logger.info && this.logger.info(`ZwaveLock: node ${this.nodeId} revived by ping`);
+    this._log('info', 'node revived by ping');
     this._reviveAttempt = 0;
     this._onNodeReachable();
     if (node.ready !== true && typeof node.refreshInfo === 'function'
         && Date.now() - this._lastRefreshInfoAt > 3600000) {
       this._lastRefreshInfoAt = Date.now();
-      this.logger.info && this.logger.info(`ZwaveLock: node ${this.nodeId} answered but was never fully interviewed; re-interviewing`);
+      this._log('info', 'node answered but was never fully interviewed; re-interviewing');
       Promise.resolve(node.refreshInfo()).catch((e) => {
-        this.logger.warn && this.logger.warn(`ZwaveLock: auto re-interview failed: ${e.message}`);
+        this._log('warn', `auto re-interview failed: ${e.message}`);
       });
     }
   }
@@ -764,8 +785,7 @@ class ZwaveLock extends LockDriver {
       try {
         supervision = await this._commandSet(mode);
       } catch (err) {
-        this.logger.warn && this.logger.warn(
-          `ZwaveLock ${action} attempt ${attempt + 1} set error: ${err.message}`);
+        this._log('warn', `${action} attempt ${attempt + 1} set error: ${err.message}`);
         continue;
       }
       const supStatus = supervision && typeof supervision.status === 'number' ? supervision.status : null;
@@ -779,8 +799,7 @@ class ZwaveLock extends LockDriver {
         // The lock explicitly refused/failed the motion: burning the whole
         // verify window on a report that will never confirm just adds ~12s
         // of dead time before the retry.
-        this.logger.warn && this.logger.warn(
-          `ZwaveLock ${action} attempt ${attempt + 1} rejected by the lock (supervision FAIL)`);
+        this._log('warn', `${action} attempt ${attempt + 1} rejected by the lock (supervision FAIL)`);
         last = this._state.boltState;
         continue;
       }
@@ -792,8 +811,7 @@ class ZwaveLock extends LockDriver {
       // 30-second false "failed".
       if (this._isOptimistic()) {
         this._updateState(wantState);
-        this.logger.info && this.logger.info(
-          `ZwaveLock ${action} delivered (optimistic verify: this model does not confirm remote moves)`);
+        this._log('info', `${action} delivered (optimistic verify: this model does not confirm remote moves)`);
         return { success: true, boltState: this._state.boltState, verified: 'optimistic' };
       }
       // WORKING, NO_SUPPORT, or an unsupervised send: wait for a confirming
@@ -801,8 +819,7 @@ class ZwaveLock extends LockDriver {
       const ok = await this._waitForState(wantState, this.verifyTimeoutMs);
       last = this._state.boltState;
       if (ok) return { success: true, boltState: last, verified: 'report' };
-      this.logger.warn && this.logger.warn(
-        `ZwaveLock ${action} not confirmed (attempt ${attempt + 1}/${this.verifyRetries + 1}), state=${last}`);
+      this._log('warn', `${action} not confirmed (attempt ${attempt + 1}/${this.verifyRetries + 1}), state=${last}`);
     }
     this._watchLateConfirm(wantState, action);
     return { success: false, boltState: last, error: this._describeFailure() };
@@ -823,8 +840,7 @@ class ZwaveLock extends LockDriver {
       if (snap.boltState !== wantState) return;
       cleanup();
       const afterMs = Date.now() - startedAt;
-      this.logger.info && this.logger.info(
-        `ZwaveLock ${action} confirmed late, ${Math.round(afterMs / 1000)}s after the verify window closed`);
+      this._log('info', `${action} confirmed late, ${Math.round(afterMs / 1000)}s after the verify window closed`);
       this.emit('late-confirm', { action, boltState: snap.boltState, after_ms: afterMs });
     };
     const timer = setTimeout(() => cleanup(), this.lateConfirmMs);
@@ -1046,8 +1062,8 @@ class ZwaveLock extends LockDriver {
       try { confirmed = (await cc.get(ar.parameter)) === value; } catch (e) { confirmed = null; }
     }
     this.cfg.auto_relock = !!enabled; // keep autoRelockInfo truthful this run
-    this.logger.info && this.logger.info(
-      `ZwaveLock: auto-relock ${enabled ? 'enabled' : 'disabled'} `
+    this._log('info',
+      `auto-relock ${enabled ? 'enabled' : 'disabled'} `
       + `(parameter ${ar.parameter}=${value}`
       + `${confirmed == null ? '' : confirmed ? ', read-back confirmed' : ', READ-BACK MISMATCH'})`);
     return { enabled: !!enabled, confirmed };
@@ -1069,7 +1085,7 @@ class ZwaveLock extends LockDriver {
     this._autoRelockApplied = true;
     this.setAutoRelock(!!this.cfg.auto_relock).catch((err) => {
       this._autoRelockApplied = false;
-      this.logger.warn && this.logger.warn(`ZwaveLock: re-applying auto-relock failed: ${err.message}`);
+      this._log('warn', `re-applying auto-relock failed: ${err.message}`);
     });
   }
 
@@ -1098,11 +1114,45 @@ class ZwaveLock extends LockDriver {
   }
 
   /**
+   * While a code write is in flight, watch the node's own Access Control
+   * notifications for the verdict. Locks announce "New user code added"
+   * (event 0x0E) or "... not added due to duplicate code" (0x0F) on their
+   * own, often BEFORE a slow read-back completes (field log: a Yale on S0
+   * sent the added-notification while the read-back GET timed out). A slot
+   * carried in the notification must match; a missing slot is accepted.
+   */
+  _watchUserCodeNotification(slot) {
+    const node = this._node;
+    let seen = null;
+    const handler = (_node, ccId, args) => {
+      if (ccId != null && ccId !== 0x71) return;
+      const a = args || {};
+      if (a.type != null && a.type !== 6) return;
+      const evSlot = this._notificationSlot(a);
+      if (evSlot != null && Number(evSlot) !== Number(slot)) return;
+      const label = String(a.eventLabel || a.label || '').toLowerCase();
+      if (a.event === 0x0e || label.includes('new user code added') || label.includes('user code changed')) {
+        seen = 'added';
+      } else if (a.event === 0x0f || label.includes('duplicate')) {
+        seen = 'rejected';
+      }
+    };
+    if (node && typeof node.on === 'function') node.on('notification', handler);
+    return {
+      result: () => seen,
+      stop: () => {
+        if (node && typeof node.removeListener === 'function') node.removeListener('notification', handler);
+      },
+    };
+  }
+
+  /**
    * Write a keypad code into a slot and read it back. confirmed is true when
-   * the read-back shows the slot Enabled with the same code, null when the
-   * lock is unreadable right now (asleep: the write is queued) or masks codes
-   * on read-back, and false when the slot did not take the code, which is how
-   * Schlage's silent duplicate-PIN rejection surfaces. Digits are never logged.
+   * the read-back shows the slot Enabled with the same code (or the lock
+   * itself announced the code was added), null when the lock is unreadable
+   * right now (asleep: the write is queued) or masks codes on read-back, and
+   * false when the slot did not take the code, which is how Schlage's silent
+   * duplicate-PIN rejection surfaces. Digits are never logged.
    */
   async setUserCode(slot, pin) {
     if (!this._node) {
@@ -1114,25 +1164,42 @@ class ZwaveLock extends LockDriver {
       throw new Error('this lock does not expose keypad codes over Z-Wave (User Code CC unavailable)');
     }
     const code = String(pin);
-    await uc.set(slot, ZwaveLock.USER_ID_STATUS.ENABLED, code);
+    const noteWatch = this._watchUserCodeNotification(slot);
     let confirmed = null;
-    if (typeof uc.get === 'function') {
-      try {
-        const rep = await uc.get(slot);
-        if (rep && typeof rep.userIdStatus === 'number') {
-          if (rep.userIdStatus !== ZwaveLock.USER_ID_STATUS.ENABLED) {
-            confirmed = false;
-          } else if (rep.userCode != null) {
-            const readBack = Buffer.isBuffer(rep.userCode) ? rep.userCode.toString('utf8') : String(rep.userCode);
-            // Some firmwares mask codes on read-back (e.g. all asterisks):
-            // Enabled + unreadable digits is best-effort success, not failure.
-            confirmed = readBack === code ? true : (/^\d+$/.test(readBack) ? false : null);
+    try {
+      await uc.set(slot, ZwaveLock.USER_ID_STATUS.ENABLED, code);
+      if (typeof uc.get === 'function') {
+        try {
+          const rep = await uc.get(slot);
+          if (rep && typeof rep.userIdStatus === 'number') {
+            if (rep.userIdStatus !== ZwaveLock.USER_ID_STATUS.ENABLED) {
+              confirmed = false;
+            } else if (rep.userCode != null) {
+              const readBack = Buffer.isBuffer(rep.userCode) ? rep.userCode.toString('utf8') : String(rep.userCode);
+              // Some firmwares mask codes on read-back (e.g. all asterisks):
+              // Enabled + unreadable digits is best-effort success, not failure.
+              confirmed = readBack === code ? true : (/^\d+$/.test(readBack) ? false : null);
+            }
           }
-        }
-      } catch (e) { confirmed = null; }
+        } catch (e) { confirmed = null; }
+      }
+    } finally {
+      noteWatch.stop();
     }
-    this.logger.info && this.logger.info(
-      `ZwaveLock: user code slot ${slot} written (${confirmed === true ? 'read-back confirmed' : confirmed === false ? 'REJECTED by the lock' : 'read-back unavailable; queued or masked'})`);
+    // The read-back was inconclusive (slow S0 link, masked codes): the lock's
+    // own announcement is the next-strongest truth and beats reporting
+    // "queued or masked" for a write that provably landed.
+    let how = null;
+    if (confirmed == null) {
+      const seen = noteWatch.result();
+      if (seen === 'added') { confirmed = true; how = 'notification'; }
+      else if (seen === 'rejected') { confirmed = false; how = 'notification'; }
+    }
+    this._log('info',
+      `user code slot ${slot} written (${
+        confirmed === true ? (how === 'notification' ? 'confirmed by the lock\'s own notification' : 'read-back confirmed')
+          : confirmed === false ? (how === 'notification' ? 'REJECTED by the lock (duplicate code notification)' : 'REJECTED by the lock')
+            : 'read-back unavailable; queued or masked'})`);
     return { slot, confirmed };
   }
 
@@ -1156,7 +1223,7 @@ class ZwaveLock extends LockDriver {
         }
       } catch (e) { confirmed = null; }
     }
-    this.logger.info && this.logger.info(`ZwaveLock: user code slot ${slot} cleared (confirmed: ${confirmed})`);
+    this._log('info', `user code slot ${slot} cleared (confirmed: ${confirmed})`);
     return { slot, confirmed };
   }
 
@@ -1228,6 +1295,99 @@ class ZwaveLock extends LockDriver {
       }
     }
     return results;
+  }
+
+  /** One targeted read: is this slot still Enabled with the saved code?
+   *  Mirrors setUserCode's read-back interpretation: a masked (non-digit)
+   *  read-back counts as intact so masking firmwares are not rewritten after
+   *  every interview. Any doubt (read failure, wrong status, digit mismatch)
+   *  reads as "not intact" and the caller rewrites. */
+  async _userCodeSlotIntact(uc, slot, pin) {
+    if (typeof uc.get !== 'function') return false;
+    const rep = await uc.get(slot);
+    if (!rep || rep.userIdStatus !== ZwaveLock.USER_ID_STATUS.ENABLED) return false;
+    if (rep.userCode == null) return true;
+    const readBack = Buffer.isBuffer(rep.userCode) ? rep.userCode.toString('utf8') : String(rep.userCode);
+    if (readBack === String(pin)) return true;
+    return !/^\d+$/.test(readBack);
+  }
+
+  /**
+   * Verify-then-restore saved codes: per saved slot, one targeted read; an
+   * intact slot is kept, any other answer (Available/Disabled/mismatch/read
+   * failure) gets the saved code rewritten via setUserCode (which queues on a
+   * sleeping node). Same iteration contract as rewriteUserCodes; never
+   * bulk-enumerates. Verify-first matters: a re-interview with an INTACT
+   * zwave-js cache preserves codes, so blind rewriting after a manual heal
+   * would burn battery for nothing and mis-log a wipe.
+   * @returns [{ slot, action: 'kept'|'restored'|'failed', confirmed?, error? }]
+   */
+  async restoreUserCodes(codesBySlot) {
+    if (!this._node) {
+      throw new Error('Z-Wave driver is not running (stick unplugged or failed to start)');
+    }
+    const uc = this._userCodeCC();
+    if (!uc) throw new Error('this lock does not expose keypad codes over Z-Wave (User Code CC unavailable)');
+    const results = [];
+    for (const [slotKey, entry] of Object.entries(codesBySlot || {})) {
+      const slot = Number(slotKey);
+      if (!Number.isInteger(slot) || slot < 1 || !entry || !entry.pin_code) continue;
+      try {
+        let intact = false;
+        try { intact = await this._userCodeSlotIntact(uc, slot, entry.pin_code); } catch (e) { intact = false; }
+        if (intact) {
+          results.push({ slot, action: 'kept' });
+          continue;
+        }
+        const r = await this.setUserCode(slot, entry.pin_code);
+        if (r.confirmed === false) {
+          results.push({ slot, action: 'failed', error: 'the lock rejected the rewritten code' });
+        } else {
+          results.push({ slot, action: 'restored', confirmed: r.confirmed });
+        }
+      } catch (err) {
+        results.push({ slot, action: 'failed', error: err.message });
+      }
+    }
+    return results;
+  }
+
+  /**
+   * After a node interview completes, verify each SAVED code slot and rewrite
+   * only the wiped ones. Interviews are rare (cache loss, manual heal, dead-
+   * node revival) and a verify is one targeted read per saved slot, so this
+   * never conflicts with the Yale battery guard: no bulk enumeration, no
+   * boot-time writes (a cached startup emits no interview event at all).
+   * Guards: stopped driver, a restore already running, no saved codes, a live
+   * pairing session (S2 traffic owns the controller), no User Code CC.
+   */
+  _maybeRestoreUserCodes() {
+    if (this._stopped || this._userCodeRestoreInFlight) return;
+    const codes = this._getUserCodes ? (this._getUserCodes() || {}) : {};
+    if (!Object.keys(codes).length) return;
+    if (this._isPairingActive && this._isPairingActive()) {
+      this._log('info', 'interview completed during a pairing session; keypad-code check deferred to the next interview');
+      return;
+    }
+    if (!this._userCodeCC()) return;
+    this._userCodeRestoreInFlight = true;
+    this.restoreUserCodes(codes)
+      .then((results) => {
+        const restored = results.filter((r) => r.action === 'restored').length;
+        const failed = results.filter((r) => r.action === 'failed').length;
+        const kept = results.filter((r) => r.action === 'kept').length;
+        if (restored || failed) {
+          this._log('warn',
+            `interview wiped saved keypad codes; restored ${restored}, still intact ${kept}, failed ${failed}`);
+          this.emit('user-codes-restored', { restored, kept, failed, results });
+        } else {
+          this._log('info', `post-interview keypad-code check: all ${kept} saved code(s) intact`);
+        }
+      })
+      .catch((err) => {
+        this._log('warn', `post-interview keypad-code restore failed: ${err.message}`);
+      })
+      .finally(() => { this._userCodeRestoreInFlight = false; });
   }
 
   async getState() {

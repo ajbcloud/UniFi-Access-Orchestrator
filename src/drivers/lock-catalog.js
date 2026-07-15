@@ -116,7 +116,7 @@ const CATALOG = Object.freeze([
         enroll: 'Put the controller in Add mode, then on the lock enter [Master PIN] # 7 # 1 #. Start within about 6 feet of the stick. It joins at S0, which is normal for this module.',
         exclude: 'Put the controller in Remove mode, then on the lock enter [Master PIN] # 7 # 3 #.',
         reset: 'Remove the battery cover, batteries, and the inside cover to reach the reset button by the cable connector; hold it while reinserting the batteries, at least 3 seconds. Resets the Master PIN to 12345678 and clears Z-Wave.',
-        quirk: 'ZW / ZW2 (500-series) module joins at S0. Exclude or factory-reset first if it was ever paired.',
+        quirk: 'ZW / ZW2 (500-series) module joins at S0. Exclude or factory-reset first if it was ever paired. If the motor turns the bolt only partially while the app reports success and no jam, the lock believes travel completed: re-run the door handing/calibration process and check tailpiece and strike alignment (Z-Wave has no torque or travel control).',
       },
       {
         key: 'yale-assure-zw3',

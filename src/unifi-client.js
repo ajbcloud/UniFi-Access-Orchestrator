@@ -55,6 +55,13 @@ class UniFiClient {
     this.syncInterval = null;
     this.syncMinutes = config.unifi.user_sync_interval_minutes || 5;
 
+    // Last steady-state sync outcomes. The periodic syncs used to write six
+    // info lines per cycle (every 15s with auto-sync on), drowning real
+    // events; an unchanged outcome now logs at debug and only a CHANGE (or
+    // the first run) is announced at info.
+    this._lastDoorsSummary = null;
+    this._lastGroupSyncSummary = null;
+
     // Config references
     this.groupNameMap = config.resolver?.unifi_group_to_group || {};
     this.selfTrigger = config.self_trigger_prevention || {};
@@ -204,7 +211,7 @@ class UniFiClient {
   // ---------------------------------------------------------------------------
 
   async discoverDoors() {
-    logger.info('Discovering doors...');
+    logger.debug('Discovering doors...');
     const result = await this.request('GET', '/doors');
     const doors = Array.isArray(result.data) ? result.data : [];
 
@@ -224,7 +231,10 @@ class UniFiClient {
       }
     }
 
-    logger.info(`Discovered ${this.doors.size} doors: ${[...this.doors.keys()].join(', ')}`);
+    const summary = `Discovered ${this.doors.size} doors: ${[...this.doors.keys()].join(', ')}`;
+    const changed = summary !== this._lastDoorsSummary;
+    this._lastDoorsSummary = summary;
+    logger[changed ? 'info' : 'debug'](summary);
     return this.doors;
   }
 
@@ -301,7 +311,7 @@ class UniFiClient {
       const statusCode = err.statusCode || err.status || 0;
       const permissionDenied = statusCode === 403
         || /forbidden|permission|unauthorized/i.test(err.message || '');
-      logger.error(`Failed to set UniFi PIN for "${name}": ${err.message}`);
+      logger.error(`Failed to set UniFi PIN for "${name}": ${err.message}${statusCode ? ` (HTTP ${statusCode})` : ''}`);
       return { success: false, userId, error: err.message, statusCode, permission_denied: permissionDenied };
     }
   }
@@ -351,13 +361,13 @@ class UniFiClient {
   // ---------------------------------------------------------------------------
 
   async syncUserGroups() {
-    logger.info('Syncing user groups...');
+    logger.debug('Syncing user groups...');
 
     try {
       // Step 1: Fetch all user groups
       const groupsResult = await this.request('GET', '/user_groups');
       const groups = Array.isArray(groupsResult.data) ? groupsResult.data : [];
-      logger.info(`Found ${groups.length} user groups`);
+      logger.debug(`Found ${groups.length} user groups`);
 
       const newUserGroupMap = new Map();
       const newUserNames = new Map();
@@ -414,11 +424,16 @@ class UniFiClient {
       this.userData = newUserData;
       this.discoveredGroups = discoveredGroups;
 
+      // One line at info per CHANGE in outcome (membership, group list, or
+      // unmapped set); the every-15s steady state stays at debug.
+      const summary = `User group sync complete: ${this.userGroupMap.size} users mapped across ${groups.length} groups`
+        + (unmappedGroups.length ? ` (unmapped: ${unmappedGroups.join(', ')})` : '');
+      const changed = summary !== this._lastGroupSyncSummary;
+      this._lastGroupSyncSummary = summary;
       if (unmappedGroups.length > 0) {
-        logger.info(`Unmapped groups (add to resolver.unifi_group_to_group in config): ${unmappedGroups.join(', ')}`);
+        logger[changed ? 'info' : 'debug'](`Unmapped groups (add to resolver.unifi_group_to_group in config): ${unmappedGroups.join(', ')}`);
       }
-
-      logger.info(`User group sync complete: ${this.userGroupMap.size} users mapped across ${groups.length} groups`);
+      logger[changed ? 'info' : 'debug'](summary);
     } catch (err) {
       logger.error(`User group sync failed: ${err.message}`);
       // Keep existing cache on failure

@@ -210,3 +210,77 @@ test('an invalid log level is clamped to debug', async () => {
   await manager.ensureStarted({ serial_path: 'COM3' });
   assert.strictEqual(made[0].options.logConfig.level, 'debug');
 });
+
+// ---------------------------------------------------------------------------
+// Persistent zwave-js cache dir. Losing the cache is destructive: the next
+// interview is treated as initial and (with queryAllUserCodes off) CLEARS
+// every keypad code on the lock, so the default must survive app updates.
+// ---------------------------------------------------------------------------
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+function tmpdir(prefix) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+test('defaultCacheDir is used and created when no cache_dir is passed', async () => {
+  const dir = path.join(tmpdir('zwm-cache-'), 'zwave-cache');
+  const { manager, made } = makeManagerWith({ defaultCacheDir: dir });
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.strictEqual(made[0].options.storage.cacheDir, dir);
+  assert.ok(fs.existsSync(dir), 'default cache dir should be created');
+  assert.strictEqual(manager.status().cache_dir, dir);
+});
+
+test('an explicit cache_dir wins over the default and skips migration', async () => {
+  const legacy = tmpdir('zwm-legacy-');
+  fs.writeFileSync(path.join(legacy, 'deadbeef.jsonl'), '{"a":1}\n');
+  const explicit = path.join(tmpdir('zwm-explicit-'), 'mycache');
+  const fallback = path.join(tmpdir('zwm-fallback-'), 'zwave-cache');
+  const { manager, made } = makeManagerWith({ defaultCacheDir: fallback, legacyCacheDir: legacy });
+  await manager.ensureStarted({ serial_path: 'COM3', cache_dir: explicit });
+  assert.strictEqual(made[0].options.storage.cacheDir, explicit);
+  // Operator-set dirs are taken verbatim: nothing is copied into them.
+  assert.ok(!fs.existsSync(path.join(explicit, 'deadbeef.jsonl')));
+});
+
+test('no default and no cache_dir keeps storage undefined (regression guard)', async () => {
+  const { manager, made } = makeManagerWith({});
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.strictEqual(made[0].options.storage, undefined);
+});
+
+test('legacy cache jsonl files migrate into an empty default dir', async () => {
+  const legacy = tmpdir('zwm-legacy-');
+  fs.writeFileSync(path.join(legacy, 'deadbeef.jsonl'), '{"nodes":1}\n');
+  fs.writeFileSync(path.join(legacy, 'deadbeef.values.jsonl'), '{"v":1}\n');
+  fs.writeFileSync(path.join(legacy, 'notcache.txt'), 'ignore me');
+  const dir = path.join(tmpdir('zwm-cache-'), 'zwave-cache');
+  const { manager } = makeManagerWith({ defaultCacheDir: dir, legacyCacheDir: legacy });
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.ok(fs.existsSync(path.join(dir, 'deadbeef.jsonl')));
+  assert.ok(fs.existsSync(path.join(dir, 'deadbeef.values.jsonl')));
+  assert.ok(!fs.existsSync(path.join(dir, 'notcache.txt')), 'only cache files migrate');
+});
+
+test('migration never overwrites an already-populated cache dir', async () => {
+  const legacy = tmpdir('zwm-legacy-');
+  fs.writeFileSync(path.join(legacy, 'deadbeef.jsonl'), 'OLD\n');
+  const dir = tmpdir('zwm-cache-');
+  fs.writeFileSync(path.join(dir, 'deadbeef.jsonl'), 'NEW\n');
+  const { manager } = makeManagerWith({ defaultCacheDir: dir, legacyCacheDir: legacy });
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'deadbeef.jsonl'), 'utf8'), 'NEW\n');
+});
+
+test('a broken legacy path never blocks the driver start', async () => {
+  const bogus = path.join(tmpdir('zwm-bogus-'), 'a-file-not-a-dir');
+  fs.writeFileSync(bogus, 'x');
+  const dir = path.join(tmpdir('zwm-cache-'), 'zwave-cache');
+  const { manager, made } = makeManagerWith({ defaultCacheDir: dir, legacyCacheDir: bogus });
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.strictEqual(made.length, 1);
+  assert.strictEqual(manager.isRunning(), true);
+});

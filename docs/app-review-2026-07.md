@@ -98,6 +98,19 @@ the explicit `interview.queryAllUserCodes: false` guard (the Yale
 battery-drain mitigation from zwave-js issue 2725; the default is already
 safe, the guard makes it permanent).
 
+Follow-up on that guard (2026-07 field incident): with `queryAllUserCodes`
+off, zwave-js does not query codes on an INITIAL interview, it clears them
+all on the device ("Initial interview, clearing all user codes..."). A lost
+network cache therefore silently wiped every keypad code on a paired lock,
+because the zwave-js default cache location (`<cwd>/cache`) sits inside the
+install directory on packaged builds and app updates delete it. The app now
+keeps the cache in a persistent per-user dir (default
+`<config dir>/zwave-cache`, override with `devices.zwave.cache_dir` or
+`ZWAVE_CACHE_DIR`), migrates any cache stranded in the old location, and
+after every completed node interview verifies each SAVED code slot and
+rewrites only the wiped ones (targeted per-slot reads and writes, so the
+battery guard is preserved).
+
 Known gaps deliberately deferred to the next phases: notifier channels
 beyond the generic webhook (Slack or Teams, SMTP email, ntfy, severity
 levels), `*_env` secret indirection, an optional UniFi-native webhook
