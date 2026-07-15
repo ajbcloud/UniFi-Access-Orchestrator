@@ -42,6 +42,20 @@ test('deadbolt keypad pin_code fields are redacted and strip-protected on round-
   assert.ok(!('pin_code' in echo.devices.zwave.locks.front.user_codes[3]), 'redacted placeholder stripped before merge');
 });
 
+test('unifi_pin_state entries are redacted and strip-protected on round-trip', () => {
+  const cfg = {
+    unifi_pin_state: {
+      'u-1': { pin_code: '1234', updated_at: '2026-07-15T21:00:00Z' },
+    },
+  };
+  const out = redactSecrets(cfg);
+  assert.strictEqual(out.unifi_pin_state['u-1'].pin_code, REDACTION_MARKER, 'state PINs masked in diagnostics/config GET');
+  assert.strictEqual(out.unifi_pin_state['u-1'].updated_at, '2026-07-15T21:00:00Z', 'timestamp survives');
+  const echo = JSON.parse(JSON.stringify(out));
+  stripRedactedPlaceholders(echo);
+  assert.ok(!('pin_code' in echo.unifi_pin_state['u-1']), 'echoed marker stripped before any merge');
+});
+
 test('redactSecrets masks every secret-keyed field but leaves the rest', () => {
   const cfg = {
     server: { port: 3000, admin_api_key: 'abc123' },

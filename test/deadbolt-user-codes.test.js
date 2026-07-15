@@ -126,6 +126,35 @@ test('flexible-length locks describe the range; conflicting fixed lengths warn',
   assert.match(conflicted, /different fixed code lengths/);
 });
 
+test('picker sources from agg.available_users when present (server-fresh)', () => {
+  const build = load();
+  const out = build({
+    locks: LOCKS,
+    pin_rule: RULE,
+    available_users: [{ id: 'srv-1', name: 'ServerUser <s>' }],
+    users: [],
+  }, USERS, false);
+  assert.match(out, /value="srv-1"/, 'server-supplied user is pickable');
+  assert.match(out, /ServerUser &lt;s&gt;/, 'server-supplied names escaped');
+  assert.ok(!out.includes('value="u-1"'), 'stale usersData snapshot ignored when the server list exists');
+});
+
+test('picker falls back to the users param when available_users is absent/empty', () => {
+  const build = load();
+  const absent = build({ locks: LOCKS, pin_rule: RULE, users: [] }, USERS, false);
+  assert.match(absent, /value="u-1"/, 'fallback to usersData when the key is absent');
+  const empty = build({ locks: LOCKS, pin_rule: RULE, available_users: [], users: [] }, USERS, false);
+  assert.match(empty, /value="u-1"/, 'empty server list also falls back');
+});
+
+test('picker shows a not-synced hint when both user sources are empty', () => {
+  const build = load();
+  const out = build({ locks: LOCKS, pin_rule: RULE, available_users: [], users: [] }, [], false);
+  assert.match(out, /UniFi users not synced yet/, 'hint instead of a silently empty dropdown');
+  const withUsers = build({ locks: LOCKS, pin_rule: RULE, available_users: [{ id: 'x', name: 'X' }], users: [] }, [], false);
+  assert.ok(!withUsers.includes('UniFi users not synced yet'), 'no picker hint once users exist');
+});
+
 test('gating: blocked status renders a blocked badge naming the door', () => {
   const build = load();
   const out = build({

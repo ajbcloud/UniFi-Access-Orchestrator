@@ -3453,9 +3453,20 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
   const lenRule = rule.conflict
     ? 'your locks demand different fixed code lengths; no single PIN fits both'
     : (rule.fixed ? `${rule.fixed}-digit codes (a lock enforces one shared length)` : `${rule.min || 4} to ${rule.max || 10} digit codes`);
-  const userOpts = (Array.isArray(users) ? users : [])
+  // Picker users come from the aggregate itself (server-fresh on every
+  // refresh), falling back to the page-load usersData snapshot. The old
+  // snapshot-only sourcing left the picker empty for a whole session when
+  // the app booted before the controller synced (field report: a removed
+  // user could not be re-added without restarting the app).
+  const pickerUsers = (Array.isArray(a.available_users) && a.available_users.length)
+    ? a.available_users
+    : (Array.isArray(users) ? users : []);
+  const userOpts = pickerUsers
     .map((u) => `<option value="${escapeHtml(u.id)}">${escapeHtml(u.name || u.id)}</option>`)
     .join('');
+  const noUsersHint = !pickerUsers.length
+    ? `<span style="color:var(--text-muted)">UniFi users not synced yet; they appear automatically once the controller connects.</span>`
+    : '';
   // Which locks gate on a door vs. reach everyone (no door associated).
   const gated = usable.filter((l) => l.gating_door);
   const gatingLine = gated.length
@@ -3479,6 +3490,7 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
     + `<select id="kuUser" style="font-size:12px;padding:5px"${dis}><option value="">-- pick a user --</option>${userOpts}</select>`
     + `<input id="kuPin" type="text" inputmode="numeric" autocomplete="off" maxlength="10" placeholder="PIN" style="font-size:12px;padding:6px;width:90px"${dis}>`
     + `<button class="btn btn-sm btn-primary" onclick="saveKeypadUser()"${dis} title="Writes the code to every paired lock and updates this user's UniFi Access PIN to match.">Save PIN</button>`
+    + noUsersHint
     + `</div></div>`;
 }
 
@@ -3520,6 +3532,7 @@ async function saveKeypadUser() {
       else if (r.unifi.success) toast(`UniFi PIN for ${name} updated to match.`, 'success');
       else if (r.unifi.permission_denied) toast('UniFi sync failed: the API token lacks user credential edit permission. Grant it in UniFi Access API settings, then save the PIN again.', 'error');
       else toast(`UniFi sync failed: ${r.unifi.error || 'unknown error'}. The lock codes still work; save the PIN again to retry.`, 'error');
+      if (r.unifi.hint) toast(r.unifi.hint, 'info');
     }
     pinEl.value = '';
     refreshZwaveDeadbolt();

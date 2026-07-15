@@ -42,7 +42,7 @@ const { ZwavePairing } = require('./drivers/zwave-pairing');
 const { loadSecurityKeys, ensureSecurityKeys } = require('./drivers/zwave-keys');
 const { SustainedFlagMonitor } = require('./alert-monitors');
 const deadboltRules = require('./deadbolt-rules');
-const { planUnifiPinPush, markStaleAfterPush } = require('./user-code-sync');
+const { planUnifiPinPush, markStaleAfterPush, recordUnifiPin } = require('./user-code-sync');
 const { removeLockEntry, pruneGhostLocks } = require('./lock-cleanup');
 const keypadUsers = require('./keypad-users');
 const accessGating = require('./access-gating');
@@ -1772,17 +1772,21 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
     if (b.push_to_unifi === true) {
       unifi.attempted = true;
       const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
-      const plan = planUnifiPinPush(zwLocks, target.lockId, b.user_id, pin);
+      const plan = planUnifiPinPush(zwLocks, target.lockId, b.user_id, pin, config.unifi_pin_state);
       if (plan.action === 'skip_in_sync') {
         unifi.success = true;
         unifi.skipped = 'already in sync';
-        logger.info(`Deadbolt: UniFi already holds this PIN for "${name || b.user_id}" (pushed via "${plan.source_lock}"); skipping the push`);
+        logger.info(`Deadbolt: UniFi already holds this PIN for "${name || b.user_id}" (known via ${plan.source_lock ? `"${plan.source_lock}"` : 'the recorded UniFi PIN state'}); skipping the push`);
+        const now = new Date().toISOString();
         persistZwaveMutation((cfg) => {
           const lockId = target.lockId;
           const entry = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
             && cfg.devices.zwave.locks[lockId] && cfg.devices.zwave.locks[lockId].user_codes
             && cfg.devices.zwave.locks[lockId].user_codes[String(slot)];
           if (entry) entry.pushed_to_unifi = true;
+          // Backfill the durable user-level record (a legacy-inferred skip
+          // roots in a real push, so recording the same fact is safe).
+          recordUnifiPin(cfg, b.user_id, pin, now);
         });
       } else if (unifiClient && typeof unifiClient.assignUserPin === 'function') {
         const push = await unifiClient.assignUserPin(b.user_id, pin);
@@ -1791,6 +1795,7 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
         unifi.error = push.error || null;
         if (push.statusCode) unifi.status_code = push.statusCode;
         if (push.success) {
+          const now = new Date().toISOString();
           persistZwaveMutation((cfg) => {
             const lockId = target.lockId;
             const locks = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks;
@@ -1801,6 +1806,7 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
             // lock that recorded a DIFFERENT pushed PIN for them no longer
             // matches UniFi and must stop claiming it does.
             if (locks) markStaleAfterPush(locks, lockId, b.user_id, pin);
+            recordUnifiPin(cfg, b.user_id, pin, now);
           });
           if (plan.stale_locks.length) {
             unifi.note = `UniFi keeps one PIN per user; the PIN stored for ${plan.stale_locks.map((l) => `"${lockLabel(l)}"`).join(', ')} no longer matches UniFi`;
@@ -1810,6 +1816,9 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
       } else {
         unifi.success = false;
         unifi.error = 'UniFi client is not connected';
+      }
+      if (!unifi.success && /CODE_SYSTEM_ERROR/i.test(unifi.error || '')) {
+        unifi.hint = 'UniFi already has this exact PIN. If it is this user\'s existing PIN everything already matches; if another user holds it, choose a different PIN (UniFi PINs are unique per person).';
       }
     }
     broadcastEvent({
@@ -1981,6 +1990,14 @@ app.get('/api/deadbolt/keypad-users', async (req, res) => {
       })),
       pin_rule: keypadUsers.combinedLengthRule(relevant.map((l) => l.cap)),
       access_gating: accessGatingStatus(),
+      // Pickable users straight from the live sync (in-memory, zero extra
+      // I/O). The frontend picker sources from THIS on every refresh, so it
+      // self-heals after a boot that raced the controller and never goes
+      // stale after a Save/Remove (the old page-load /api/users snapshot
+      // could stay empty for a whole session).
+      available_users: [...known.entries()]
+        .map(([id, nm]) => ({ id, name: nm }))
+        .sort((a, b) => String(a.name).localeCompare(String(b.name))),
       users,
     });
   } catch (err) {
@@ -2097,7 +2114,8 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
     const unifi = { attempted: true, success: null, permission_denied: false, error: null };
     const pushPlan = planUnifiPinPush(
       (config.devices && config.devices.zwave && config.devices.zwave.locks) || {},
-      written[0] ? written[0].lock_id : null, b.user_id, pin
+      written[0] ? written[0].lock_id : null, b.user_id, pin,
+      config.unifi_pin_state
     );
     let synced = pushPlan.action === 'skip_in_sync';
     if (synced) {
@@ -2115,7 +2133,14 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
       unifi.success = false;
       unifi.error = 'UniFi client is not connected';
     }
+    // CODE_SYSTEM_ERROR is UniFi's "that PIN already exists" rejection. It is
+    // ambiguous (this user's own PIN = harmless, someone else's = pick a new
+    // one), so explain rather than guess; state is never written on failure.
+    if (!unifi.success && /CODE_SYSTEM_ERROR/i.test(unifi.error || '')) {
+      unifi.hint = 'UniFi already has this exact PIN. If it is this user\'s existing PIN everything already matches; if another user holds it, choose a different PIN (UniFi PINs are unique per person).';
+    }
     if (synced) {
+      const now = new Date().toISOString();
       persistZwaveMutation((cfg) => {
         const locks = (cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks) || {};
         for (const lock of Object.values(locks)) {
@@ -2126,6 +2151,9 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
             e.pushed_to_unifi = String(e.pin_code) === pin;
           }
         }
+        // Durable user-level memory: survives code deletion/revocation, so a
+        // later re-add of the same PIN skips the push UniFi would reject.
+        recordUnifiPin(cfg, b.user_id, pin, now);
       });
     }
     broadcastEvent({
