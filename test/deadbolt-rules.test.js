@@ -92,6 +92,19 @@ test('automatedLockIds handles both shapes', () => {
   assert.deepEqual(automatedLockIds(null), []);
 });
 
+test('prototype-polluting keys are dropped, never treated as lock ids', () => {
+  const before = Object.prototype.polluted;
+  // A crafted map carrying __proto__ (own key from JSON.parse) plus a flat key
+  // to force migration; the dangerous key must not become a lock entry and
+  // must not reach Object.prototype.
+  const crafted = JSON.parse('{"trigger_door":"Front Door","__proto__":{"polluted":"yes"},"real_lock":{"trigger_door":"Side"}}');
+  const out = toMapShape(crafted, LOCKS).rules;
+  assert.equal(Object.prototype.polluted, before, 'Object.prototype untouched');
+  assert.ok(!Object.prototype.hasOwnProperty.call(out, '__proto__'), 'no __proto__ entry created');
+  assert.ok(out.real_lock, 'legitimate entries preserved');
+  assert.ok(!automatedLockIds(crafted).includes('__proto__'), 'never listed as an automated lock');
+});
+
 // Regression for the save-revert bug: when a FLAT config sits on disk (after
 // a backup restore or hand-edit) and the dashboard PUTs a map-shaped update,
 // the PUT handler migrates the merge TARGET first so the merge is map-into-map

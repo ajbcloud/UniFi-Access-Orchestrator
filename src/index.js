@@ -589,7 +589,23 @@ function deadboltHealthStatus() {
       stats: ctl ? Object.assign({}, ctl.stats) : null,
     };
   });
-  return base;
+  return withCascadeStats(base);
+}
+
+// Cascade rules run on a dedicated controller, so the per-lock/alias
+// controllers' stats always show 0 cascades. Overlay the real cascade
+// counters (and last_action, when it is the more recent) onto a status
+// payload so the dashboard "cascades N (M failed)" line is truthful.
+function withCascadeStats(status) {
+  if (!status || !status.stats || !cascadeController) return status;
+  const cs = cascadeController.stats;
+  status.stats.cascades = cs.cascades;
+  status.stats.cascades_failed = cs.cascades_failed;
+  if (cs.last_action && (!status.stats.last_action
+      || (cs.last_action.time || '') > (status.stats.last_action.time || ''))) {
+    status.stats.last_action = cs.last_action;
+  }
+  return status;
 }
 
 // Every observer that should see a raw event: one controller per automated
@@ -602,14 +618,17 @@ function deadboltObservers() {
 
 function applyEventTaps() {
   if (!unifiClient || typeof unifiClient.setRawTap !== 'function') return;
-  // Inert by default: only install the tap when the add-on is active, so an
-  // unconfigured deployment's event path is unchanged. Clear it otherwise.
-  if (!deadboltObservers().length) {
+  // Install the tap whenever the add-on is CONFIGURED or a capture is running
+  // (not only when a controller is enabled): the labeled capture recorder
+  // feeds only from this tap in websocket mode, and it must keep recording
+  // while the only lock is unpaired or mid-setup. Clear it only when there is
+  // genuinely nothing to feed, so an unconfigured deployment is unchanged.
+  if (!shouldRunDeadbolt() && !capture.active) {
     unifiClient.setRawTap(null);
     return;
   }
   unifiClient.setRawTap((e) => {
-    capture.add(e);
+    capture.add(e); // no-op unless a capture session is active
     for (const controller of deadboltObservers()) {
       try { controller.observe(e); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
     }
@@ -1057,7 +1076,7 @@ app.get('/api/devices', async (req, res) => {
   const zwave = zwaveSummary();
   const zwaveLocks = perLockSummaries();
   if (!deadboltController) return res.json({ enabled: false, devices: [], zwave, zwave_locks: zwaveLocks });
-  const status = deadboltController.getStatus();
+  const status = withCascadeStats(deadboltController.getStatus());
   let liveState = status.lock;
   if (lockDriver && typeof lockDriver.getState === 'function') {
     try { liveState = await lockDriver.getState(); } catch (e) { /* fall back to snapshot */ }
@@ -1739,10 +1758,14 @@ app.get('/api/deadbolt/serial-ports', async (req, res) => {
 // Start a capture, perform ONE gesture (e.g. a Double-Badge Override), stop,
 // then GET the recorded events. Records ALL raw events, including telemetry.
 app.post('/api/capture/start', (req, res) => {
-  res.json(capture.start((req.body && req.body.label) || 'capture'));
+  const r = capture.start((req.body && req.body.label) || 'capture');
+  applyEventTaps(); // ensure the tap is installed even with no add-on configured
+  res.json(r);
 });
 app.post('/api/capture/stop', (req, res) => {
-  res.json(capture.stop());
+  const r = capture.stop();
+  applyEventTaps(); // tear the tap back down if nothing else needs it
+  res.json(r);
 });
 app.post('/api/capture/label', (req, res) => {
   res.json(capture.setLabel(req.body && req.body.label));
@@ -2269,10 +2292,16 @@ app.put('/api/config', async (req, res) => {
 
     // recursive merge for plain objects: source values override primitives/arrays
     function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
+    // Keys that would let a crafted PUT body walk into Object.prototype via the
+    // assignment below. JSON.parse makes __proto__ an own enumerable key, so
+    // Object.keys surfaces it; skip the whole dangerous set defensively (this
+    // endpoint is admin-gated, but the guard is free).
+    const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
     function deepMerge(target, source) {
       if (!isPlainObject(source)) return source;
       if (!isPlainObject(target)) target = {};
       for (const k of Object.keys(source)) {
+        if (UNSAFE_KEYS.has(k)) continue;
         const sv = source[k];
         if (isPlainObject(sv)) {
           target[k] = deepMerge(target[k], sv);
