@@ -30,6 +30,14 @@ function load() {
   return new Function(src + '; return buildDeadboltButtons;')();
 }
 
+// Per-lock card buttons (the paired lock's controls moved onto its card).
+function loadCardButtons() {
+  const src = extractFn('escapeHtml') + '\n' + extractFn('cssId') + '\n' + extractFn('buildLockCardButtons');
+  return new Function(src + '; return buildLockCardButtons;')();
+}
+
+const CARD_LOCK = { lock_id: 'front_deadbolt', node_id: 14, pairing_active: false };
+
 test('not configured: no buttons', () => {
   const build = load();
   assert.strictEqual(build({ configured: false }), '');
@@ -48,23 +56,31 @@ test('configured + not paired: Pair New Lock AND Unpair / Exclude Device', () =>
   assert.ok(!out.includes('Test Lock'));
 });
 
-test('configured + paired: Test Lock / Test Unlock / Re-interview / Unpair, no Pair', () => {
+test('configured + paired: the TOP row is empty (controls live on per-lock cards)', () => {
   const build = load();
   const out = build({ configured: true, paired: true, node_id: 8, lock_id: 'front' });
-  assert.match(out, /Test Lock/);
-  assert.match(out, /Test Unlock/);
-  assert.match(out, /onclick="startReinterview\(\)"/);
-  assert.match(out, /Re-interview \/ Heal/);
-  assert.match(out, /onclick="startHealthCheck\(\)"/);
-  assert.match(out, /Health Check/);
-  assert.match(out, /onclick="startUnpair\(\)"/);
-  assert.ok(!out.includes('Pair New Lock'), 'no Pair New Lock while paired');
+  assert.strictEqual(out, '', 'paired locks carry their buttons on their own cards');
 });
 
-test('paired action buttons carry expected-result tooltips', () => {
-  const build = load();
-  const out = build({ configured: true, paired: true, node_id: 8, lock_id: 'front' });
+test('lock card buttons: full control set with the lock_id threaded through', () => {
+  const build = loadCardButtons();
+  const out = build(CARD_LOCK);
+  assert.match(out, /Test Lock/);
+  assert.match(out, /Test Unlock/);
+  assert.match(out, /Re-interview \/ Heal/);
+  assert.match(out, /Health Check/);
+  assert.match(out, /deadboltControl\('lock', &quot;front_deadbolt&quot;\)/);
+  assert.match(out, /deadboltControl\('unlock', &quot;front_deadbolt&quot;\)/);
+  assert.match(out, /startReinterview\(&quot;front_deadbolt&quot;\)/);
+  assert.match(out, /startHealthCheck\(&quot;front_deadbolt&quot;\)/);
+  assert.match(out, /startUnpairNode\(14\)/, 'per-card unpair targets the lock\'s own node');
+});
+
+test('card action buttons carry expected-result tooltips', () => {
+  const build = loadCardButtons();
+  const out = build(CARD_LOCK);
   const buttons = out.match(/<button[^>]*>/g) || [];
+  assert.ok(buttons.length >= 5, 'full control set present');
   for (const b of buttons) {
     assert.ok(/title="[^"]+"/.test(b), `button needs a tooltip stating the expected result: ${b}`);
   }
@@ -72,17 +88,19 @@ test('paired action buttons carry expected-result tooltips', () => {
   assert.match(out, /auto-relock/i, 'the unlock tooltip explains the ~30s self re-lock');
 });
 
-test('pairing_active disables every button in both configured states', () => {
+test('pairing_active disables every button (pair row and lock cards)', () => {
   const build = load();
-  for (const paired of [true, false]) {
-    const out = build({ configured: true, paired, pairing_active: true });
-    const buttons = out.match(/<button[^>]*>/g) || [];
-    assert.ok(buttons.length >= 2, 'expected multiple buttons');
-    for (const b of buttons) {
-      assert.ok(/\bdisabled\b/.test(b), `button should be disabled while pairing_active: ${b}`);
-    }
+  const out = build({ configured: true, paired: false, pairing_active: true });
+  const buttons = out.match(/<button[^>]*>/g) || [];
+  assert.ok(buttons.length >= 2, 'expected multiple buttons');
+  for (const b of buttons) {
+    assert.ok(/\bdisabled\b/.test(b), `button should be disabled while pairing_active: ${b}`);
   }
-  // and enabled when idle
   const idle = build({ configured: true, paired: false, pairing_active: false });
   assert.ok(!/\bdisabled\b/.test(idle), 'no disabled buttons when idle');
+
+  const cardButtons = loadCardButtons()(Object.assign({}, CARD_LOCK, { pairing_active: true }));
+  for (const b of (cardButtons.match(/<button[^>]*>/g) || [])) {
+    assert.ok(/\bdisabled\b/.test(b), `card button should be disabled while pairing_active: ${b}`);
+  }
 });

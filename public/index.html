@@ -1456,6 +1456,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         <div><span style="color:var(--text-muted)">Trigger door:</span> <span id="deadboltDoor">-</span></div>
         <div style="grid-column:1 / -1"><span style="color:var(--text-muted)">Last action:</span> <span id="deadboltLastAction">-</span></div>
         <div style="grid-column:1 / -1"><span style="color:var(--text-muted)">Totals:</span> <span id="deadboltStats">-</span></div>
+        <div style="grid-column:1 / -1" id="deadboltLocksList"></div>
       </div>
     </div>
   </div>
@@ -2268,6 +2269,27 @@ function renderDeadbolt(h) {
     'retracts ' + (s.retracts || 0) + ' (' + (s.retracts_failed || 0) + ' failed) · '
     + 'locks ' + (s.locks || 0) + ' (' + (s.locks_failed || 0) + ' failed) · '
     + 'cascades ' + (s.cascades || 0) + ' (' + (s.cascades_failed || 0) + ' failed)';
+
+  // Several locks: a compact per-lock line under the primary readouts (the
+  // fields above keep showing the first automated lock).
+  const listEl = document.getElementById('deadboltLocksList');
+  if (listEl) {
+    const locks = Array.isArray(db.locks) ? db.locks : [];
+    if (locks.length > 1) {
+      listEl.innerHTML = locks.map((l) => {
+        const snap = l.lock || {};
+        const bolt = describeLockBolt(snap);
+        const link = describeLockLink(snap);
+        return '<div style="font-size:12px;margin-top:2px">'
+          + '<strong>' + escapeHtml(l.name || l.lock_id) + '</strong>: '
+          + escapeHtml(bolt) + ' · ' + escapeHtml(link.label)
+          + (l.trigger_door ? ' · trigger ' + escapeHtml(l.trigger_door) : ' · manual only')
+          + '</div>';
+      }).join('');
+    } else {
+      listEl.innerHTML = '';
+    }
+  }
 }
 
 // ============================================================
@@ -2754,6 +2776,14 @@ function renderZwaveSetup() {
   if (typeof _pairPollTimer !== 'undefined' && _pairPollTimer) return;
   const el = document.getElementById('configZwave');
   if (!el) return;
+  // Same protection for ANY interaction: background auto-refreshes (door/user
+  // drift on a flapping controller) used to rebuild this section while a
+  // dropdown was open, closing it instantly ("the After unlock dropdown gives
+  // me no options"). If the user is focused on a control inside this section,
+  // skip this repaint; the next refresh catches up.
+  const focused = document.activeElement;
+  if (focused && typeof el.contains === 'function' && el.contains(focused)
+      && /^(SELECT|INPUT|TEXTAREA|BUTTON)$/.test(focused.tagName || '')) return;
   const zw = configData?.devices?.zwave || {};
   const enabled = zw.enabled === true;
   el.innerHTML = `
@@ -2781,9 +2811,7 @@ function renderZwaveSetup() {
       <div style="display:flex;gap:8px;flex-wrap:wrap" id="zwaveDeadboltButtons"></div>
       <div id="zwaveAddDeadbolt" style="margin-top:10px"></div>
       <div id="zwavePairPanel" style="margin-top:10px"></div>
-      <div id="zwaveDeadboltLive" style="margin-top:10px"></div>
-      <div id="zwaveAutoRelock" style="margin-top:10px"></div>
-      <div id="zwaveUserCodes" style="margin-top:10px"></div>
+      <div id="zwaveLockCards" style="margin-top:10px"></div>
       <div id="zwaveDeadboltLocks" style="margin-top:10px"></div>
       <div id="zwaveDeadboltHealth" style="margin-top:10px;font-size:12px"></div>
     </div>
@@ -2907,8 +2935,10 @@ function setPairPanel(html) {
 // feedback and cannot be double-fired. refreshZwaveDeadbolt re-renders this
 // button row from live state, so it restores the correct enabled state.
 function _setDeadboltButtonsBusy(busy) {
-  const btns = document.getElementById('zwaveDeadboltButtons');
-  if (btns) btns.querySelectorAll('button').forEach((b) => { b.disabled = !!busy; });
+  for (const id of ['zwaveDeadboltButtons', 'zwaveLockCards']) {
+    const el = document.getElementById(id);
+    if (el) el.querySelectorAll('button').forEach((b) => { b.disabled = !!busy; });
+  }
 }
 
 // Pure renderer for the deadbolt action-button row (#zwaveDeadboltButtons),
@@ -3038,18 +3068,7 @@ function buildDeadboltButtons(zw) {
   const z = zw || {};
   if (!z.configured) return '';
   const dis = z.pairing_active ? ' disabled' : '';
-  if (z.paired) {
-    // Re-interview / Heal recovers a lock whose pairing-time interview died
-    // partway (bolt/battery stuck at unknown): it forces a fresh interview
-    // and the driver re-seeds state when it completes. Each button carries a
-    // tooltip stating the EXPECTED result so a first-time operator knows
-    // what success looks like before the bolt moves.
-    return `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('lock')"${dis} title="Sends a real Z-Wave LOCK command. Expected: the bolt extends within a few seconds and the Bolt badge turns locked.">Test Lock</button>`
-      + `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('unlock')"${dis} title="Sends a real Z-Wave UNLOCK command. Expected: the bolt retracts within a few seconds and the Bolt badge turns unlocked. If the lock has auto-relock turned on, it re-locks itself about 30 seconds later; see the After unlock setting below.">Test Unlock</button>`
-      + `<button class="btn btn-sm btn-secondary" onclick="startReinterview()"${dis} title="Re-runs the Z-Wave interview to rebuild the lock readings. Use when Bolt or Battery is stuck on reading or unknown. Takes up to a minute; wake the lock at the keypad to speed it up.">Re-interview / Heal</button>`
-      + `<button class="btn btn-sm btn-secondary" onclick="startHealthCheck()"${dis} title="Pings the lock and runs one RF probe: round-trip time, signal, route, and a 0-10 health rating. Takes a few seconds; results appear below.">Health Check</button>`
-      + `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis} title="Removes this lock from the Z-Wave network. The app stops controlling it until it is paired again.">Unpair</button>`;
-  }
+  if (z.paired) return ''; // paired locks carry their controls on their own cards
   // Security mode for the next pairing attempt. Auto covers both locks
   // (S2 when the lock can, S0 when that is all it has). S0-only exists
   // because a Yale YRD256 whose S2 bootstrap wedges cannot fall back in the
@@ -3063,6 +3082,59 @@ function buildDeadboltButtons(zw) {
     + `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis}>Unpair / Exclude Device</button>`;
 }
 
+// DOM-id-safe form of an operator-typed lock id (API calls always use the
+// REAL id; only element ids use this).
+function cssId(lockId) {
+  return String(lockId == null ? '' : lockId).replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+// Per-lock action-button row for a lock card. Same buttons as the old single
+// bound lock, with the lock_id threaded through every handler so each card
+// drives ITS lock. Tooltips state the EXPECTED result.
+function buildLockCardButtons(l) {
+  const dis = l.pairing_active ? ' disabled' : '';
+  const arg = escapeHtml(JSON.stringify(String(l.lock_id)));
+  return `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('lock', ${arg})"${dis} title="Sends a real Z-Wave LOCK command. Expected: the bolt extends within a few seconds and the Bolt badge turns locked.">Test Lock</button>`
+    + `<button class="btn btn-sm btn-secondary" onclick="deadboltControl('unlock', ${arg})"${dis} title="Sends a real Z-Wave UNLOCK command. Expected: the bolt retracts within a few seconds and the Bolt badge turns unlocked. If the lock has auto-relock turned on, it re-locks itself about 30 seconds later; see the After unlock setting below.">Test Unlock</button>`
+    + `<button class="btn btn-sm btn-secondary" onclick="startReinterview(${arg})"${dis} title="Re-runs the Z-Wave interview to rebuild the lock readings. Use when Bolt or Battery is stuck on reading or unknown. Takes up to a minute; wake the lock at the keypad to speed it up.">Re-interview / Heal</button>`
+    + `<button class="btn btn-sm btn-secondary" onclick="startHealthCheck(${arg})"${dis} title="Pings the lock and runs one RF probe: round-trip time, signal, route, and a 0-10 health rating. Takes a few seconds; results appear below.">Health Check</button>`
+    + `<button class="btn btn-sm btn-secondary" onclick="startUnpairNode(${Number(l.node_id) || 0})"${dis} title="Removes this lock from the Z-Wave network. The app stops controlling it until it is paired again.">Unpair</button>`;
+}
+
+// One card per paired lock: identity line, live badges, action buttons,
+// after-unlock control, and a keypad-codes container filled asynchronously.
+function buildLockCard(l) {
+  const ls = l.lock_state || {};
+  const bolt = describeLockBolt(ls);
+  const boltBadge = bolt === 'locked' ? 'success' : bolt === 'unlocked' ? 'warning' : bolt === 'jammed' ? 'error' : 'info';
+  const boltTitle = bolt === 'reading...'
+    ? ' title="Waiting for the first position report from the lock. This normally resolves within seconds; if it stays like this for over a minute, run Re-interview / Heal."'
+    : '';
+  const batt = describeLockBattery(ls);
+  const link = describeLockLink(ls);
+  const title = l.name ? `${escapeHtml(l.name)} <span style="font-weight:400;color:var(--text-muted)">(${escapeHtml(l.lock_id)})</span>` : escapeHtml(l.lock_id);
+  const automation = l.automated
+    ? (l.trigger_door
+      ? `Automated: retracts on entry at <strong>${escapeHtml(l.trigger_door)}</strong>`
+      : 'Automated, no trigger door set (set one under Deadbolt Automation below)')
+    : 'Not automated: manual control only (assign a trigger door under Deadbolt Automation below)';
+  return `<div class="lock-card" id="zwaveLockCard_${cssId(l.lock_id)}" style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-top:10px">`
+    + `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">`
+    + `<div style="font-size:13px;font-weight:600">${title}</div>`
+    + `<div style="font-size:12px;color:var(--text-muted)">${escapeHtml(describeLockModel(ls))} · node ${escapeHtml(l.node_id)} · ${escapeHtml(describeLockSecurity(ls))}</div>`
+    + `</div>`
+    + `<div style="font-size:12px;color:var(--text-muted);margin:4px 0 8px">${automation}</div>`
+    + `<div style="display:flex;gap:14px;align-items:center;font-size:12px;margin-bottom:8px">`
+    + `<span>Bolt: <span class="badge ${boltBadge}"${boltTitle}>${escapeHtml(bolt)}</span></span>`
+    + `<span>Battery: <span style="color:${batt.color || 'inherit'}">${escapeHtml(batt.label)}</span></span>`
+    + `<span>Link: <span style="color:${link.color}">${escapeHtml(link.label)}</span></span>`
+    + `</div>`
+    + `<div style="display:flex;gap:8px;flex-wrap:wrap">${buildLockCardButtons(l)}</div>`
+    + `<div id="zwaveAutoRelock_${cssId(l.lock_id)}" style="margin-top:10px">${buildAutoRelockControl(l, l.lock_id)}</div>`
+    + `<div id="zwaveUserCodes_${cssId(l.lock_id)}" style="margin-top:10px"></div>`
+    + `</div>`;
+}
+
 // Pure builder for the After-unlock (auto-relock) control. The ~30s re-lock
 // after an unlock is the LOCK's own auto-relock feature; this writes the
 // lock's configuration parameter over Z-Wave so a door can stay unlocked
@@ -3070,7 +3142,7 @@ function buildDeadboltButtons(zw) {
 // tri-state (null until first applied); zw.auto_relock_support is the
 // driver's capability report for the paired model (models without a known
 // parameter get their catalog note instead of a control).
-function buildAutoRelockControl(zw) {
+function buildAutoRelockControl(zw, lockId) {
   const z = zw || {};
   if (!z.paired) return '';
   const sup = z.auto_relock_support;
@@ -3082,26 +3154,34 @@ function buildAutoRelockControl(zw) {
   }
   const saved = z.auto_relock; // true | false | null (never applied)
   const dis = z.pairing_active ? ' disabled' : '';
+  const suffix = lockId ? `_${cssId(lockId)}` : '';
+  const arg = lockId ? escapeHtml(JSON.stringify(String(lockId))) : '';
   const opt = (val, label) => `<option value="${val}"${String(saved) === val ? ' selected' : ''}>${label}</option>`;
   return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px">`
     + `<span title="Controls the lock's own auto-relock timer over Z-Wave. Stay unlocked means the bolt stays retracted after any unlock until a lock command or the thumbturn.">After unlock:</span>`
-    + `<select id="zwaveAutoRelockSel" style="font-size:12px;padding:5px"${dis}>`
+    + `<select id="zwaveAutoRelockSel${suffix}" style="font-size:12px;padding:5px"${dis}>`
     + (saved == null ? `<option value="null" selected>Lock default (not managed yet)</option>` : '')
     + opt('false', 'Stay unlocked until locked')
     + opt('true', 'Auto-relock (lock timer)')
     + `</select>`
-    + `<button class="btn btn-sm btn-secondary" onclick="applyAutoRelock()"${dis}>Apply</button>`
+    + `<button class="btn btn-sm btn-secondary" onclick="applyAutoRelock(${arg})"${dis}>Apply</button>`
     + `</div>`;
 }
 
 // Write the chosen after-unlock behavior to the lock (and persist it).
-async function applyAutoRelock() {
-  const sel = document.getElementById('zwaveAutoRelockSel');
-  if (!sel || sel.value === 'null') return; // "not managed" is not an action
+async function applyAutoRelock(lockId) {
+  const sel = document.getElementById('zwaveAutoRelockSel' + (lockId ? '_' + cssId(lockId) : ''));
+  if (!sel) return;
+  if (sel.value === 'null') {
+    toast('Pick "Stay unlocked until locked" or "Auto-relock" first, then Apply.', 'info');
+    return;
+  }
   const enabled = sel.value === 'true';
   toast(`Writing auto-relock ${enabled ? 'on' : 'off'} to the lock...`, 'info');
   try {
-    const r = await api('POST', '/api/deadbolt/auto-relock', { enabled });
+    const body = { enabled };
+    if (lockId) body.lock_id = lockId;
+    const r = await api('POST', '/api/deadbolt/auto-relock', body);
     if (r.error) { toast(r.error, 'error'); return; }
     if (r.confirmed === false) {
       toast('Setting sent, but the read-back did not match. Wake the lock at the keypad and Apply again.', 'error');
@@ -3119,7 +3199,7 @@ async function applyAutoRelock() {
 // entry carries only pin_length for the masked display), `users` is the
 // synced UniFi user list for the picker. Everything user-derived is escaped;
 // the whole panel is inert while a pairing session owns the controller.
-function buildUserCodesPanel(info, users, pairingActive) {
+function buildUserCodesPanel(info, users, pairingActive, lockId) {
   const i = info || {};
   if (!i.supported) {
     return i.note
@@ -3127,6 +3207,8 @@ function buildUserCodesPanel(info, users, pairingActive) {
       : '';
   }
   const dis = pairingActive ? ' disabled' : '';
+  const suffix = lockId ? `_${cssId(lockId)}` : '';
+  const arg = lockId ? escapeHtml(JSON.stringify(String(lockId))) : '';
   const codes = Array.isArray(i.codes) ? i.codes : [];
   const lenRule = i.fixed_length && i.configured_length
     ? `${i.configured_length}-digit codes (all codes on this lock share one length)`
@@ -3138,7 +3220,7 @@ function buildUserCodesPanel(info, users, pairingActive) {
     rows += `<tr><td style="padding:4px 10px 4px 0">${escapeHtml(c.name || c.user_id || 'unnamed')}${badges}</td>`
       + `<td style="padding:4px 10px 4px 0;color:var(--text-muted)">slot ${escapeHtml(c.slot)}</td>`
       + `<td style="padding:4px 10px 4px 0;font-family:monospace">${'*'.repeat(Math.max(1, c.pin_length || 0))}</td>`
-      + `<td style="padding:4px 0"><button class="btn btn-sm btn-secondary" onclick="removeUserCode(${Number(c.slot)})"${dis} title="Clears this slot on the deadbolt only. The user's UniFi PIN is not touched.">Remove</button></td></tr>`;
+      + `<td style="padding:4px 0"><button class="btn btn-sm btn-secondary" onclick="removeUserCode(${Number(c.slot)}${arg ? ', ' + arg : ''})"${dis} title="Clears this slot on the deadbolt only. The user's UniFi PIN is not touched.">Remove</button></td></tr>`;
   }
   const userOpts = (Array.isArray(users) ? users : [])
     .map((u) => `<option value="${escapeHtml(u.id)}">${escapeHtml(u.name || u.id)}</option>`)
@@ -3148,17 +3230,18 @@ function buildUserCodesPanel(info, users, pairingActive) {
     + ` <span style="font-weight:400;color:var(--text-muted)">${codes.length} of ${escapeHtml(i.slots)} slots used; ${escapeHtml(lenRule)}</span></div>`
     + (rows ? `<table style="border-collapse:collapse;font-size:12px"><tbody>${rows}</tbody></table>` : '')
     + `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">`
-    + `<select id="ucUser" style="font-size:12px;padding:5px"${dis}><option value="">-- pick a user --</option>${userOpts}</select>`
-    + `<input id="ucPin" type="text" inputmode="numeric" autocomplete="off" maxlength="10" placeholder="PIN" style="font-size:12px;padding:6px;width:90px"${dis}>`
-    + `<button class="btn btn-sm btn-primary" onclick="saveUserCode()"${dis} title="Writes the code to the deadbolt keypad, then asks whether to also overwrite this user's PIN in UniFi Access.">Save Code</button>`
-    + (codes.length ? `<button class="btn btn-sm btn-secondary" onclick="rewriteUserCodesToLock()"${dis} title="Sends every saved code to the lock again. Use after re-pairing the lock.">Rewrite Codes to Lock</button>` : '')
+    + `<select id="ucUser${suffix}" style="font-size:12px;padding:5px"${dis}><option value="">-- pick a user --</option>${userOpts}</select>`
+    + `<input id="ucPin${suffix}" type="text" inputmode="numeric" autocomplete="off" maxlength="10" placeholder="PIN" style="font-size:12px;padding:6px;width:90px"${dis}>`
+    + `<button class="btn btn-sm btn-primary" onclick="saveUserCode(${arg})"${dis} title="Writes the code to the deadbolt keypad, then asks whether to also overwrite this user's PIN in UniFi Access.">Save Code</button>`
+    + (codes.length ? `<button class="btn btn-sm btn-secondary" onclick="rewriteUserCodesToLock(${arg})"${dis} title="Sends every saved code to the lock again. Use after re-pairing the lock.">Rewrite Codes to Lock</button>` : '')
     + `</div></div>`;
 }
 
 // Write a user's keypad code: lock first, then the per-save UniFi decision.
-async function saveUserCode() {
-  const sel = document.getElementById('ucUser');
-  const pinEl = document.getElementById('ucPin');
+async function saveUserCode(lockId) {
+  const suffix = lockId ? '_' + cssId(lockId) : '';
+  const sel = document.getElementById('ucUser' + suffix);
+  const pinEl = document.getElementById('ucPin' + suffix);
   if (!sel || !pinEl) return;
   const userId = sel.value;
   const name = userId && sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent : '';
@@ -3168,7 +3251,9 @@ async function saveUserCode() {
   const push = confirm(`Also overwrite ${name}'s PIN in UniFi Access?\n\nOK: the same PIN replaces their UniFi keypad PIN everywhere (UniFi readers and this deadbolt will match).\nCancel: this deadbolt only; their UniFi PIN is untouched.`);
   toast('Writing the code to the lock...', 'info');
   try {
-    const r = await api('POST', '/api/deadbolt/user-codes', { user_id: userId, name, pin, push_to_unifi: push });
+    const body = { user_id: userId, name, pin, push_to_unifi: push };
+    if (lockId) body.lock_id = lockId;
+    const r = await api('POST', '/api/deadbolt/user-codes', body);
     if (r.error) { toast(r.error, 'error'); return; }
     if (r.confirmed === null) toast(`Code queued for slot ${r.slot}; wake the lock at the keypad to finish the write.`, 'info');
     else toast(`Keypad code set for ${name} (slot ${r.slot}).`, 'success');
@@ -3182,10 +3267,11 @@ async function saveUserCode() {
   } catch (e) { toast(`Saving the code failed: ${e.message}`, 'error'); }
 }
 
-async function removeUserCode(slot) {
+async function removeUserCode(slot, lockId) {
   if (!confirm(`Remove the keypad code in slot ${slot} from the deadbolt?\n\nThe user's UniFi PIN is not touched.`)) return;
   try {
-    const r = await api('DELETE', `/api/deadbolt/user-codes/${slot}`);
+    const q = lockId ? `?lock_id=${encodeURIComponent(lockId)}` : '';
+    const r = await api('DELETE', `/api/deadbolt/user-codes/${slot}${q}`);
     if (r.error) { toast(r.error, 'error'); return; }
     toast(`Slot ${slot} cleared on the deadbolt.`, 'success');
     refreshZwaveDeadbolt();
@@ -3193,11 +3279,11 @@ async function removeUserCode(slot) {
 }
 
 // After a re-pair the lock is factory-fresh: send every saved code again.
-async function rewriteUserCodesToLock() {
+async function rewriteUserCodesToLock(lockId) {
   if (!confirm('Rewrite all saved keypad codes to the lock?\n\nUse this after re-pairing the lock. It sends one write per saved code.')) return;
   toast('Rewriting codes to the lock...', 'info');
   try {
-    const r = await api('POST', '/api/deadbolt/user-codes/rewrite');
+    const r = await api('POST', '/api/deadbolt/user-codes/rewrite', lockId ? { lock_id: lockId } : undefined);
     if (r.error) { toast(r.error, 'error'); return; }
     const results = r.results || [];
     const ok = results.filter((x) => x.ok).length;
@@ -3209,20 +3295,26 @@ async function rewriteUserCodesToLock() {
 async function refreshZwaveDeadbolt() {
   const line = document.getElementById('zwaveDeadboltStatusLine');
   const btns = document.getElementById('zwaveDeadboltButtons');
-  const live = document.getElementById('zwaveDeadboltLive');
+  const cardsEl = document.getElementById('zwaveLockCards');
   if (!line || !btns) return;
+  // Never rebuild the panel under the user's cursor: an open dropdown or a
+  // half-typed PIN would be destroyed by the innerHTML swap. The next
+  // refresh (button actions, auto-sync) repaints once focus moves on.
+  const zwSection = document.getElementById('configZwave');
+  const focusedEl = document.activeElement;
+  if (zwSection && focusedEl && typeof zwSection.contains === 'function'
+      && zwSection.contains(focusedEl)
+      && /^(SELECT|INPUT|TEXTAREA)$/.test(focusedEl.tagName || '')) return;
   try {
     const r = await api('GET', '/api/devices');
     const zw = r.zwave || {};
+    const allLocks = Array.isArray(r.zwave_locks) ? r.zwave_locks : [];
+    const pairedLocks = allLocks.filter((l) => l.paired);
     const pairingActive = !!zw.pairing_active;
     if (!zw.configured) {
       line.textContent = 'Set and save the serial port above, then pair the lock.';
       btns.innerHTML = '';
-      if (live) live.innerHTML = '';
-      const ar = document.getElementById('zwaveAutoRelock');
-      if (ar) ar.innerHTML = '';
-      const uc = document.getElementById('zwaveUserCodes');
-      if (uc) uc.innerHTML = '';
+      if (cardsEl) cardsEl.innerHTML = '';
       return;
     }
     btns.innerHTML = buildDeadboltButtons(zw);
@@ -3245,42 +3337,26 @@ async function refreshZwaveDeadbolt() {
         locksEl.innerHTML = buildDeadboltLocksTable(inv.locks, pairingActive, _lockCatalog);
       } catch (e) { /* inventory is optional detail; leave the panel as-is */ }
     }
-    const arEl = document.getElementById('zwaveAutoRelock');
-    const ucEl = document.getElementById('zwaveUserCodes');
-    if (zw.paired) {
-      const lsForLine = r.lock_state || {};
-      line.textContent = `${describeLockModel(lsForLine)} paired as node ${zw.node_id} ("${zw.lock_id}", ${describeLockSecurity(lsForLine)}).`;
-      if (live) {
-        const ls = r.lock_state || {};
-        const bolt = describeLockBolt(ls);
-        const boltBadge = bolt === 'locked' ? 'success' : bolt === 'unlocked' ? 'warning' : bolt === 'jammed' ? 'error' : 'info';
-        // "reading..." is a transient state that now self-heals (the driver
-        // re-reads on a backoff); the tooltip says what to do if it sticks.
-        const boltTitle = bolt === 'reading...'
-          ? ' title="Waiting for the first position report from the lock. This normally resolves within seconds; if it stays like this for over a minute, run Re-interview / Heal."'
-          : '';
-        const batt = describeLockBattery(ls);
-        const link = describeLockLink(ls);
-        live.innerHTML = `<div style="display:flex;gap:14px;align-items:center;font-size:12px">
-          <span>Bolt: <span class="badge ${boltBadge}"${boltTitle}>${escapeHtml(bolt)}</span></span>
-          <span>Battery: <span style="color:${batt.color || 'inherit'}">${escapeHtml(batt.label)}</span></span>
-          <span>Link: <span style="color:${link.color}">${escapeHtml(link.label)}</span></span>
-        </div>`;
-      }
-      if (arEl) arEl.innerHTML = buildAutoRelockControl(zw);
-      // Keypad PIN codes: capability + assigned slots from the server (the
-      // digits never leave it), user picker from the already-loaded sync.
-      if (ucEl) {
-        try {
-          const uc = await api('GET', '/api/deadbolt/user-codes');
-          ucEl.innerHTML = uc.error ? '' : buildUserCodesPanel(uc, usersData?.users || [], pairingActive);
-        } catch (e) { /* panel is optional detail; leave as-is */ }
+    if (pairedLocks.length) {
+      line.textContent = pairedLocks.length === 1
+        ? `1 lock paired. Each lock's controls live on its card below.`
+        : `${pairedLocks.length} locks paired. Each lock's controls live on its card below.`;
+      // One card per paired lock: identity, live badges, buttons, after-unlock
+      // control; the keypad-codes panel fills asynchronously per lock.
+      if (cardsEl) {
+        cardsEl.innerHTML = pairedLocks.map((l) => buildLockCard(l)).join('');
+        for (const l of pairedLocks.filter((x) => x.bound)) {
+          const el = document.getElementById('zwaveUserCodes_' + cssId(l.lock_id));
+          if (!el) continue;
+          try {
+            const uc = await api('GET', '/api/deadbolt/user-codes?lock_id=' + encodeURIComponent(l.lock_id));
+            el.innerHTML = uc.error ? '' : buildUserCodesPanel(uc, usersData?.users || [], pairingActive, l.lock_id);
+          } catch (e) { /* panel is optional detail; leave as-is */ }
+        }
       }
     } else {
       line.textContent = 'No lock paired yet.';
-      if (live) live.innerHTML = '';
-      if (arEl) arEl.innerHTML = '';
-      if (ucEl) ucEl.innerHTML = '';
+      if (cardsEl) cardsEl.innerHTML = '';
     }
     // Resume polling if a session is running (e.g. after a page reload).
     if (pairingActive && !_pairPollTimer) pollPairingStatus();
@@ -3416,11 +3492,11 @@ async function startUnpairNode(nodeId) {
 
 // Measured link health: ping + RTT/RSSI/route + one lifeline probe. This is
 // the "why is it dropping" button; results also land in diagnostics.
-async function startHealthCheck() {
+async function startHealthCheck(lockId) {
   const out = document.getElementById('zwaveDeadboltHealth');
   if (out) out.textContent = 'Running health check (a few seconds)...';
   try {
-    const r = await api('POST', '/api/deadbolt/health-check');
+    const r = await api('POST', '/api/deadbolt/health-check', lockId ? { lock_id: lockId } : undefined);
     if (r.error) {
       if (out) out.textContent = '';
       toast(r.error, 'error');
@@ -3478,13 +3554,15 @@ async function startUnpair() {
   }
 }
 
-async function deadboltControl(action) {
+async function deadboltControl(action, lockId) {
   const ok = confirm(`Send a real ${action.toUpperCase()} command to the deadbolt?\n\nThe physical bolt will move.`);
   if (!ok) return;
   _setDeadboltButtonsBusy(true);
   toast(`Sending ${action} to the deadbolt...`, 'info'); // immediate feedback
   try {
-    const r = await api('POST', '/api/deadbolt/control', { action });
+    const body = { action };
+    if (lockId) body.lock_id = lockId;
+    const r = await api('POST', '/api/deadbolt/control', body);
     if (r.success && r.verified === 'optimistic') {
       // Models like the BE469ZP never confirm a remote move; delivered is
       // the strongest truth available, so say that instead of "confirmed".
@@ -3502,10 +3580,10 @@ async function deadboltControl(action) {
 // Fire-and-forget on the server; on a battery lock the fresh interview
 // finishes the next time the lock wakes, and the dashboard readouts refresh
 // on their own once it does.
-async function startReinterview() {
+async function startReinterview(lockId) {
   toast('Starting re-interview...', 'info'); // immediate feedback
   try {
-    const r = await api('POST', '/api/deadbolt/reinterview');
+    const r = await api('POST', '/api/deadbolt/reinterview', lockId ? { lock_id: lockId } : undefined);
     if (r.error) { toast(r.error, 'error'); return; }
     toast('Re-interview started. Wake the lock at the keypad to speed it up; bolt and battery refresh automatically when it completes. Avoid Test Lock/Unlock until it finishes (watch the event feed for the completion entry).', 'info');
   } catch (e) { toast(`Re-interview failed to start: ${e.message}`, 'error'); }
@@ -3530,22 +3608,38 @@ function renderDeadboltRules() {
   if (!zwEnabled && !hasRules) { block.style.display = 'none'; return; }
   block.style.display = '';
 
-  const trigger = configData?.deadbolt_rules?.trigger_door || '';
   const rules = _getCascadeRules();
+  // deadbolt_rules is a per-lock map: one retract row per SAVED lock, each
+  // writing its own entry, so two locks can follow two different doors.
+  const savedLocks = configData?.devices?.zwave?.locks || {};
+  const db = configData?.deadbolt_rules || {};
+  const lockIds = Object.keys(savedLocks);
 
   let html = `
     <div id="deadboltTriggerRow" style="margin-bottom:14px">
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">
-        Retract on entry: when someone badges in at this door, the deadbolt retracts.
-        Leave unset to disable automatic retract.
-      </div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <select id="deadboltTriggerDoor" style="min-width:220px;font-size:12px;padding:6px">
+        Retract on entry: when someone badges in at a lock's trigger door, that deadbolt retracts.
+        Leave a lock unset to keep it manual-only.
+      </div>`;
+  if (!lockIds.length) {
+    html += `<div style="font-size:12px;color:var(--text-muted)">Pair a lock first; each lock then gets its own trigger-door row here.</div>`;
+  }
+  for (const lockId of lockIds) {
+    const entry = (db[lockId] && typeof db[lockId] === 'object') ? db[lockId] : null;
+    const trigger = (entry && entry.trigger_door) || '';
+    const label = savedLocks[lockId]?.name || lockId;
+    const idArg = escapeHtml(JSON.stringify(String(lockId)));
+    html += `
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+        <span style="font-size:12px;min-width:150px">${escapeHtml(label)}</span>
+        <select id="deadboltTriggerDoor_${cssId(lockId)}" style="min-width:220px;font-size:12px;padding:6px">
           <option value="">-- No retract trigger --</option>
           ${_doorOptions(trigger)}
         </select>
-        <button class="btn btn-sm btn-primary" onclick="saveDeadboltTrigger()">Save Trigger</button>
-      </div>
+        <button class="btn btn-sm btn-primary" onclick="saveDeadboltTrigger(${idArg})">Save Trigger</button>
+      </div>`;
+  }
+  html += `
     </div>
     <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">
       Interior cascade: when an entry is granted at the trigger door, momentarily unlock these interior doors (UniFi unlock only, never a lock command).
@@ -3633,16 +3727,16 @@ async function deleteCascadeRule(idx) {
   } catch (e) { toast(`Failed to save: ${e.message}`, 'error'); }
 }
 
-async function saveDeadboltTrigger() {
-  const door = document.getElementById('deadboltTriggerDoor')?.value || '';
-  const db = Object.assign({}, configData?.deadbolt_rules || {});
-  // The server deep-merges, so clearing must send an explicit empty string
-  // (an absent key would leave the old trigger in place). An empty trigger
-  // never matches a door, which disables the retract.
-  db.trigger_door = door;
+async function saveDeadboltTrigger(lockId) {
+  const sel = document.getElementById('deadboltTriggerDoor_' + cssId(lockId));
+  if (!sel) return;
+  const door = sel.value || '';
+  // The server deep-merges per entry, so clearing must send an explicit
+  // empty string (an absent key would leave the old trigger in place). An
+  // empty trigger never matches a door, which disables the retract.
   try {
-    await api('PUT', '/api/config', { deadbolt_rules: db });
-    toast(door ? `Deadbolt retracts on entry at "${door}"` : 'Retract trigger disabled', 'success');
+    await api('PUT', '/api/config', { deadbolt_rules: { [lockId]: { trigger_door: door } } });
+    toast(door ? `${lockId} retracts on entry at "${door}"` : `${lockId}: retract trigger disabled`, 'success');
     await loadConfig();
   } catch (e) { toast(`Failed to save: ${e.message}`, 'error'); }
 }
@@ -5581,6 +5675,17 @@ setInterval(fetchHealth, 10000);
     return Array.from(s).sort();
   }
 
+  // deadbolt_rules is a per-lock map; the Designer (single-deadbolt view for
+  // now) reads and edits the FIRST automated lock's trigger. Its flat write
+  // is normalized onto that same entry server-side.
+  function firstAutomatedTrigger() {
+    const db = (configData && configData.deadbolt_rules) || {};
+    for (const v of Object.values(db)) {
+      if (v && typeof v === 'object') return v.trigger_door || '';
+    }
+    return db.trigger_door || '';
+  }
+
   function deadboltVisible() {
     const cfg = configData || {};
     const db = cfg.deadbolt_rules || null;
@@ -5652,7 +5757,7 @@ setInterval(fetchHealth, 10000);
 
     if (deadboltVisible()) {
       const db = ensureNode('deadbolt', 'deadbolt', 'Smart Deadbolt');
-      const trig = (configData && configData.deadbolt_rules && configData.deadbolt_rules.trigger_door) || '';
+      const trig = firstAutomatedTrigger();
       if (trig) {
         const t = ensureNode('door', trig); t.roles.trigger = true;
         addEdge(t, db, 'retract', 0, 'retract');
@@ -6060,7 +6165,7 @@ setInterval(fetchHealth, 10000);
     if (type === 'access') rule = editing ? (accessRules()[idx] || {}) : { group: pf.group || '', trigger: pf.trigger || '', unlock: pf.unlock || [], delay: pf.delay || 0 };
     if (type === 'visitor') rule = editing ? (visitorRules()[idx] || {}) : { group: pf.group || '', trigger: pf.trigger || '', unlock: pf.unlock || [], delay: pf.delay || 0 };
     if (type === 'cascade') rule = editing ? (cascadeRules()[idx] || {}) : { trigger_door: pf.trigger_door || '', unlock: pf.unlock || [], debounce_seconds: pf.debounce == null ? 8 : pf.debounce };
-    if (type === 'retract') rule = { trigger_door: (configData && configData.deadbolt_rules && configData.deadbolt_rules.trigger_door) || '' };
+    if (type === 'retract') rule = { trigger_door: firstAutomatedTrigger() };
 
     // Include any door/group the rule already references, so a stale discovery
     // list can never drop a value that is genuinely in use.
