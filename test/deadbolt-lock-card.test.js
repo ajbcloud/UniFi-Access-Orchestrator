@@ -64,7 +64,17 @@ test('a card carries identity, live badges, buttons, and the after-unlock contro
   assert.match(out, /After unlock:/);
   assert.match(out, /id="zwaveAutoRelockSel_front_deadbolt_/, 'auto-relock select id is per-lock');
   assert.match(out, /applyAutoRelock\(&quot;front_deadbolt&quot;\)/, 'apply targets this lock');
-  assert.match(out, /id="zwaveUserCodes_front_deadbolt_/, 'keypad-codes container is per-lock');
+  assert.ok(!out.includes('zwaveUserCodes_'), 'no per-lock keypad-codes container (PINs live in the global Keypad users panel)');
+});
+
+test('Rewrite Codes to Lock shows only when the lock has saved codes', () => {
+  const build = load();
+  const withCodes = build(summary({ user_code_count: 2 }));
+  assert.match(withCodes, /rewriteUserCodesToLock\(&quot;front_deadbolt&quot;\)/);
+  const withoutCodes = build(summary({ user_code_count: 0 }));
+  assert.ok(!withoutCodes.includes('Rewrite Codes'), 'no rewrite button with zero saved codes');
+  const legacyShape = build(summary());
+  assert.ok(!legacyShape.includes('Rewrite Codes'), 'missing count reads as zero');
 });
 
 test('a manual-only (not automated) lock says so instead of claiming a trigger', () => {

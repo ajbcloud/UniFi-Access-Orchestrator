@@ -43,6 +43,8 @@ const { loadSecurityKeys, ensureSecurityKeys } = require('./drivers/zwave-keys')
 const { SustainedFlagMonitor } = require('./alert-monitors');
 const deadboltRules = require('./deadbolt-rules');
 const { planUnifiPinPush, markStaleAfterPush } = require('./user-code-sync');
+const { removeLockEntry, pruneGhostLocks } = require('./lock-cleanup');
+const keypadUsers = require('./keypad-users');
 const {
   redactSecrets,
   stripRedactedPlaceholders,
@@ -105,6 +107,26 @@ function migrateConfigFileOnDisk(markApplied) {
 
 // One-time at startup (configSync does not exist yet, so no markApplied).
 migrateConfigFileOnDisk(false);
+
+// Remove lock entries an earlier version left behind after an unpair
+// (node_id 0): they render as un-actionable "not paired" ghosts and keep a
+// dead automation rule alive. Runs against BOTH the in-memory config and the
+// file, best-effort (a failure leaves the in-memory prune authoritative).
+function pruneGhostLocksOnDisk() {
+  const pruned = pruneGhostLocks(config);
+  if (!pruned.length) return;
+  try {
+    const disk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    pruneGhostLocks(disk);
+    writeConfigFile(disk);
+  } catch (e) {
+    logger.warn(`Config: ghost lock prune not persisted (${e.message}); in-memory config is clean`);
+  }
+  for (const id of pruned) {
+    logger.info(`Config: removed unpaired ghost lock entry "${id}" (left behind by an earlier unpair)`);
+  }
+}
+pruneGhostLocksOnDisk();
 
 // ---------------------------------------------------------------------------
 // Initialize components
@@ -252,6 +274,12 @@ const zwavePairing = new ZwavePairing({
     });
     await bringDeadboltOnline();
     logger.info(`Z-Wave: lock paired as node ${nodeId} (${securityClass || 'class unknown'}) under "${resolvedId}" and brought online`);
+    // One PIN per user: seed the new lock with every saved user's PIN so the
+    // owner never re-enters codes per lock. Fire-and-forget: the writes wait
+    // for the pairing session to fully end and the interview to reveal the
+    // User Code capability, which can take minutes on a battery lock.
+    provisionUserCodesOnNewLock(resolvedId).catch((e) =>
+      logger.warn(`Deadbolt: auto-provision of keypad codes on "${resolvedId}" failed: ${e.message}`));
   },
   onExcludeDone: async ({ nodeId }) => {
     const zw = config.devices && config.devices.zwave;
@@ -261,12 +289,16 @@ const zwavePairing = new ZwavePairing({
       logger.info(`Z-Wave: excluded node ${nodeId} (not the configured lock; nothing to clean up)`);
       return;
     }
-    persistZwaveMutation((cfg) => {
-      const zwc = cfg.devices && cfg.devices.zwave;
-      if (zwc && zwc.locks && zwc.locks[lockId]) zwc.locks[lockId].node_id = 0;
-    });
+    // The lock is gone from the network, so its config entry AND its
+    // automation rule go with it: a ghost row would sit in the Paired locks
+    // table and the automation dropdown with no working action. Capture the
+    // label before the entry is deleted.
+    const label = lockLabel(lockId);
+    persistZwaveMutation((cfg) => { removeLockEntry(cfg, lockId); });
     await bringDeadboltOnline();
-    logger.info(`Z-Wave: lock (node ${nodeId}) unpaired; deadbolt disabled until a lock is paired again`);
+    const remaining = Object.values((config.devices && config.devices.zwave && config.devices.zwave.locks) || {})
+      .filter((l) => l && l.node_id > 0).length;
+    logger.info(`Z-Wave: "${label}" (node ${nodeId}) unpaired and removed from the config; ${remaining} paired lock(s) remain`);
   },
 });
 
@@ -538,6 +570,81 @@ async function bringDeadboltOnline() {
   if (_failedInitLocks.size) scheduleDeadboltInitRetry();
   applyEventTaps();
   return _failedInitLocks.size === 0 && lockDrivers.size > 0;
+}
+
+// One PIN per user: after a NEW lock pairs, write every saved user's PIN to
+// it automatically. Runs only from onIncludeDone (never from a plain rebuild,
+// which must stay write-free for battery locks). Waits until the pairing
+// session fully ends and the interview reveals the User Code capability -
+// minutes on a battery lock - then reuses the driver's verify-then-write
+// restore (sequential, queue-friendly on a sleeping node). Overlap with the
+// post-interview code restore is harmless: verify-first turns the second
+// pass into an all-kept no-op.
+const PROVISION_POLL_MS = 15000;
+const PROVISION_GIVE_UP_MS = 10 * 60 * 1000;
+async function provisionUserCodesOnNewLock(lockId) {
+  const others = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  const anySource = Object.entries(others).some(([id, l]) =>
+    id !== lockId && l && l.user_codes && Object.keys(l.user_codes).length);
+  if (!anySource) return; // nothing saved anywhere: nothing to seed
+  const deadline = Date.now() + PROVISION_GIVE_UP_MS;
+  let cap = null;
+  for (;;) {
+    if (Date.now() > deadline) {
+      logger.warn(`Deadbolt: gave up auto-provisioning keypad codes on "${lockLabel(lockId)}" (capability never appeared; use Rewrite Codes to Lock once the interview finishes)`);
+      return;
+    }
+    const driver = lockDrivers.get(lockId);
+    if (!zwavePairing.isActive() && driver && typeof driver.userCodesCapability === 'function'
+        && typeof driver.restoreUserCodes === 'function') {
+      try {
+        cap = await driver.userCodesCapability();
+      } catch (e) {
+        cap = null;
+      }
+      if (cap && cap.supported) break;
+      if (cap && cap.supported === false && cap.note) {
+        logger.info(`Deadbolt: not auto-provisioning keypad codes on "${lockLabel(lockId)}": ${cap.note}`);
+        return;
+      }
+    }
+    await new Promise((r) => { const t = setTimeout(r, PROVISION_POLL_MS); if (t.unref) t.unref(); });
+  }
+  const locksCfg = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  const plan = keypadUsers.planNewLockProvision(locksCfg, lockId, cap, new Date().toISOString());
+  const slots = Object.keys(plan.assignments);
+  for (const s of plan.skipped) {
+    logger.warn(`Deadbolt: cannot copy the keypad code for "${s.name || s.user_id}" to "${lockLabel(lockId)}": ${s.reason}`);
+  }
+  if (!slots.length) return;
+  persistZwaveMutation((cfg) => {
+    const locks = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks;
+    if (!locks || !locks[lockId]) return;
+    locks[lockId].user_codes = Object.assign({}, locks[lockId].user_codes, plan.assignments);
+  });
+  logger.info(`Deadbolt: writing ${slots.length} saved keypad code(s) to newly paired "${lockLabel(lockId)}"`);
+  const driver = lockDrivers.get(lockId);
+  if (!driver) return; // rebuilt away mid-wait (unpaired again)
+  const results = await driver.restoreUserCodes(savedUserCodes(lockId));
+  const failed = results.filter((r) => r.action === 'failed');
+  persistZwaveMutation((cfg) => {
+    const uc = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
+      && cfg.devices.zwave.locks[lockId] && cfg.devices.zwave.locks[lockId].user_codes;
+    if (!uc) return;
+    for (const r of results) {
+      const entry = uc[String(r.slot)];
+      if (entry) entry.confirmed = r.action === 'failed' ? false : (r.confirmed === true ? true : entry.confirmed);
+    }
+  });
+  broadcastEvent({
+    type: 'deadbolt.user_code',
+    actor: 'Deadbolt Controller',
+    location: lockLabel(lockId),
+    action: `Copied ${results.length - failed.length}/${results.length} saved keypad code(s) to the new lock`
+      + (failed.length ? ' (use Rewrite Codes to Lock to retry the rest)' : '')
+      + (plan.skipped.length ? `; ${plan.skipped.length} skipped (see log)` : ''),
+    success: failed.length === 0,
+  });
 }
 
 // Record a per-lock init failure. The alert is EDGE-triggered per lock (fired
@@ -1248,11 +1355,11 @@ app.post('/api/deadbolt/unpair', async (req, res) => {
         persistZwaveMutation((cfg) => {
           const locks = (cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks) || {};
           for (const id of Object.keys(locks)) {
-            if (locks[id] && locks[id].node_id === nodeId) locks[id].node_id = 0;
+            if (locks[id] && locks[id].node_id === nodeId) removeLockEntry(cfg, id);
           }
         });
         await bringDeadboltOnline();
-        logger.info(`Z-Wave: failed node ${nodeId} removed directly (no exclusion needed)`);
+        logger.info(`Z-Wave: failed node ${nodeId} removed directly (no exclusion needed) and its saved lock entry deleted`);
         return res.json({ status: 'removed', node_id: nodeId });
       }
     } catch (err) {
@@ -1331,6 +1438,10 @@ function perLockSummaries() {
       auto_relock: !lc || lc.auto_relock == null ? null : !!lc.auto_relock,
       auto_relock_support: (driver && typeof driver.autoRelockInfo === 'function')
         ? driver.autoRelockInfo() : null,
+      // Lets the card show Rewrite Codes only when there is something to
+      // rewrite (the per-card PIN editor moved to the global Keypad users
+      // panel).
+      user_code_count: Object.keys((lc && lc.user_codes) || {}).length,
     };
   });
 }
@@ -1389,6 +1500,27 @@ app.get('/api/deadbolt/locks', (req, res) => {
     });
   }
   res.json({ locks, controller_node_id: ownNodeId, driver_running: zwaveManager.isRunning() });
+});
+
+// Remove a SAVED lock entry that is no longer paired (an old ghost, or a
+// hand-added entry that never paired). A paired lock must go through Unpair
+// first so the node actually leaves the network; this only cleans config.
+app.delete('/api/deadbolt/locks/:lock_id', async (req, res) => {
+  const lockId = req.params.lock_id;
+  if (zwavePairing.isActive()) {
+    return res.status(409).json({ error: 'A pairing session is in progress' });
+  }
+  const locks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  const entry = locks[lockId];
+  if (!entry) return res.status(404).json({ error: `no saved lock "${lockId}"` });
+  if (entry.node_id > 0) {
+    return res.status(409).json({ error: `"${lockLabel(lockId)}" is still paired (node ${entry.node_id}); use Unpair first` });
+  }
+  const label = lockLabel(lockId);
+  persistZwaveMutation((cfg) => { removeLockEntry(cfg, lockId); });
+  await bringDeadboltOnline();
+  logger.info(`Z-Wave: removed saved lock entry "${label}" (was not paired)`);
+  res.json({ status: 'removed', lock_id: lockId });
 });
 
 // Measured node health (ping, RTT/RSSI/route stats, one lifeline probe).
@@ -1744,6 +1876,225 @@ app.post('/api/deadbolt/user-codes/rewrite', async (req, res) => {
       success: results.every((r) => r.ok),
     });
     res.json({ lock_id: target.lockId, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// User-centric keypad codes: ONE PIN per user, applied to every paired lock
+// and always kept in sync with the user's single UniFi PIN. These are the
+// endpoints the dashboard uses; the per-lock routes above remain as the
+// low-level API (and for the per-card Rewrite button).
+// ---------------------------------------------------------------------------
+
+// Bound, code-capable locks with their capability, for planning and display.
+async function codeCapableLocks() {
+  const rows = [];
+  for (const [lockId, driver] of lockDrivers) {
+    if (typeof driver.setUserCode !== 'function' || typeof driver.userCodesCapability !== 'function') continue;
+    let cap;
+    try {
+      cap = await driver.userCodesCapability();
+    } catch (e) {
+      cap = { supported: false, note: e.message };
+    }
+    rows.push({ lock_id: lockId, label: lockLabel(lockId), driver, cap });
+  }
+  return rows;
+}
+
+// Aggregate per-user view across all locks. Digits never leave the server.
+app.get('/api/deadbolt/keypad-users', async (req, res) => {
+  try {
+    const capable = await codeCapableLocks();
+    const relevant = capable.filter((l) => l.cap && l.cap.supported !== false);
+    const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+    const known = (unifiClient && unifiClient.userNames) || new Map();
+    const users = keypadUsers.aggregateKeypadUsers(zwLocks, relevant).map((u) => Object.assign(u, {
+      user_missing: !!(u.user_id && known.size && !known.has(u.user_id)),
+    }));
+    res.json({
+      locks: capable.map((l) => ({
+        lock_id: l.lock_id,
+        name: l.label,
+        supported: !!(l.cap && l.cap.supported !== false),
+        note: (l.cap && l.cap.note) || null,
+      })),
+      pin_rule: keypadUsers.combinedLengthRule(relevant.map((l) => l.cap)),
+      users,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Set a user's ONE PIN: written to every code-capable lock (sequentially -
+// battery locks queue writes), then always synced to the user's UniFi PIN.
+// Locks that cannot take the code (full, duplicate, length rule) are reported
+// per lock; the save proceeds on the rest.
+app.post('/api/deadbolt/keypad-users', async (req, res) => {
+  const b = req.body || {};
+  if (zwavePairing.isActive()) {
+    return res.status(409).json({ error: 'A pairing session is in progress' });
+  }
+  if (!b.user_id || typeof b.user_id !== 'string') {
+    return res.status(400).json({ error: 'user_id is required (pick a synced UniFi user)' });
+  }
+  const pin = typeof b.pin === 'string' ? b.pin.trim() : '';
+  if (!/^[0-9]{4,10}$/.test(pin)) {
+    return res.status(400).json({ error: 'pin must be 4 to 10 digits' });
+  }
+  try {
+    const capable = await codeCapableLocks();
+    if (!capable.length) {
+      return res.status(503).json({ error: 'no paired lock supports keypad codes' });
+    }
+    const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+    const plan = keypadUsers.planUserSave(
+      zwLocks,
+      capable.map((l) => ({ lock_id: l.lock_id, cap: l.cap })),
+      b.user_id, pin
+    );
+    const known = (unifiClient && unifiClient.userNames) || new Map();
+    const name = (typeof b.name === 'string' && b.name.trim()) || known.get(b.user_id) || null;
+    const results = [];
+    for (const row of plan) {
+      if (row.error) { results.push(row); continue; }
+      const entry = capable.find((l) => l.lock_id === row.lock_id);
+      try {
+        const r = await entry.driver.setUserCode(row.slot, pin);
+        if (r.confirmed === false) {
+          results.push({ lock_id: row.lock_id, error: 'the lock rejected this code (usually a duplicate PIN or a mismatched code length)' });
+          continue;
+        }
+        persistZwaveMutation((cfg) => {
+          const locks = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks;
+          if (!locks || !locks[row.lock_id]) return;
+          locks[row.lock_id].user_codes = locks[row.lock_id].user_codes || {};
+          locks[row.lock_id].user_codes[String(row.slot)] = {
+            user_id: b.user_id,
+            name,
+            pin_code: pin,
+            pushed_to_unifi: false,
+            confirmed: r.confirmed === true ? true : null,
+            updated_at: new Date().toISOString(),
+          };
+        });
+        results.push({ lock_id: row.lock_id, slot: row.slot, confirmed: r.confirmed });
+      } catch (e) {
+        results.push({ lock_id: row.lock_id, error: e.message });
+      }
+    }
+    const written = results.filter((r) => r.slot != null);
+    if (!written.length) {
+      return res.status(409).json({ error: 'no lock accepted the code', results });
+    }
+    // Always keep UniFi in sync: one PIN per user everywhere. Skip the API
+    // call when UniFi already holds this exact PIN (re-assigning it errors
+    // with CODE_SYSTEM_ERROR), then record which entries match UniFi.
+    const unifi = { attempted: true, success: null, permission_denied: false, error: null };
+    const pushPlan = planUnifiPinPush(
+      (config.devices && config.devices.zwave && config.devices.zwave.locks) || {},
+      written[0].lock_id, b.user_id, pin
+    );
+    let synced = pushPlan.action === 'skip_in_sync';
+    if (synced) {
+      unifi.success = true;
+      unifi.skipped = 'already in sync';
+      logger.info(`Deadbolt: UniFi already holds this PIN for "${name || b.user_id}"; skipping the push`);
+    } else if (unifiClient && typeof unifiClient.assignUserPin === 'function') {
+      const push = await unifiClient.assignUserPin(b.user_id, pin);
+      unifi.success = !!push.success;
+      unifi.permission_denied = !!push.permission_denied;
+      unifi.error = push.error || null;
+      if (push.statusCode) unifi.status_code = push.statusCode;
+      synced = !!push.success;
+    } else {
+      unifi.success = false;
+      unifi.error = 'UniFi client is not connected';
+    }
+    if (synced) {
+      persistZwaveMutation((cfg) => {
+        const locks = (cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks) || {};
+        for (const lock of Object.values(locks)) {
+          for (const e of Object.values((lock && lock.user_codes) || {})) {
+            if (!e || e.user_id !== b.user_id) continue;
+            // Entries holding THIS pin now match UniFi; an older different
+            // PIN on some lock no longer does.
+            e.pushed_to_unifi = String(e.pin_code) === pin;
+          }
+        }
+      });
+    }
+    broadcastEvent({
+      type: 'deadbolt.user_code',
+      actor: 'GUI Admin',
+      location: written.map((r) => lockLabel(r.lock_id)).join(', '),
+      action: `PIN set for ${name || b.user_id} on ${written.length}/${results.length} lock(s)`
+        + `${unifi.success ? (unifi.skipped ? '; UniFi already in sync' : '; UniFi updated') : '; UniFi push FAILED'}`,
+      success: written.length === results.length && !!unifi.success,
+    });
+    res.json({ user_id: b.user_id, name, results, unifi });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove a user's keypad code from EVERY lock. Deliberately never touches
+// UniFi (same policy as the per-slot delete: the UniFi PIN is a separate
+// credential and there is no restore path since UniFi never reveals PINs).
+app.delete('/api/deadbolt/keypad-users/:user_id', async (req, res) => {
+  const userId = req.params.user_id;
+  if (zwavePairing.isActive()) {
+    return res.status(409).json({ error: 'A pairing session is in progress' });
+  }
+  try {
+    const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+    const holdings = [];
+    for (const [lockId, lock] of Object.entries(zwLocks)) {
+      for (const [slot, e] of Object.entries((lock && lock.user_codes) || {})) {
+        if (e && e.user_id === userId) holdings.push({ lock_id: lockId, slot: Number(slot) });
+      }
+    }
+    if (!holdings.length) {
+      return res.status(404).json({ error: 'no saved keypad code for that user' });
+    }
+    let removedName = null;
+    const results = [];
+    for (const h of holdings) {
+      const driver = lockDrivers.get(h.lock_id);
+      let confirmed = null;
+      let error = null;
+      if (driver && typeof driver.clearUserCode === 'function') {
+        try {
+          const r = await driver.clearUserCode(h.slot);
+          confirmed = r.confirmed;
+        } catch (e) {
+          error = e.message;
+        }
+      }
+      // Persist the removal even on an unconfirmed clear: the command is
+      // queued on the lock, and a kept entry would resurrect the code on the
+      // next rewrite/restore.
+      persistZwaveMutation((cfg) => {
+        const uc = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
+          && cfg.devices.zwave.locks[h.lock_id] && cfg.devices.zwave.locks[h.lock_id].user_codes;
+        if (uc && uc[String(h.slot)]) {
+          removedName = uc[String(h.slot)].name || removedName;
+          delete uc[String(h.slot)];
+        }
+      });
+      results.push(Object.assign({ lock_id: h.lock_id, slot: h.slot, confirmed }, error ? { error } : {}));
+    }
+    broadcastEvent({
+      type: 'deadbolt.user_code',
+      actor: 'GUI Admin',
+      location: holdings.map((h) => lockLabel(h.lock_id)).join(', '),
+      action: `Keypad code removed for ${removedName || userId} on ${holdings.length} lock(s). The user's UniFi PIN is untouched`,
+      success: results.every((r) => !r.error),
+    });
+    res.json({ user_id: userId, results });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

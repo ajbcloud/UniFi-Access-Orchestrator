@@ -606,8 +606,19 @@ let healthWatchdog = null;
 
 function startHealthWatchdog() {
   const http = require('http');
+  // Surface a stall in the title without pretending the controller dropped:
+  // "Not responding" means THIS app's server is slow/hung, "Disconnected"
+  // means the server answered and reported the UniFi link down.
+  const setStalledTitle = () => {
+    if (mainWindow && healthFailCount >= 2) {
+      mainWindow.setTitle('UniFi Access Orchestrator — Not responding');
+    }
+  };
   healthWatchdog = setInterval(() => {
-    const req = http.get(`http://127.0.0.1:${servicePort}/health`, { timeout: 5000 }, (res) => {
+    // 15s, not 5s: a long Z-Wave verify on an S0 lock can stall the service's
+    // event loop past 5s, and those false timeouts both froze the title and
+    // fed the relaunch counter.
+    const req = http.get(`http://127.0.0.1:${servicePort}/health`, { timeout: 15000 }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
@@ -624,11 +635,25 @@ function startHealthWatchdog() {
               : (cs === 'reconnecting' || cs === 'connecting') ? 'Reconnecting...' : 'Disconnected';
             mainWindow.setTitle(`UniFi Access Orchestrator — ${label}`);
           }
-        } catch { healthFailCount++; }
+        } catch { healthFailCount++; setStalledTitle(); }
       });
     });
-    req.on('error', () => {
+    // Only a hard connection error counts toward the relaunch: the service
+    // process is genuinely gone/unreachable. A slow response (timeout) or a
+    // garbled body must never restart a working service mid-operation.
+    // (destroy() after a timeout can surface as an 'error' too; the flag
+    // keeps that from masquerading as a dead service.)
+    let timedOut = false;
+    let counted = false;
+    const countFailure = () => {
+      if (counted) return; // one failure per probe, however many events fire
+      counted = true;
       healthFailCount++;
+      setStalledTitle();
+    };
+    req.on('error', () => {
+      countFailure();
+      if (timedOut) return;
       if (healthFailCount >= 3) {
         console.error(`Health watchdog: ${healthFailCount} consecutive failures. Relaunching...`);
         app.relaunch();
@@ -636,7 +661,7 @@ function startHealthWatchdog() {
         app.quit();
       }
     });
-    req.on('timeout', () => { req.destroy(); healthFailCount++; });
+    req.on('timeout', () => { timedOut = true; countFailure(); req.destroy(); });
   }, 30000);
 }
 

@@ -172,3 +172,43 @@ test('updateStatus: unknown/undefined/disconnected read Disconnected (matches ti
     assert.strictEqual(c.pill._span.textContent, 'Disconnected', String(cs) + ' -> Disconnected');
   }
 });
+
+// ---------------------------------------------------------------------------
+// Electron health watchdog (electron/main.js): a slow service must never be
+// relaunched mid-operation, and the title must say "Not responding" (this
+// app's server is stalled) rather than pretending the UniFi link dropped.
+// Source-level contracts, same style as the freeze-fix guards.
+// ---------------------------------------------------------------------------
+
+const electronMain = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
+
+function extractElectronFn(name) {
+  const start = electronMain.indexOf('function ' + name);
+  assert.ok(start >= 0, 'function not found in electron/main.js: ' + name);
+  let depth = 0;
+  const open = electronMain.indexOf('{', start);
+  for (let j = open; j < electronMain.length; j++) {
+    if (electronMain[j] === '{') depth++;
+    else if (electronMain[j] === '}') { depth--; if (depth === 0) return electronMain.slice(start, j + 1); }
+  }
+  throw new Error('unbalanced braces for ' + name);
+}
+
+test('watchdog: probe timeout is 15s (an S0 verify can stall the event loop past 5s)', () => {
+  const src = extractElectronFn('startHealthWatchdog');
+  assert.match(src, /timeout:\s*15000/);
+  assert.ok(!/timeout:\s*5000/.test(src), 'old 5s probe timeout removed');
+});
+
+test('watchdog: a timeout never feeds the relaunch, only hard connection errors do', () => {
+  const src = extractElectronFn('startHealthWatchdog');
+  assert.match(src, /timedOut = true/, 'timeout flagged');
+  assert.match(src, /if \(timedOut\) return;/, 'flag short-circuits the relaunch path');
+  assert.match(src, /if \(counted\) return;/, 'one failure per probe, however many events fire');
+});
+
+test('watchdog: consecutive failures surface as Not responding in the title', () => {
+  const src = extractElectronFn('startHealthWatchdog');
+  assert.match(src, /Not responding/);
+  assert.match(src, /healthFailCount >= 2/, 'after 2+ consecutive failures');
+});

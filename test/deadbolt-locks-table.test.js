@@ -83,7 +83,7 @@ test('a foreign node on the stick is visible and unpairable', () => {
   assert.match(out, /onclick="startUnpairNode\(7\)"/);
 });
 
-test('a saved-but-unpaired lock has no Unpair button', () => {
+test('a saved-but-unpaired lock gets Remove instead of Unpair', () => {
   const build = load();
   const out = build([{
     lock_id: 'front_deadbolt', node_id: 0, paired: false, on_stick: false,
@@ -91,6 +91,17 @@ test('a saved-but-unpaired lock has no Unpair button', () => {
   }], false);
   assert.match(out, /not paired/);
   assert.ok(!out.includes('startUnpairNode'), 'nothing to unpair');
+  assert.match(out, /onclick="removeSavedLock\(&quot;front_deadbolt&quot;\)"/, 'ghost rows are removable');
+});
+
+test('a foreign node row (no saved id) gets neither Remove nor a broken Unpair', () => {
+  const build = load();
+  const out = build([{
+    lock_id: null, node_id: 0, paired: false, on_stick: false,
+    bolt: null, battery: null, battery_low: false, link_state: null,
+  }], false);
+  assert.ok(!out.includes('removeSavedLock'), 'no saved entry to remove');
+  assert.ok(!out.includes('startUnpairNode'));
 });
 
 test('operator-typed lock ids are escaped', () => {
@@ -126,6 +137,15 @@ test('no catalog -> a plain Unpair button with no tooltip (back-compat 2-arg cal
   }], false);
   assert.match(out, /onclick="startUnpairNode\(10\)"/);
   assert.ok(!out.includes('title="Exclude'));
+});
+
+test('the automation panel offers no row for an unpaired ghost (node_id 0)', () => {
+  // Source-level contract on renderDeadboltRules: entries a legacy unpair
+  // zeroed must not get a trigger-door row, while node_id-less dev entries
+  // keep theirs.
+  const src = extractFn('renderDeadboltRules');
+  assert.match(src, /node_id !== 0/, 'ghost filter present');
+  assert.match(src, /filter\(/, 'lock ids are filtered, not just listed');
 });
 
 test('pairing_active disables every Unpair button', () => {
