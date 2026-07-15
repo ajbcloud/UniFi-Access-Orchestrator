@@ -717,6 +717,65 @@ test('ZwaveLock: keypad unlock notification carries the slot (object and Buffer 
   await lock.shutdown();
 });
 
+// ---------------------------------------------------------------------------
+// Yale-shaped behavior (prep for the incoming Assure lock, grounded in the
+// zwave-js device db): zwave-js maps Yale's V1 alarms to real Access Control
+// events INCLUDING RF lock/unlock (3/4), so verification is report/
+// notification-based (never optimistic), and the lock counts its admin code
+// as slot 251, which must never be written.
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: Yale-style lock verifies an unlock via the RF unlock notification, not optimistically', async () => {
+  const node = new MockNode({ current: 0xff, confirm: false });
+  // The move lands as the zwave-js-mapped RF unlock notification shortly
+  // after the set, exactly what the Yale alarm mapping produces.
+  const origSet = node.commandClasses['Door Lock'].set;
+  node.commandClasses['Door Lock'].set = async (mode) => {
+    setTimeout(() => node.emit('notification', node, 0x71, { type: 6, event: 0x04 }), 15);
+    return origSet(mode);
+  };
+  const lock = new ZwaveLock(
+    {
+      node_id: 2, model_key: 'yale-assure-zw2', verify_timeout_ms: 2000, verify_retries: 0,
+    },
+    { node, logger: { warn() {} } }
+  );
+  await lock.init();
+  const r = await lock.unlock('entry');
+  assert.equal(r.success, true);
+  assert.equal(r.verified, 'report', 'Yale is report-verified, never optimistic');
+  assert.equal(r.boltState, LockState.UNLOCKED);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: Yale capability excludes the reserved admin slot from usable capacity', async () => {
+  const node = new MockNode({ userCodes: { usersCount: 251 } }); // lock counts its admin code
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'yale-assure-zw2' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const cap = await lock.userCodesCapability();
+  assert.equal(cap.supported, true);
+  assert.equal(cap.slots, 250, 'usable slots exclude the admin slot');
+  assert.deepEqual(cap.reserved_slots, [251]);
+  assert.equal(cap.live, true);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: writes to a reserved (admin) slot are refused outright', async () => {
+  const node = new MockNode({ userCodes: {} });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'yale-assure-zw2' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  await assert.rejects(() => lock.setUserCode(251, '1234'), /admin\/master code/);
+  await assert.rejects(() => lock.clearUserCode(251), /admin\/master code/);
+  assert.equal(node.userCodeSetCalls.length, 0, 'nothing reached the wire');
+  await lock.shutdown();
+});
+
 test('ZwaveLock: rewriteUserCodes replays saved codes sequentially', async () => {
   const node = new MockNode({ userCodes: {} });
   const lock = new ZwaveLock(

@@ -1264,7 +1264,11 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
       if (e && e.user_id === b.user_id) { slot = Number(s); break; }
     }
     if (slot == null) {
+      const reserved = Array.isArray(cap.reserved_slots) ? cap.reserved_slots : [];
       for (let s = 1; s <= (cap.slots || 0); s++) {
+        // Never hand out a slot the lock reserves for itself (Yale counts
+        // its admin/master code as a slot); the driver refuses these too.
+        if (reserved.includes(s)) continue;
         if (!saved[String(s)]) { slot = s; break; }
       }
     }
