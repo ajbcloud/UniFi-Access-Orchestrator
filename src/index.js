@@ -108,6 +108,16 @@ let configSync = null;  // initialized in start() once Express + UniFi client ar
 const captureDir = process.env.CAPTURE_DIR || path.join(path.dirname(CONFIG_PATH), 'captures');
 const capture = new CaptureSession({ dir: captureDir });
 let notifier = new Notifier(config.alerts || {}, { logger });
+// Multi-lock core: one driver per PAIRED lock (all sharing the one Z-Wave
+// manager/stick), one controller per AUTOMATED lock (a deadbolt_rules entry),
+// and one dedicated controller carrying only the cascade rules so they never
+// double-fire when several locks are automated.
+let lockDrivers = new Map();          // lockId -> ZwaveLock | FakeLock
+let deadboltControllers = new Map();  // lockId -> DeadboltController
+let cascadeController = null;         // cascade_rules only (lockDriver: null)
+// Active-lock aliases (the first automated lock, else the first paired):
+// endpoints and legacy single-lock paths keep working through these until
+// they carry an explicit lock_id.
 let lockDriver = null;
 let deadboltController = null;
 // Set by /api/deadbolt/reinterview so the driver's 'interview-completed'
@@ -148,7 +158,7 @@ const zwavePairing = new ZwavePairing({
   manager: zwaveManager,
   logger,
   getZwaveConfig: () => config.devices && config.devices.zwave,
-  isLockBound: () => !!lockDriver && lockDriver instanceof ZwaveLock,
+  isLockBound: () => Array.from(lockDrivers.values()).some((d) => d instanceof ZwaveLock),
   // Generate any missing S2 keys and persist them BEFORE inclusion, so a
   // crash after pairing can never orphan the lock.
   ensureKeysPersisted: async () => {
@@ -242,15 +252,27 @@ function monitorAlert(type, detail) {
   notifier.notify({ type, detail });
   broadcastEvent({ type: `alert.${type}`, actor: 'Monitor', location: '-', action: detail, success: false });
 }
+// Names of locks currently offline, for the link alert detail. Empty = all up.
+function offlineLockNames() {
+  const names = [];
+  for (const [lockId, driver] of lockDrivers) {
+    if (typeof driver.snapshot !== 'function') continue;
+    if (!driver.snapshot().online) names.push(lockLabel(lockId));
+  }
+  return names;
+}
 const lockLinkMonitor = new SustainedFlagMonitor({
   name: 'deadbolt-link',
   logger,
   graceSeconds: (config.alerts && config.alerts.offline_grace_seconds) || 60,
+  // One monitor across all locks: down when ANY paired lock's link is down,
+  // with the offenders named in the alert. (A second lock failing during an
+  // existing outage extends it rather than re-alerting.)
   check: () => {
-    if (!lockDriver || typeof lockDriver.snapshot !== 'function') return null;
-    return !!lockDriver.snapshot().online;
+    if (!lockDrivers.size) return null;
+    return offlineLockNames().length === 0;
   },
-  onDown: (s) => monitorAlert('deadbolt_lock_offline', `deadbolt link down for ${s}s (stick unplugged, lock unreachable, or driver error)`),
+  onDown: (s) => monitorAlert('deadbolt_lock_offline', `deadbolt link down for ${s}s (${offlineLockNames().join(', ') || 'lock'}: stick unplugged, lock unreachable, or driver error)`),
   onUp: (s) => monitorAlert('deadbolt_lock_online', `deadbolt link restored after ${s}s offline`),
 });
 const controllerLinkMonitor = new SustainedFlagMonitor({
@@ -268,114 +290,152 @@ const controllerLinkMonitor = new SustainedFlagMonitor({
   onUp: (s) => monitorAlert('controller_reconnected', `UniFi WebSocket restored after ${s}s down`),
 });
 
-function buildDeadbolt() {
-  const dbCfg = config.deadbolt_rules;
-  const cascCfg = config.cascade_rules;
-  if (!dbCfg && !cascCfg) return; // add-on not configured
-  const zw = config.devices && config.devices.zwave;
-  if (dbCfg) {
-    if (zw && zw.enabled) {
-      const locks = zw.locks || {};
-      const lockId = activeLockId(config);
-      const lockCfg = Object.assign(
-        { serial_path: zw.serial_path, cache_dir: zw.cache_dir },
-        locks[lockId] || {}
-      );
-      if (!lockCfg.node_id) {
-        // Enabled but nothing paired yet: normal mid-setup state, not an
-        // error. The dashboard's Pair flow fills in node_id and reactivates.
-        lockDriver = null;
-        logger.info('Deadbolt: Z-Wave is enabled but no lock is paired yet. Use Pair New Lock in the dashboard (Configuration tab).');
-      } else {
-        lockDriver = new ZwaveLock(lockCfg, { logger, manager: zwaveManager });
-      }
-    } else if ((zw && zw.dev_fake_lock) || process.env.NODE_ENV === 'development') {
-      // Fake lock is OPT-IN only. It ALWAYS reports success and drives no
-      // hardware, so it must never be substituted silently in production.
-      lockDriver = new FakeLock({ initial: 'locked' });
-      logger.warn('Deadbolt: using in-memory FakeLock (dev/dry-run). It ALWAYS reports success and drives no hardware. Never use in production.');
-    } else {
-      // Configured but no real transport: fail loud, do NOT fake success.
-      lockDriver = null;
-      logger.error('Deadbolt configured but devices.zwave.enabled is not true and dev_fake_lock is not set. Deadbolt LOCK/RETRACT are DISABLED (cascade still active). Set devices.zwave.enabled for hardware, or devices.zwave.dev_fake_lock for dev.');
-      notifier.notify({ type: 'deadbolt_no_transport', detail: 'deadbolt configured but no lock transport enabled' });
-    }
-  }
-  // Device-origin alerts (low battery, jam) flow from the lock driver itself,
-  // independent of any command in flight. A fresh driver instance is built on
-  // every rebuild, so this listener never stacks.
-  if (lockDriver && typeof lockDriver.on === 'function') {
-    lockDriver.on('alert', (a) => monitorAlert(a.type, a.detail || ''));
-    // A command that verified AFTER its wait window closed: correct the
-    // record in the event feed (the door visibly moved while the app had
-    // already said "failed"). Feed-only on purpose; not an alert/email.
-    lockDriver.on('late-confirm', (e) => {
-      logger.info(`Deadbolt: ${e.action} confirmed late (${Math.round((e.after_ms || 0) / 1000)}s after the wait window)`);
-      broadcastEvent({
-        type: 'deadbolt.late_confirm',
-        actor: 'Deadbolt Controller',
-        location: 'Deadbolt',
-        action: `${e.action} completed late; bolt is now ${e.boltState}`,
-        success: true,
-      });
+// Friendly display label for a lock (its saved name, else its id).
+function lockLabel(lockId) {
+  const locks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  return (locks[lockId] && locks[lockId].name) || lockId;
+}
+
+// Per-driver event wiring: device-origin alerts (low battery, jam), the
+// late-confirm correction, informational device notes, keypad attribution,
+// and truthful interview completion. Fresh driver instances are built on
+// every rebuild, so listeners never stack. Every line names the lock so two
+// locks stay distinguishable in logs and the event feed.
+function wireDriverEvents(lockId, driver) {
+  if (!driver || typeof driver.on !== 'function') return;
+  const label = lockLabel(lockId);
+  driver.on('alert', (a) => monitorAlert(a.type, `${label}: ${a.detail || ''}`));
+  driver.on('late-confirm', (e) => {
+    logger.info(`Deadbolt ${label}: ${e.action} confirmed late (${Math.round((e.after_ms || 0) / 1000)}s after the wait window)`);
+    broadcastEvent({
+      type: 'deadbolt.late_confirm',
+      actor: 'Deadbolt Controller',
+      location: label,
+      action: `${e.action} completed late; bolt is now ${e.boltState}`,
+      success: true,
     });
-    // Device-origin informational notes (e.g. the BE469ZP's post-unlock
-    // hardware/system alarm, which fires even on successful moves): feed
-    // only, never an email alert.
-    lockDriver.on('device-note', (n) => {
-      logger.info(`Deadbolt: device note: ${n.detail || n.code}`);
-      broadcastEvent({
-        type: 'deadbolt.device_note',
-        actor: 'Deadbolt Controller',
-        location: 'Deadbolt',
-        action: n.detail || n.code || 'device note',
-        success: true,
-      });
-    });
-    // Keypad activity carries the code slot: attribute it to the saved PIN
-    // owner in the event feed ("who badged in" for the deadbolt keypad).
-    lockDriver.on('keypad-activity', (e) => {
-      const entry = savedUserCodes()[String(e.slot)];
-      const who = (entry && entry.name) || `slot ${e.slot}, unassigned`;
-      logger.info(`Deadbolt: keypad ${e.action} (slot ${e.slot}${entry && entry.name ? `, ${entry.name}` : ''})`);
-      broadcastEvent({
-        type: 'deadbolt.keypad',
-        actor: entry && entry.name ? entry.name : 'Keypad',
-        location: 'Deadbolt',
-        action: `Keypad ${e.action} by ${who}${entry && entry.name ? ` (slot ${e.slot})` : ''}`,
-        success: true,
-      });
-    });
-    // Truthful re-interview completion: refreshInfo() resolves when the
-    // interview is merely re-queued, so completion is announced from the
-    // node's own 'interview completed' event instead.
-    lockDriver.on('interview-completed', () => {
-      logger.info('Deadbolt: interview completed; bolt and battery readings are fresh');
-      if (_reinterviewRequested) {
-        _reinterviewRequested = false;
-        broadcastEvent({
-          type: 'deadbolt.reinterview',
-          actor: 'Deadbolt Controller',
-          location: 'Deadbolt',
-          action: 'Re-interview completed; readings refreshed',
-          success: true,
-        });
-      }
-    });
-  }
-  // deadbolt_rules is a per-lock MAP; the controller takes ONE lock's rules
-  // slice (the active lock's entry), so its internals stay shape-agnostic.
-  const controllerConfig = Object.assign({}, config, {
-    deadbolt_rules: deadboltRules.rulesForLock(config.deadbolt_rules, activeLockId(config)) || undefined,
   });
-  deadboltController = new DeadboltController(controllerConfig, {
-    lockDriver,
+  driver.on('device-note', (n) => {
+    logger.info(`Deadbolt ${label}: device note: ${n.detail || n.code}`);
+    broadcastEvent({
+      type: 'deadbolt.device_note',
+      actor: 'Deadbolt Controller',
+      location: label,
+      action: n.detail || n.code || 'device note',
+      success: true,
+    });
+  });
+  driver.on('keypad-activity', (e) => {
+    const entry = savedUserCodes(lockId)[String(e.slot)];
+    const who = (entry && entry.name) || `slot ${e.slot}, unassigned`;
+    logger.info(`Deadbolt ${label}: keypad ${e.action} (slot ${e.slot}${entry && entry.name ? `, ${entry.name}` : ''})`);
+    broadcastEvent({
+      type: 'deadbolt.keypad',
+      actor: entry && entry.name ? entry.name : 'Keypad',
+      location: label,
+      action: `Keypad ${e.action} by ${who}${entry && entry.name ? ` (slot ${e.slot})` : ''}`,
+      success: true,
+    });
+  });
+  driver.on('interview-completed', () => {
+    logger.info(`Deadbolt ${label}: interview completed; bolt and battery readings are fresh`);
+    if (_reinterviewRequested) {
+      _reinterviewRequested = false;
+      broadcastEvent({
+        type: 'deadbolt.reinterview',
+        actor: 'Deadbolt Controller',
+        location: label,
+        action: 'Re-interview completed; readings refreshed',
+        success: true,
+      });
+    }
+  });
+}
+
+// Controllers only (no driver teardown): one per automated lock with ITS
+// rules slice and NO cascade rules, plus one dedicated cascade controller so
+// cascades fire exactly once regardless of how many locks are automated.
+// Reused by the live rules-reload path, which must not touch the drivers.
+function buildDeadboltControllers() {
+  deadboltControllers = new Map();
+  cascadeController = null;
+  const deps = {
     getUnifiClient: () => unifiClient,
     broadcaster: broadcastEvent,
     logger,
     onAlert: (a) => { logger.warn(`ALERT ${a.type}: ${JSON.stringify(a)}`); notifier.notify(a); },
-  });
-  logger.info(`Deadbolt add-on active (lock driver: ${lockDriver ? lockDriver.constructor.name : 'none'}, cascade rules: ${deadboltController.cascadeRules.length})`);
+  };
+  for (const lockId of deadboltRules.automatedLockIds(config.deadbolt_rules)) {
+    const entry = deadboltRules.rulesForLock(config.deadbolt_rules, lockId) || {};
+    const controller = new DeadboltController(
+      Object.assign({}, config, { deadbolt_rules: entry, cascade_rules: { rules: [] } }),
+      Object.assign({ lockDriver: lockDrivers.get(lockId) || null }, deps)
+    );
+    if (controller.enabled) deadboltControllers.set(lockId, controller);
+  }
+  const cascades = (config.cascade_rules && Array.isArray(config.cascade_rules.rules))
+    ? config.cascade_rules.rules.length : 0;
+  if (cascades) {
+    cascadeController = new DeadboltController(
+      Object.assign({}, config, { deadbolt_rules: undefined }),
+      Object.assign({ lockDriver: null }, deps)
+    );
+  }
+  // Active-lock aliases for endpoints that do not carry a lock_id (yet).
+  const activeId = activeLockId(config);
+  lockDriver = (activeId && lockDrivers.get(activeId)) || lockDrivers.values().next().value || null;
+  deadboltController = (activeId && deadboltControllers.get(activeId))
+    || deadboltControllers.values().next().value || cascadeController || null;
+}
+
+function buildDeadbolt() {
+  const dbCfg = config.deadbolt_rules;
+  const cascCfg = config.cascade_rules;
+  const zw = config.devices && config.devices.zwave;
+  const zwEnabled = !!(zw && zw.enabled);
+  // Inert unless something is configured: a paired/enabled Z-Wave setup,
+  // automation rules, or cascades.
+  if (!dbCfg && !cascCfg && !zwEnabled) return;
+
+  if (zwEnabled) {
+    // One driver per PAIRED lock, all sharing the one Z-Wave manager. Every
+    // paired lock is immediately controllable (test buttons, auto-relock,
+    // PIN codes) whether or not it is wired to a trigger door.
+    const locks = zw.locks || {};
+    const pairedIds = Object.keys(locks).filter((id) => locks[id] && locks[id].node_id > 0);
+    for (const lockId of pairedIds) {
+      const lockCfg = Object.assign(
+        { serial_path: zw.serial_path, cache_dir: zw.cache_dir },
+        locks[lockId]
+      );
+      const driver = new ZwaveLock(lockCfg, { logger, manager: zwaveManager });
+      lockDrivers.set(lockId, driver);
+      wireDriverEvents(lockId, driver);
+    }
+    if (!pairedIds.length) {
+      // Enabled but nothing paired yet: normal mid-setup state, not an
+      // error. The dashboard's Pair flow fills in node_id and reactivates.
+      logger.info('Deadbolt: Z-Wave is enabled but no lock is paired yet. Use Pair New Lock in the dashboard (Configuration tab).');
+    }
+  } else if (dbCfg && ((zw && zw.dev_fake_lock) || process.env.NODE_ENV === 'development')) {
+    // Fake locks are OPT-IN only. They ALWAYS report success and drive no
+    // hardware, so they must never be substituted silently in production.
+    // One instance per automated lock so dev-mode multi-lock testing is real.
+    const ids = deadboltRules.automatedLockIds(dbCfg);
+    for (const lockId of (ids.length ? ids : ['fake_deadbolt'])) {
+      const driver = new FakeLock({ initial: 'locked' });
+      lockDrivers.set(lockId, driver);
+      wireDriverEvents(lockId, driver);
+    }
+    logger.warn('Deadbolt: using in-memory FakeLock(s) (dev/dry-run). They ALWAYS report success and drive no hardware. Never use in production.');
+  } else if (dbCfg && deadboltRules.automatedLockIds(dbCfg).length) {
+    // Configured but no real transport: fail loud, do NOT fake success.
+    logger.error('Deadbolt configured but devices.zwave.enabled is not true and dev_fake_lock is not set. Deadbolt LOCK/RETRACT are DISABLED (cascade still active). Set devices.zwave.enabled for hardware, or devices.zwave.dev_fake_lock for dev.');
+    notifier.notify({ type: 'deadbolt_no_transport', detail: 'deadbolt configured but no lock transport enabled' });
+  }
+
+  buildDeadboltControllers();
+  logger.info(`Deadbolt add-on active (drivers: ${lockDrivers.size}, automated: ${deadboltControllers.size}, cascade rules: ${cascadeController ? cascadeController.cascadeRules.length : 0})`);
 }
 
 // Rebuild and activate the deadbolt after pairing/unpairing WITHOUT an app
@@ -383,24 +443,31 @@ function buildDeadbolt() {
 // but leaves the SHARED driver running), then the controller is rebuilt from
 // the just-persisted config and the event taps re-applied.
 async function bringDeadboltOnline() {
-  if (lockDriver) {
-    try { await lockDriver.shutdown(); } catch (e) { logger.warn(`Deadbolt: old lock shutdown failed: ${e.message}`); }
-    lockDriver = null;
+  for (const [lockId, driver] of lockDrivers) {
+    try { await driver.shutdown(); } catch (e) { logger.warn(`Deadbolt: old lock "${lockId}" shutdown failed: ${e.message}`); }
   }
+  lockDrivers = new Map();
+  deadboltControllers = new Map();
+  cascadeController = null;
+  lockDriver = null;
   deadboltController = null;
   buildDeadbolt();
-  let initOk = !!lockDriver; // a FakeLock (or no driver configured) needs no init retry
-  if (lockDriver) {
-    try {
-      await lockDriver.init();
-      logger.info('Deadbolt lock driver initialized');
-    } catch (err) {
+  // Init every driver concurrently: one lock's failure (a dead node, a bad
+  // entry) must never block another lock from coming online.
+  let initOk = lockDrivers.size > 0;
+  const entries = Array.from(lockDrivers.entries());
+  const results = await Promise.allSettled(entries.map(([, driver]) => driver.init()));
+  results.forEach((r, i) => {
+    const lockId = entries[i][0];
+    if (r.status === 'fulfilled') {
+      logger.info(`Deadbolt lock driver initialized ("${lockId}")`);
+    } else {
       initOk = false;
-      logger.error(`Deadbolt lock driver failed to initialize: ${err.message}`);
-      notifier.notify({ type: 'deadbolt_no_transport', detail: `lock driver init failed after pairing: ${err.message}` });
+      logger.error(`Deadbolt lock driver "${lockId}" failed to initialize: ${r.reason && r.reason.message}`);
+      notifier.notify({ type: 'deadbolt_no_transport', detail: `lock driver "${lockId}" init failed: ${r.reason && r.reason.message}` });
       scheduleDeadboltInitRetry();
     }
-  }
+  });
   applyEventTaps();
   return initOk;
 }
@@ -439,17 +506,27 @@ function scheduleDeadboltInitRetry() {
 
 // Route every raw UniFi event to the capture recorder and the deadbolt
 // controller. Re-applied whenever the UniFi client is rebuilt (reload).
+// Every observer that should see a raw event: one controller per automated
+// lock plus the dedicated cascade controller.
+function deadboltObservers() {
+  const out = Array.from(deadboltControllers.values());
+  if (cascadeController) out.push(cascadeController);
+  return out;
+}
+
 function applyEventTaps() {
   if (!unifiClient || typeof unifiClient.setRawTap !== 'function') return;
   // Inert by default: only install the tap when the add-on is active, so an
   // unconfigured deployment's event path is unchanged. Clear it otherwise.
-  if (!deadboltController) {
+  if (!deadboltObservers().length) {
     unifiClient.setRawTap(null);
     return;
   }
   unifiClient.setRawTap((e) => {
     capture.add(e);
-    try { deadboltController.observe(e); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
+    for (const controller of deadboltObservers()) {
+      try { controller.observe(e); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
+    }
   });
 }
 
@@ -805,8 +882,8 @@ app.post('/webhook', async (req, res) => {
   lastEventTime = Date.now();
   storeRawPayload('webhook', payload);
   capture.add(payload);
-  if (deadboltController) {
-    try { deadboltController.observe(payload); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
+  for (const controller of deadboltObservers()) {
+    try { controller.observe(payload); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
   }
 
   try {
@@ -1221,10 +1298,10 @@ function activeLockId(cfg) {
   return deadboltRules.automatedLockIds(c.deadbolt_rules)[0] || Object.keys(locks)[0] || null;
 }
 
-function savedUserCodes() {
-  const lockId = activeLockId();
+function savedUserCodes(lockId) {
+  const id = lockId || activeLockId();
   const locks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
-  return (lockId && locks[lockId] && locks[lockId].user_codes) || {};
+  return (id && locks[id] && locks[id].user_codes) || {};
 }
 
 // List assigned codes + the lock's capability. Digits never leave the server:
@@ -2671,25 +2748,23 @@ async function maybeRebuildDeadboltRules(oldSig) {
   const newSig = JSON.stringify([config.deadbolt_rules, config.cascade_rules]);
   if (newSig === oldSig) return;
   if (!config.deadbolt_rules && !config.cascade_rules) {
+    deadboltControllers = new Map();
+    cascadeController = null;
     deadboltController = null;
     applyEventTaps();
-    logger.info('Deadbolt rules removed: controller detached (lock driver untouched)');
+    logger.info('Deadbolt rules removed: controllers detached (lock drivers untouched)');
     return;
   }
   const zw = config.devices && config.devices.zwave;
-  if (!lockDriver && config.deadbolt_rules && zw && zw.enabled) {
+  if (!lockDrivers.size && config.deadbolt_rules && zw && zw.enabled) {
     await bringDeadboltOnline();
     return;
   }
-  deadboltController = new DeadboltController(config, {
-    lockDriver,
-    getUnifiClient: () => unifiClient,
-    broadcaster: broadcastEvent,
-    logger,
-    onAlert: (a) => { logger.warn(`ALERT ${a.type}: ${JSON.stringify(a)}`); notifier.notify(a); },
-  });
+  // Controllers rebuild from the current rules against the RUNNING drivers;
+  // the Z-Wave connections are never touched by a rules edit.
+  buildDeadboltControllers();
   applyEventTaps();
-  logger.info(`Deadbolt rules updated live (cascade rules: ${deadboltController.cascadeRules.length}); lock driver untouched`);
+  logger.info(`Deadbolt rules updated live (automated: ${deadboltControllers.size}, cascade rules: ${cascadeController ? cascadeController.cascadeRules.length : 0}); lock drivers untouched`);
 }
 
 async function reloadServices(newConfig) {
@@ -2830,16 +2905,21 @@ async function start() {
   logger.info(`Config backup schedule: every ${backupIntervalDays} days (checked on startup + daily)`);
 
   // Bring up the smart-deadbolt add-on (inert unless configured), then tap the
-  // event stream before the event source connects.
+  // event stream before the event source connects. Drivers init concurrently;
+  // one lock's failure never blocks another's startup.
   buildDeadbolt();
-  if (lockDriver) {
-    try {
-      await lockDriver.init();
-      logger.info('Deadbolt lock driver initialized');
-    } catch (err) {
-      logger.error(`Deadbolt lock driver init failed: ${err.message}. Retrying automatically; cascade unlock is unaffected.`);
-      scheduleDeadboltInitRetry();
-    }
+  {
+    const entries = Array.from(lockDrivers.entries());
+    const results = await Promise.allSettled(entries.map(([, driver]) => driver.init()));
+    results.forEach((r, i) => {
+      const lockId = entries[i][0];
+      if (r.status === 'fulfilled') {
+        logger.info(`Deadbolt lock driver initialized ("${lockId}")`);
+      } else {
+        logger.error(`Deadbolt lock driver "${lockId}" init failed: ${r.reason && r.reason.message}. Retrying automatically; cascade unlock is unaffected.`);
+        scheduleDeadboltInitRetry();
+      }
+    });
   }
   applyEventTaps();
 
@@ -2926,9 +3006,9 @@ if (require.main === module) {
       ]);
     } catch (e) { /* ignore teardown errors */ }
     try {
-      // Await the Z-Wave lock teardown (bounded) so listeners unbind cleanly.
-      if (lockDriver) await Promise.race([
-        Promise.resolve(lockDriver.shutdown()),
+      // Await the Z-Wave lock teardowns (bounded) so listeners unbind cleanly.
+      if (lockDrivers.size) await Promise.race([
+        Promise.allSettled(Array.from(lockDrivers.values()).map((d) => Promise.resolve(d.shutdown()))),
         new Promise((r) => setTimeout(r, 3000)),
       ]);
     } catch (e) { /* ignore teardown errors */ }

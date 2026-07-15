@@ -795,6 +795,41 @@ test('ZwaveLock: rewriteUserCodes replays saved codes sequentially', async () =>
 });
 
 // ---------------------------------------------------------------------------
+// Multi-lock: two ZwaveLock instances sharing ONE manager (exactly how
+// index.js builds them) must command only their own node.
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: two locks on one shared manager never cross-command nodes', async () => {
+  const nodeA = new MockNode({ current: 0xff });
+  const nodeB = new MockNode({ current: 0x00 });
+  const nodes = new Map([[2, nodeA], [3, nodeB]]);
+  const manager = new EventEmitter();
+  manager.ensureStarted = async () => ({ controller: { nodes } });
+  manager.isRunning = () => true;
+  manager.stop = async () => {};
+
+  const lockA = new ZwaveLock({ node_id: 2 }, { manager, logger: { warn() {} } });
+  const lockB = new ZwaveLock({ node_id: 3 }, { manager, logger: { warn() {} } });
+  await lockA.init();
+  await lockB.init();
+  assert.equal((await lockA.getState()).boltState, LockState.LOCKED);
+  assert.equal((await lockB.getState()).boltState, LockState.UNLOCKED);
+
+  const rA = await lockA.unlock('entry at A');
+  assert.equal(rA.success, true);
+  assert.deepEqual(nodeA.setCalls, [0x00], 'lock A commanded its own node');
+  assert.deepEqual(nodeB.setCalls, [], 'lock B\'s node untouched by A');
+
+  const rB = await lockB.lock('secure B');
+  assert.equal(rB.success, true);
+  assert.deepEqual(nodeB.setCalls, [0xff], 'lock B commanded its own node');
+  assert.deepEqual(nodeA.setCalls, [0x00], 'lock A saw no extra command');
+
+  await lockA.shutdown();
+  await lockB.shutdown();
+});
+
+// ---------------------------------------------------------------------------
 // Self-healing: fail-fast preflight, dead-node revival ladder, pre-command
 // ping, and the measured health check (unattended-rack requirement).
 // ---------------------------------------------------------------------------
