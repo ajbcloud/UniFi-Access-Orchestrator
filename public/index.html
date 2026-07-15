@@ -2076,13 +2076,35 @@ function promptForApiKey() {
   return promise;
 }
 
+// Hard ceiling on any single request. The slowest legitimate call is a
+// deadbolt control verify (~12s x2 attempts + backoff ≈ 30s); anything past
+// 45s is a hung request, and an unresolved fetch used to leave the deadbolt
+// buttons disabled forever.
+const API_TIMEOUT_MS = 45000;
+
 async function api(method, path, body, _retried) {
   const headers = { 'Content-Type': 'application/json' };
   const key = getApiKey();
   if (key) headers['x-api-key'] = key;
   const opts = { method, headers };
   if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(path, opts);
+  let timer = null;
+  if (typeof AbortController === 'function') {
+    const ac = new AbortController();
+    opts.signal = ac.signal;
+    timer = setTimeout(() => ac.abort(), API_TIMEOUT_MS);
+  }
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch (e) {
+    if (e && e.name === 'AbortError') {
+      throw new Error(`no response after ${Math.round(API_TIMEOUT_MS / 1000)}s (${path}); the server may still be working - check the event feed`);
+    }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   // If the server requires a key we do not have (or ours went stale), recover
   // once: the desktop bridge is asked for a fresh key first (self-heals a
   // stale localStorage copy silently), then the in-page dialog. The _retried
@@ -2116,6 +2138,10 @@ async function fetchHealth() {
     updateDashboard();
     updateStatus(true);
     updateAutoSyncPill();
+    // Backstop for the Z-Wave panel's focus-guarded repaints: if one was
+    // skipped and the user's focus has moved on, deliver it now.
+    _zwSetupGate.kick(renderZwaveSetup);
+    _zwDeadboltGate.kick(refreshZwaveDeadbolt);
   } catch (e) {
     updateStatus(false);
   }
@@ -2879,6 +2905,7 @@ function renderZwaveSetup() {
   if (typeof _pairPollTimer !== 'undefined' && _pairPollTimer) return;
   const el = document.getElementById('configZwave');
   if (!el) return;
+  wireZwRefreshRetry();
   // Same protection for ANY interaction: background auto-refreshes (door/user
   // drift on a flapping controller) used to rebuild this section while a
   // dropdown was open, closing it instantly ("the After unlock dropdown gives
@@ -2886,7 +2913,11 @@ function renderZwaveSetup() {
   // skip this repaint; the next refresh catches up.
   const focused = document.activeElement;
   if (focused && typeof el.contains === 'function' && el.contains(focused)
-      && /^(SELECT|INPUT|TEXTAREA|BUTTON)$/.test(focused.tagName || '')) return;
+      && /^(SELECT|INPUT|TEXTAREA|BUTTON)$/.test(focused.tagName || '')) {
+    _zwSetupGate.skipped(renderZwaveSetup);
+    return;
+  }
+  _zwSetupGate.ran();
   const zw = configData?.devices?.zwave || {};
   const enabled = zw.enabled === true;
   el.innerHTML = `
@@ -2915,6 +2946,7 @@ function renderZwaveSetup() {
       <div id="zwaveAddDeadbolt" style="margin-top:10px"></div>
       <div id="zwavePairPanel" style="margin-top:10px"></div>
       <div id="zwaveLockCards" style="margin-top:10px"></div>
+      <div id="zwaveKeypadUsers" style="margin-top:10px"></div>
       <div id="zwaveDeadboltLocks" style="margin-top:10px"></div>
       <div id="zwaveDeadboltHealth" style="margin-top:10px;font-size:12px"></div>
     </div>
@@ -3035,13 +3067,60 @@ function setPairPanel(html) {
 }
 
 // Disable/enable the deadbolt action buttons so a click gives immediate
-// feedback and cannot be double-fired. refreshZwaveDeadbolt re-renders this
-// button row from live state, so it restores the correct enabled state.
+// feedback and cannot be double-fired. Every handler that sets busy(true)
+// MUST call busy(false) in a finally: the repaint that used to restore the
+// buttons is skipped whenever focus sits in a field, and a skipped repaint
+// with every button disabled froze the whole panel until a page reload.
 function _setDeadboltButtonsBusy(busy) {
   for (const id of ['zwaveDeadboltButtons', 'zwaveLockCards']) {
     const el = document.getElementById(id);
     if (el) el.querySelectorAll('button').forEach((b) => { b.disabled = !!busy; });
   }
+}
+
+// Retry bookkeeping for a repaint skipped by the focus guard. The guard's
+// intent (never destroy an open dropdown or a half-typed input) stays; this
+// makes the skip TEMPORARY: a short timer retries (the guard trips before any
+// fetch, so retries are free), leaving the field retries immediately, and the
+// 10s health poll is the backstop. Pure factory so it is unit-testable.
+function createZwRefreshGate(delayMs) {
+  return {
+    pending: false,
+    _timer: null,
+    // A repaint was skipped: remember it and arm one retry timer.
+    skipped(retryFn) {
+      this.pending = true;
+      if (this._timer) return;
+      this._timer = setTimeout(() => { this._timer = null; retryFn(); }, delayMs || 2000);
+    },
+    // A repaint actually ran: nothing pending anymore.
+    ran() {
+      this.pending = false;
+      if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+    },
+    // External nudge (focusout, health poll): retry only if one is owed.
+    kick(retryFn) { if (this.pending) retryFn(); },
+  };
+}
+const _zwSetupGate = createZwRefreshGate();
+const _zwDeadboltGate = createZwRefreshGate();
+
+// One-time wiring: leaving any field inside the Z-Wave section immediately
+// delivers a repaint that was skipped while the field had focus.
+let _zwRetryWired = false;
+function wireZwRefreshRetry() {
+  if (_zwRetryWired) return;
+  const el = document.getElementById('configZwave');
+  if (!el) return;
+  _zwRetryWired = true;
+  el.addEventListener('focusout', () => {
+    // setTimeout(0): let focus settle on the NEW element first, so a move
+    // between two fields inside the section still counts as focused.
+    setTimeout(() => {
+      _zwSetupGate.kick(renderZwaveSetup);
+      _zwDeadboltGate.kick(refreshZwaveDeadbolt);
+    }, 0);
+  });
 }
 
 // Pure renderer for the deadbolt action-button row (#zwaveDeadboltButtons),
@@ -3087,9 +3166,13 @@ function buildDeadboltLocksTable(locks, pairingActive, catalog) {
     const title = prof
       ? ` title="Exclude: ${escapeHtml(prof.exclude || '')}&#10;Factory reset: ${escapeHtml(prof.reset || '')}"`
       : '';
+    // A saved-but-unpaired row cannot be excluded (no node), but it CAN be
+    // removed from the config, so it never lingers as an un-actionable ghost.
     const unpair = (l.node_id || l.paired)
       ? `<button class="btn btn-sm btn-secondary" onclick="startUnpairNode(${Number(l.node_id) || 0})"${dis}${title}>Unpair</button>`
-      : '';
+      : (l.lock_id
+        ? `<button class="btn btn-sm btn-secondary" onclick="removeSavedLock(${escapeHtml(JSON.stringify(String(l.lock_id)))})"${dis} title="Deletes this saved entry (it is not paired, so there is nothing to exclude).">Remove</button>`
+        : '');
     return `<tr><td style="padding:4px 10px 4px 0">${name}</td>`
       + `<td style="padding:4px 10px 4px 0">${node}</td>`
       + `<td style="padding:4px 10px 4px 0">${model}</td>`
@@ -3215,6 +3298,12 @@ function buildLockCardButtons(l) {
   if (nodeId > 0) {
     html += `<button class="btn btn-sm btn-secondary" onclick="startUnpairNode(${nodeId})"${dis} title="Removes this lock from the Z-Wave network. The app stops controlling it until it is paired again.">Unpair</button>`;
   }
+  // PIN management lives in the global Keypad users panel; the per-lock
+  // rewrite (for after a re-pair) stays here, shown only when this lock has
+  // saved codes to send.
+  if (l.user_code_count > 0) {
+    html += `<button class="btn btn-sm btn-secondary" onclick="rewriteUserCodesToLock(${arg})"${dis} title="Sends every saved code to this lock again. Use after re-pairing the lock.">Rewrite Codes to Lock</button>`;
+  }
   return html;
 }
 
@@ -3249,7 +3338,6 @@ function buildLockCard(l) {
     + `<div style="display:flex;gap:8px;flex-wrap:wrap">${buildLockCardButtons(l)}</div>`
     + `<div id="zwaveDeadboltHealth_${cssId(l.lock_id)}" style="margin-top:8px;font-size:12px"></div>`
     + `<div id="zwaveAutoRelock_${cssId(l.lock_id)}" style="margin-top:10px">${buildAutoRelockControl(l, l.lock_id)}</div>`
-    + `<div id="zwaveUserCodes_${cssId(l.lock_id)}" style="margin-top:10px"></div>`
     + `</div>`;
 }
 
@@ -3312,86 +3400,105 @@ async function applyAutoRelock(lockId) {
   } catch (e) { toast(`Auto-relock apply failed: ${e.message}`, 'error'); }
 }
 
-// Pure builder for the Keypad PIN codes panel. `info` is the server's
-// capability + assigned-codes report (digits never reach the browser; each
-// entry carries only pin_length for the masked display), `users` is the
-// synced UniFi user list for the picker. Everything user-derived is escaped;
-// the whole panel is inert while a pairing session owns the controller.
-function buildUserCodesPanel(info, users, pairingActive, lockId) {
-  const i = info || {};
-  if (!i.supported) {
-    return i.note
-      ? `<div style="font-size:12px;color:var(--text-muted)">Keypad codes: ${escapeHtml(i.note)}</div>`
-      : '';
+// Pure builder for the GLOBAL Keypad users panel. One PIN per user: the code
+// is written to every paired lock and always kept in sync with the user's
+// UniFi PIN. `agg` is the server's /api/deadbolt/keypad-users report (digits
+// never reach the browser; each user carries only pin_length for the masked
+// display), `users` is the synced UniFi user list for the picker. Everything
+// user-derived is escaped; the panel is inert while a pairing session owns
+// the controller.
+function buildKeypadUsersPanel(agg, users, pairingActive) {
+  const a = agg || {};
+  const locks = Array.isArray(a.locks) ? a.locks : [];
+  const usable = locks.filter((l) => l.supported);
+  if (!locks.length) return '';
+  if (!usable.length) {
+    const note = locks.map((l) => l.note).find(Boolean);
+    return note ? `<div style="font-size:12px;color:var(--text-muted)">Keypad codes: ${escapeHtml(note)}</div>` : '';
   }
   const dis = pairingActive ? ' disabled' : '';
-  const suffix = lockId ? `_${cssId(lockId)}` : '';
-  const arg = lockId ? escapeHtml(JSON.stringify(String(lockId))) : '';
-  const codes = Array.isArray(i.codes) ? i.codes : [];
-  const lenRule = i.fixed_length && i.configured_length
-    ? `${i.configured_length}-digit codes (all codes on this lock share one length)`
-    : `${i.min_length || 4} to ${i.max_length || 8} digit codes`;
-  let rows = '';
-  for (const c of codes) {
-    const badges = (c.pushed_to_unifi ? ` <span class="badge success" title="The same PIN was pushed to this user's UniFi Access account">UniFi</span>` : '')
-      + (c.user_missing ? ` <span class="badge warning" title="This user is no longer in the UniFi sync; the code still opens the deadbolt until removed">user missing</span>` : '');
-    rows += `<tr><td style="padding:4px 10px 4px 0">${escapeHtml(c.name || c.user_id || 'unnamed')}${badges}</td>`
-      + `<td style="padding:4px 10px 4px 0;color:var(--text-muted)">slot ${escapeHtml(c.slot)}</td>`
-      + `<td style="padding:4px 10px 4px 0;font-family:monospace">${'*'.repeat(Math.max(1, c.pin_length || 0))}</td>`
-      + `<td style="padding:4px 0"><button class="btn btn-sm btn-secondary" onclick="removeUserCode(${Number(c.slot)}${arg ? ', ' + arg : ''})"${dis} title="Clears this slot on the deadbolt only. The user's UniFi PIN is not touched.">Remove</button></td></tr>`;
-  }
+  const lockName = (id) => {
+    const l = locks.find((x) => x.lock_id === id);
+    return (l && l.name) || id;
+  };
+  const statusBadge = (s) => {
+    if (s.status === 'ok') return `<span class="badge success" title="This lock holds the user's current PIN">${escapeHtml(lockName(s.lock_id))}</span>`;
+    if (s.status === 'pending') return `<span class="badge info" title="The PIN was queued to this lock; wake it at the keypad to finish the write">${escapeHtml(lockName(s.lock_id))}: pending</span>`;
+    if (s.status === 'differs') return `<span class="badge warning" title="This lock still holds an older, different PIN; save the PIN again to unify">${escapeHtml(lockName(s.lock_id))}: old PIN</span>`;
+    return `<span class="badge warning" title="This lock has no code for the user; save the PIN again to add it">${escapeHtml(lockName(s.lock_id))}: missing</span>`;
+  };
+  const rows = (Array.isArray(a.users) ? a.users : []).map((u) => {
+    const badges = (u.in_unifi ? ` <span class="badge success" title="The same PIN is set on this user's UniFi Access account">UniFi</span>` : ` <span class="badge warning" title="UniFi may hold a different PIN for this user; save the PIN again to sync">UniFi not synced</span>`)
+      + (u.user_missing ? ` <span class="badge warning" title="This user is no longer in the UniFi sync; the code still opens the deadbolts until removed">user missing</span>` : '');
+    const perLock = (u.locks || []).map(statusBadge).join(' ');
+    const uidArg = escapeHtml(JSON.stringify(String(u.user_id)));
+    return `<tr><td style="padding:4px 10px 4px 0">${escapeHtml(u.name || u.user_id || 'unnamed')}${badges}</td>`
+      + `<td style="padding:4px 10px 4px 0;font-family:monospace">${'*'.repeat(Math.max(1, u.pin_length || 0))}</td>`
+      + `<td style="padding:4px 10px 4px 0">${perLock}</td>`
+      + `<td style="padding:4px 0"><button class="btn btn-sm btn-secondary" onclick="removeKeypadUser(${uidArg})"${dis} title="Clears this user's code on every lock. Their UniFi PIN is not touched.">Remove</button></td></tr>`;
+  }).join('');
+  const rule = a.pin_rule || {};
+  const lenRule = rule.conflict
+    ? 'your locks demand different fixed code lengths; no single PIN fits both'
+    : (rule.fixed ? `${rule.fixed}-digit codes (a lock enforces one shared length)` : `${rule.min || 4} to ${rule.max || 10} digit codes`);
   const userOpts = (Array.isArray(users) ? users : [])
     .map((u) => `<option value="${escapeHtml(u.id)}">${escapeHtml(u.name || u.id)}</option>`)
     .join('');
   return `<div style="font-size:12px">`
-    + `<div style="font-weight:600;margin-bottom:4px">Keypad PIN codes`
-    + ` <span style="font-weight:400;color:var(--text-muted)">${codes.length} of ${escapeHtml(i.slots)} slots used; ${escapeHtml(lenRule)}</span></div>`
+    + `<div style="font-weight:600;margin-bottom:2px">Keypad users</div>`
+    + `<div style="color:var(--text-muted);margin-bottom:6px">One PIN per user. Saving writes the code to every paired lock (${usable.map((l) => escapeHtml(l.name || l.lock_id)).join(', ')}) and updates the user's UniFi Access PIN to match. ${escapeHtml(lenRule)}.</div>`
     + (rows ? `<table style="border-collapse:collapse;font-size:12px"><tbody>${rows}</tbody></table>` : '')
     + `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">`
-    + `<select id="ucUser${suffix}" style="font-size:12px;padding:5px"${dis}><option value="">-- pick a user --</option>${userOpts}</select>`
-    + `<input id="ucPin${suffix}" type="text" inputmode="numeric" autocomplete="off" maxlength="10" placeholder="PIN" style="font-size:12px;padding:6px;width:90px"${dis}>`
-    + `<button class="btn btn-sm btn-primary" onclick="saveUserCode(${arg})"${dis} title="Writes the code to the deadbolt keypad, then asks whether to also overwrite this user's PIN in UniFi Access.">Save Code</button>`
-    + (codes.length ? `<button class="btn btn-sm btn-secondary" onclick="rewriteUserCodesToLock(${arg})"${dis} title="Sends every saved code to the lock again. Use after re-pairing the lock.">Rewrite Codes to Lock</button>` : '')
+    + `<select id="kuUser" style="font-size:12px;padding:5px"${dis}><option value="">-- pick a user --</option>${userOpts}</select>`
+    + `<input id="kuPin" type="text" inputmode="numeric" autocomplete="off" maxlength="10" placeholder="PIN" style="font-size:12px;padding:6px;width:90px"${dis}>`
+    + `<button class="btn btn-sm btn-primary" onclick="saveKeypadUser()"${dis} title="Writes the code to every paired lock and updates this user's UniFi Access PIN to match.">Save PIN</button>`
     + `</div></div>`;
 }
 
-// Write a user's keypad code: lock first, then the per-save UniFi decision.
-async function saveUserCode(lockId) {
-  const suffix = lockId ? '_' + cssId(lockId) : '';
-  const sel = document.getElementById('ucUser' + suffix);
-  const pinEl = document.getElementById('ucPin' + suffix);
+// Save a user's ONE PIN: every paired lock plus their UniFi Access PIN.
+async function saveKeypadUser() {
+  const sel = document.getElementById('kuUser');
+  const pinEl = document.getElementById('kuPin');
   if (!sel || !pinEl) return;
   const userId = sel.value;
   const name = userId && sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent : '';
   const pin = (pinEl.value || '').trim();
   if (!userId) { toast('Pick a user first.', 'error'); return; }
   if (!/^[0-9]{4,10}$/.test(pin)) { toast('The PIN must be 4 to 10 digits.', 'error'); return; }
-  const push = confirm(`Also overwrite ${name}'s PIN in UniFi Access?\n\nOK: the same PIN replaces their UniFi keypad PIN everywhere (UniFi readers and this deadbolt will match).\nCancel: this deadbolt only; their UniFi PIN is untouched.`);
-  toast('Writing the code to the lock...', 'info');
+  toast('Writing the PIN to the locks...', 'info');
   try {
-    const body = { user_id: userId, name, pin, push_to_unifi: push };
-    if (lockId) body.lock_id = lockId;
-    const r = await api('POST', '/api/deadbolt/user-codes', body);
-    if (r.error) { toast(r.error, 'error'); return; }
-    if (r.confirmed === null) toast(`Code queued for slot ${r.slot}; wake the lock at the keypad to finish the write.`, 'info');
-    else toast(`Keypad code set for ${name} (slot ${r.slot}).`, 'success');
-    if (r.unifi && r.unifi.attempted) {
-      if (r.unifi.success) toast(`UniFi PIN for ${name} updated to match.`, 'success');
-      else if (r.unifi.permission_denied) toast('UniFi push failed: the API token lacks user credential edit permission. Grant it in UniFi Access API settings, then save the PIN again and choose overwrite.', 'error');
-      else toast(`UniFi push failed: ${r.unifi.error || 'unknown error'}. The deadbolt code still works.`, 'error');
+    const r = await api('POST', '/api/deadbolt/keypad-users', { user_id: userId, name, pin });
+    if (r.error) {
+      toast(r.error, 'error');
+      for (const row of (r.results || [])) {
+        if (row.error) toast(`${row.lock_id}: ${row.error}`, 'error');
+      }
+      return;
+    }
+    const results = r.results || [];
+    const written = results.filter((x) => x.slot != null);
+    const queued = written.filter((x) => x.confirmed === null).length;
+    toast(`PIN set for ${name} on ${written.length} of ${results.length} lock(s)${queued ? ` (${queued} queued; wake that lock at the keypad to finish)` : ''}.`, written.length === results.length ? 'success' : 'error');
+    for (const row of results) {
+      if (row.error) toast(`${row.lock_id}: ${row.error}`, 'error');
+    }
+    if (r.unifi) {
+      if (r.unifi.success && r.unifi.skipped) toast('UniFi already had this PIN; nothing to update there.', 'info');
+      else if (r.unifi.success) toast(`UniFi PIN for ${name} updated to match.`, 'success');
+      else if (r.unifi.permission_denied) toast('UniFi sync failed: the API token lacks user credential edit permission. Grant it in UniFi Access API settings, then save the PIN again.', 'error');
+      else toast(`UniFi sync failed: ${r.unifi.error || 'unknown error'}. The lock codes still work; save the PIN again to retry.`, 'error');
     }
     pinEl.value = '';
     refreshZwaveDeadbolt();
-  } catch (e) { toast(`Saving the code failed: ${e.message}`, 'error'); }
+  } catch (e) { toast(`Saving the PIN failed: ${e.message}`, 'error'); }
 }
 
-async function removeUserCode(slot, lockId) {
-  if (!confirm(`Remove the keypad code in slot ${slot} from the deadbolt?\n\nThe user's UniFi PIN is not touched.`)) return;
+async function removeKeypadUser(userId) {
+  if (!confirm('Remove this user\'s keypad code from every lock?\n\nTheir UniFi PIN is not touched.')) return;
   try {
-    const q = lockId ? `?lock_id=${encodeURIComponent(lockId)}` : '';
-    const r = await api('DELETE', `/api/deadbolt/user-codes/${slot}${q}`);
+    const r = await api('DELETE', `/api/deadbolt/keypad-users/${encodeURIComponent(userId)}`);
     if (r.error) { toast(r.error, 'error'); return; }
-    toast(`Slot ${slot} cleared on the deadbolt.`, 'success');
+    toast(`Keypad code removed on ${(r.results || []).length} lock(s).`, 'success');
     refreshZwaveDeadbolt();
   } catch (e) { toast(`Remove failed: ${e.message}`, 'error'); }
 }
@@ -3416,13 +3523,20 @@ async function refreshZwaveDeadbolt() {
   const cardsEl = document.getElementById('zwaveLockCards');
   if (!line || !btns) return;
   // Never rebuild the panel under the user's cursor: an open dropdown or a
-  // half-typed PIN would be destroyed by the innerHTML swap. The next
-  // refresh (button actions, auto-sync) repaints once focus moves on.
+  // half-typed PIN would be destroyed by the innerHTML swap. The skip is
+  // TEMPORARY (gate retries shortly / on focusout / via the health poll) -
+  // it used to be permanent, which left action-disabled buttons dead until
+  // a full page reload.
   const zwSection = document.getElementById('configZwave');
   const focusedEl = document.activeElement;
   if (zwSection && focusedEl && typeof zwSection.contains === 'function'
       && zwSection.contains(focusedEl)
-      && /^(SELECT|INPUT|TEXTAREA)$/.test(focusedEl.tagName || '')) return;
+      && /^(SELECT|INPUT|TEXTAREA)$/.test(focusedEl.tagName || '')) {
+    _zwDeadboltGate.skipped(refreshZwaveDeadbolt);
+    return;
+  }
+  _zwDeadboltGate.ran();
+  wireZwRefreshRetry();
   try {
     const r = await api('GET', '/api/devices');
     const zw = r.zwave || {};
@@ -3462,21 +3576,21 @@ async function refreshZwaveDeadbolt() {
         ? `1 lock paired. Each lock's controls live on its card below.`
         : `${pairedLocks.length} locks paired. Each lock's controls live on its card below.`;
       // One card per paired lock: identity, live badges, buttons, after-unlock
-      // control; the keypad-codes panel fills asynchronously per lock.
-      if (cardsEl) {
-        cardsEl.innerHTML = pairedLocks.map((l) => buildLockCard(l)).join('');
-        for (const l of pairedLocks.filter((x) => x.bound)) {
-          const el = document.getElementById('zwaveUserCodes_' + cssId(l.lock_id));
-          if (!el) continue;
-          try {
-            const uc = await api('GET', '/api/deadbolt/user-codes?lock_id=' + encodeURIComponent(l.lock_id));
-            el.innerHTML = uc.error ? '' : buildUserCodesPanel(uc, usersData?.users || [], pairingActive, l.lock_id);
-          } catch (e) { /* panel is optional detail; leave as-is */ }
-        }
+      // control. PIN management is the single Keypad users panel below the
+      // cards (one PIN per user, applied to every lock).
+      if (cardsEl) cardsEl.innerHTML = pairedLocks.map((l) => buildLockCard(l)).join('');
+      const kuEl = document.getElementById('zwaveKeypadUsers');
+      if (kuEl) {
+        try {
+          const agg = await api('GET', '/api/deadbolt/keypad-users');
+          kuEl.innerHTML = agg.error ? '' : buildKeypadUsersPanel(agg, usersData?.users || [], pairingActive);
+        } catch (e) { /* panel is optional detail; leave as-is */ }
       }
     } else {
       line.textContent = 'No lock paired yet.';
       if (cardsEl) cardsEl.innerHTML = '';
+      const kuEl = document.getElementById('zwaveKeypadUsers');
+      if (kuEl) kuEl.innerHTML = '';
     }
     // Resume polling if a session is running (e.g. after a page reload).
     if (pairingActive && !_pairPollTimer) pollPairingStatus();
@@ -3532,6 +3646,12 @@ async function startPairing() {
   } catch (e) {
     toast(`Pairing failed to start: ${e.message}`, 'error');
     await showPairFailure();
+  } finally {
+    // Guaranteed re-enable: the repaint can be skipped while a field has
+    // focus, and disabled buttons with no repaint froze the panel. During a
+    // live pairing session the next repaint re-disables them (and the
+    // endpoints 409), so a brief enable is harmless.
+    _setDeadboltButtonsBusy(false);
   }
 }
 
@@ -3607,7 +3727,22 @@ async function startUnpairNode(nodeId) {
   } catch (e) {
     toast(`Unpair failed: ${e.message}`, 'error');
     refreshZwaveDeadbolt();
+  } finally {
+    _setDeadboltButtonsBusy(false); // guaranteed re-enable (repaint may be skipped)
   }
+}
+
+// Delete a saved-but-unpaired lock entry (a ghost). Paired locks go through
+// Unpair instead; the server enforces that with a 409.
+async function removeSavedLock(lockId) {
+  const ok = confirm(`Remove the saved entry for "${lockId}"?\n\nIt is not paired, so only the stored settings (and any automation rule) are deleted.`);
+  if (!ok) return;
+  try {
+    const r = await api('DELETE', '/api/deadbolt/locks/' + encodeURIComponent(lockId));
+    if (r.error) { toast(r.error, 'error'); return; }
+    toast(`Removed "${lockId}"`, 'success');
+    loadConfig(); // refreshes the locks table AND the automation panel
+  } catch (e) { toast(`Remove failed: ${e.message}`, 'error'); }
 }
 
 // Measured link health: ping + RTT/RSSI/route + one lifeline probe. This is
@@ -3675,6 +3810,8 @@ async function startUnpair() {
   } catch (e) {
     toast(`Unpair failed to start: ${e.message}`, 'error');
     await showPairFailure();
+  } finally {
+    _setDeadboltButtonsBusy(false); // guaranteed re-enable (repaint may be skipped)
   }
 }
 
@@ -3697,7 +3834,12 @@ async function deadboltControl(action, lockId) {
       toast(`Deadbolt ${action} failed: ${r.error || 'not verified'}`, 'error');
     }
     refreshZwaveDeadbolt();
-  } catch (e) { toast(`Control failed: ${e.message}`, 'error'); refreshZwaveDeadbolt(); }
+  } catch (e) {
+    toast(`Control failed: ${e.message}`, 'error');
+    refreshZwaveDeadbolt();
+  } finally {
+    _setDeadboltButtonsBusy(false); // guaranteed re-enable (repaint may be skipped)
+  }
 }
 
 // Heal a lock whose interview died partway (bolt/battery stuck at unknown).
@@ -3737,7 +3879,9 @@ function renderDeadboltRules() {
   // writing its own entry, so two locks can follow two different doors.
   const savedLocks = configData?.devices?.zwave?.locks || {};
   const db = configData?.deadbolt_rules || {};
-  const lockIds = Object.keys(savedLocks);
+  // Unpaired ghosts (node_id 0, left by an unpair) get no automation row;
+  // entries with NO node_id (dev FakeLock bindings) keep theirs.
+  const lockIds = Object.keys(savedLocks).filter((id) => savedLocks[id]?.node_id !== 0);
 
   let html = `
     <div id="deadboltTriggerRow" style="margin-bottom:14px">

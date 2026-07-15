@@ -1,7 +1,8 @@
 'use strict';
 
-// Guards buildUserCodesPanel: the Keypad PIN codes section of the Smart
-// Deadbolt panel. PIN digits must never appear (the server only sends
+// Guards buildKeypadUsersPanel: the global Keypad users section of the Smart
+// Deadbolt panel (one PIN per user, applied to every paired lock and always
+// synced to UniFi). PIN digits must never appear (the server only sends
 // pin_length), names are operator/UniFi-derived and must be escaped,
 // unsupported models show their catalog note instead of controls, and the
 // whole panel goes inert while a pairing session owns the controller.
@@ -28,67 +29,88 @@ function extractFn(name) {
 }
 
 function load() {
-  const src = extractFn('escapeHtml') + '\n' + extractFn('buildUserCodesPanel');
-  return new Function(src + '; return buildUserCodesPanel;')();
+  const src = extractFn('escapeHtml') + '\n' + extractFn('buildKeypadUsersPanel');
+  return new Function(src + '; return buildKeypadUsersPanel;')();
 }
 
-const CAP = {
-  supported: true,
-  slots: 30,
-  min_length: 4,
-  max_length: 8,
-  fixed_length: true,
-  configured_length: 4,
-  codes: [],
-};
+const LOCKS = [
+  { lock_id: 'front_deadbolt', name: 'Front Door', supported: true, note: null },
+  { lock_id: 'front_door', name: 'Yale', supported: true, note: null },
+];
+const RULE = { min: 4, max: 8, fixed: 4, conflict: false };
 const USERS = [{ id: 'u-1', name: 'Alice' }, { id: 'u-2', name: 'Bob <b>' }];
 
-test('unsupported model renders the catalog note, no controls', () => {
+test('no supported lock renders the catalog note, no controls', () => {
   const build = load();
-  const out = build({ supported: false, note: 'manage keypad codes in the U-tec app' }, USERS, false);
+  const out = build({
+    locks: [{ lock_id: 'a', name: 'A', supported: false, note: 'manage keypad codes in the U-tec app' }],
+    pin_rule: {},
+    users: [],
+  }, USERS, false);
   assert.match(out, /U-tec app/);
   assert.ok(!out.includes('<select'), 'no user picker');
   assert.ok(!out.includes('<input'), 'no PIN input');
-  assert.strictEqual(build({ supported: false }, USERS, false), '', 'no note -> nothing');
+  assert.strictEqual(build({ locks: [], pin_rule: {}, users: [] }, USERS, false), '', 'no locks -> nothing');
 });
 
-test('supported model renders slot usage, length rule, picker, and PIN input', () => {
+test('supported locks render the length rule, picker, PIN input, and lock names', () => {
   const build = load();
-  const out = build(CAP, USERS, false);
-  assert.match(out, /0 of 30 slots used/);
+  const out = build({ locks: LOCKS, pin_rule: RULE, users: [] }, USERS, false);
+  assert.match(out, /One PIN per user/);
   assert.match(out, /4-digit codes/);
-  assert.match(out, /id="ucUser"/);
-  assert.match(out, /id="ucPin"/);
-  assert.match(out, /onclick="saveUserCode\(\)"/);
+  assert.match(out, /Front Door/);
+  assert.match(out, /Yale/);
+  assert.match(out, /id="kuUser"/);
+  assert.match(out, /id="kuPin"/);
+  assert.match(out, /onclick="saveKeypadUser\(\)"/);
   assert.match(out, /Alice/);
-  assert.ok(!out.includes('Rewrite Codes'), 'no rewrite button with zero codes');
 });
 
-test('assigned codes render masked with badges; digits never appear', () => {
+test('users render masked with per-lock status and badges; digits never appear', () => {
   const build = load();
-  const info = Object.assign({}, CAP, {
-    codes: [
-      { slot: 3, user_id: 'u-1', name: 'Alice', pin_length: 4, pushed_to_unifi: true, user_missing: false },
-      { slot: 7, user_id: 'u-9', name: 'Ghost <i>', pin_length: 6, pushed_to_unifi: false, user_missing: true },
+  const out = build({
+    locks: LOCKS,
+    pin_rule: RULE,
+    users: [
+      {
+        user_id: 'u-1', name: 'Alice', pin_length: 4, in_unifi: true, user_missing: false,
+        locks: [
+          { lock_id: 'front_deadbolt', slot: 3, status: 'ok' },
+          { lock_id: 'front_door', slot: 1, status: 'pending' },
+        ],
+      },
+      {
+        user_id: 'u-9', name: 'Ghost <i>', pin_length: 6, in_unifi: false, user_missing: true,
+        locks: [
+          { lock_id: 'front_deadbolt', slot: null, status: 'missing' },
+          { lock_id: 'front_door', slot: 2, status: 'differs' },
+        ],
+      },
     ],
-  });
-  const out = build(info, USERS, false);
+  }, USERS, false);
   assert.match(out, /\*{4}/, 'masked to the code length');
   assert.match(out, /\*{6}/);
-  assert.ok(!/[0-9]{4,}/.test(out.replace(/slot \d+|of 30|4-digit|maxlength="10"/g, '')), 'no PIN-like digit runs');
-  assert.match(out, />UniFi</, 'pushed badge');
+  assert.ok(!/[0-9]{4,}/.test(out.replace(/maxlength="10"/g, '')), 'no PIN-like digit runs');
+  assert.match(out, />UniFi</, 'in-sync badge');
+  assert.match(out, /UniFi not synced/, 'out-of-sync badge');
   assert.match(out, /user missing/, 'stale badge');
   assert.match(out, /Ghost &lt;i&gt;/, 'names escaped');
-  assert.match(out, /onclick="removeUserCode\(7\)"/);
-  assert.match(out, /Rewrite Codes to Lock/);
+  assert.match(out, /pending/, 'pending status shown');
+  assert.match(out, /old PIN/, 'differs status shown');
+  assert.match(out, /missing/, 'missing status shown');
+  assert.match(out, /onclick="removeKeypadUser\(&quot;u-9&quot;\)"/);
 });
 
 test('pairing_active disables every control', () => {
   const build = load();
-  const info = Object.assign({}, CAP, {
-    codes: [{ slot: 1, name: 'A', pin_length: 4, pushed_to_unifi: false, user_missing: false }],
-  });
-  const out = build(info, USERS, true);
+  const out = build({
+    locks: LOCKS,
+    pin_rule: RULE,
+    users: [{
+      user_id: 'u-1', name: 'A', pin_length: 4, in_unifi: false, user_missing: false,
+      locks: [{ lock_id: 'front_deadbolt', slot: 1, status: 'ok' }],
+    }],
+  }, USERS, true);
   const controls = out.match(/<(button|select|input)[^>]*>/g) || [];
   assert.ok(controls.length >= 4, 'expected several controls');
   for (const c of controls) {
@@ -96,8 +118,10 @@ test('pairing_active disables every control', () => {
   }
 });
 
-test('flexible-length models describe the range instead of a fixed length', () => {
+test('flexible-length locks describe the range; conflicting fixed lengths warn', () => {
   const build = load();
-  const out = build(Object.assign({}, CAP, { fixed_length: false, configured_length: null }), USERS, false);
-  assert.match(out, /4 to 8 digit codes/);
+  const flexible = build({ locks: LOCKS, pin_rule: { min: 4, max: 8, fixed: null, conflict: false }, users: [] }, USERS, false);
+  assert.match(flexible, /4 to 8 digit codes/);
+  const conflicted = build({ locks: LOCKS, pin_rule: { min: 4, max: 8, fixed: 4, conflict: true }, users: [] }, USERS, false);
+  assert.match(conflicted, /different fixed code lengths/);
 });

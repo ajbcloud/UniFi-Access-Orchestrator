@@ -93,26 +93,53 @@ test('describeLockBolt: transient reading state while the link is up', () => {
 
 function loadRenderZwaveSetup() {
   const src = extractFn('renderZwaveSetup');
-  // Parameters stand in for the SPA globals the function touches.
+  // Parameters stand in for the SPA globals the function touches. The retry
+  // gate stubs record skip/run so the focus-guard contract stays covered.
   return new Function(
-    '_pairPollTimer', 'document', 'configData', 'armDirtySave',
+    '_pairPollTimer', 'document', 'configData', 'armDirtySave', 'wireZwRefreshRetry', '_zwSetupGate',
     src + '; return renderZwaveSetup;'
   );
+}
+function gateStub() {
+  return {
+    skips: 0, runs: 0,
+    skipped() { this.skips++; },
+    ran() { this.runs++; },
+  };
 }
 
 test('renderZwaveSetup: leaves the DOM alone while a pairing session is live', () => {
   let touched = 0;
   const doc = { getElementById: () => { touched++; return null; } };
-  loadRenderZwaveSetup()(123 /* timer running */, doc, {}, () => {})();
+  loadRenderZwaveSetup()(123 /* timer running */, doc, {}, () => {}, () => {}, gateStub())();
   assert.equal(touched, 0, 'must return before any DOM access while pairing');
 });
 
 test('renderZwaveSetup: renders normally when no pairing session is live', () => {
   const el = { innerHTML: '' };
   let armed = 0;
+  const gate = gateStub();
   const doc = { getElementById: (id) => (id === 'configZwave' ? el : null) };
-  loadRenderZwaveSetup()(null, doc, { devices: { zwave: { enabled: true } } }, () => { armed++; })();
+  loadRenderZwaveSetup()(null, doc, { devices: { zwave: { enabled: true } } }, () => { armed++; }, () => {}, gate)();
   assert.match(el.innerHTML, /zwavePairPanel/, 'panel container rendered');
+  assert.match(el.innerHTML, /zwaveKeypadUsers/, 'global keypad users container rendered');
   assert.match(el.innerHTML, /checked/, 'enabled checkbox reflects config');
   assert.equal(armed, 1, 'dirty-save armed after render');
+  assert.equal(gate.runs, 1, 'gate told the repaint ran');
+});
+
+test('renderZwaveSetup: a skipped focus-guard repaint is recorded for retry', () => {
+  const el = {
+    innerHTML: '',
+    contains: (x) => x && x.inside === true,
+  };
+  const gate = gateStub();
+  const doc = {
+    getElementById: (id) => (id === 'configZwave' ? el : null),
+    activeElement: { tagName: 'SELECT', inside: true },
+  };
+  loadRenderZwaveSetup()(null, doc, { devices: { zwave: { enabled: true } } }, () => {}, () => {}, gate)();
+  assert.equal(el.innerHTML, '', 'no repaint under the cursor');
+  assert.equal(gate.skips, 1, 'skip recorded so the retry gate can deliver it later');
+  assert.equal(gate.runs, 0);
 });
