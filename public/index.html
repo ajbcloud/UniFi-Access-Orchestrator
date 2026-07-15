@@ -3309,7 +3309,9 @@ async function refreshZwaveDeadbolt() {
     const r = await api('GET', '/api/devices');
     const zw = r.zwave || {};
     const allLocks = Array.isArray(r.zwave_locks) ? r.zwave_locks : [];
-    const pairedLocks = allLocks.filter((l) => l.paired);
+    // A card renders for every controllable lock: paired hardware, or a
+    // bound dev-mode FakeLock (which has no node_id and never reads paired).
+    const pairedLocks = allLocks.filter((l) => l.paired || l.bound);
     const pairingActive = !!zw.pairing_active;
     if (!zw.configured) {
       line.textContent = 'Set and save the serial port above, then pair the lock.';
