@@ -301,6 +301,20 @@ function buildDeadbolt() {
         success: true,
       });
     });
+    // Keypad activity carries the code slot: attribute it to the saved PIN
+    // owner in the event feed ("who badged in" for the deadbolt keypad).
+    lockDriver.on('keypad-activity', (e) => {
+      const entry = savedUserCodes()[String(e.slot)];
+      const who = (entry && entry.name) || `slot ${e.slot}, unassigned`;
+      logger.info(`Deadbolt: keypad ${e.action} (slot ${e.slot}${entry && entry.name ? `, ${entry.name}` : ''})`);
+      broadcastEvent({
+        type: 'deadbolt.keypad',
+        actor: entry && entry.name ? entry.name : 'Keypad',
+        location: 'Deadbolt',
+        action: `Keypad ${e.action} by ${who}${entry && entry.name ? ` (slot ${e.slot})` : ''}`,
+        success: true,
+      });
+    });
     // Truthful re-interview completion: refreshInfo() resolves when the
     // interview is merely re-queued, so completion is announced from the
     // node's own 'interview completed' event instead.
@@ -1148,6 +1162,235 @@ app.post('/api/deadbolt/auto-relock', async (req, res) => {
       success: result.confirmed !== false,
     });
     res.json({ enabled, confirmed: result.confirmed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Per-user keypad PIN codes on the deadbolt (User Code CC). The app is the
+// source of truth: codes are written to the lock's slots and persisted (0600
+// config, pin_code fields redacted everywhere by SECRET_KEY_RX). Optionally
+// the same PIN is pushed to the user's UniFi Access account so UniFi readers
+// match; UniFi never returns existing PINs in plaintext, so there is no
+// mirror-from-UniFi path. All lock operations are targeted per-slot writes
+// (the interview-wide queryAllUserCodes stays disabled: Yale battery guard).
+// ---------------------------------------------------------------------------
+
+// The lock entry the driver is bound to (same resolution buildDeadbolt uses).
+function activeLockId(cfg) {
+  const c = cfg || config;
+  const locks = (c.devices && c.devices.zwave && c.devices.zwave.locks) || {};
+  return (c.deadbolt_rules && c.deadbolt_rules.lock_id) || Object.keys(locks)[0] || null;
+}
+
+function savedUserCodes() {
+  const lockId = activeLockId();
+  const locks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  return (lockId && locks[lockId] && locks[lockId].user_codes) || {};
+}
+
+// List assigned codes + the lock's capability. Digits never leave the server:
+// each entry exposes only the code LENGTH for the masked dashboard display.
+app.get('/api/deadbolt/user-codes', async (req, res) => {
+  if (!lockDriver || typeof lockDriver.userCodesCapability !== 'function') {
+    return res.status(503).json({ error: 'No lock driver is active (pair a lock first), or the active driver does not support keypad codes' });
+  }
+  try {
+    const cap = await lockDriver.userCodesCapability();
+    const known = (unifiClient && unifiClient.userNames) || new Map();
+    const codes = Object.entries(savedUserCodes()).map(([slot, e]) => ({
+      slot: Number(slot),
+      user_id: e.user_id || null,
+      name: e.name || null,
+      pin_length: e.pin_code ? String(e.pin_code).length : 0,
+      pushed_to_unifi: !!e.pushed_to_unifi,
+      updated_at: e.updated_at || null,
+      // The user disappeared from the UniFi sync (deleted/archived): the code
+      // still opens the deadbolt, so surface it for cleanup.
+      user_missing: !!(e.user_id && known.size && !known.has(e.user_id)),
+    })).sort((a, b) => a.slot - b.slot);
+    res.json(Object.assign({}, cap, { codes }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Assign or update a user's keypad code. Writes the lock FIRST (a code that
+// the lock rejected is never persisted), then optionally pushes the same PIN
+// to the user's UniFi account. A UniFi failure does not fail the request: the
+// lock code stands and the response carries the UniFi outcome separately.
+app.post('/api/deadbolt/user-codes', async (req, res) => {
+  const b = req.body || {};
+  if (zwavePairing.isActive()) {
+    return res.status(409).json({ error: 'A pairing session is in progress' });
+  }
+  if (!lockDriver || typeof lockDriver.setUserCode !== 'function') {
+    return res.status(503).json({ error: 'No lock driver is active (pair a lock first), or the active driver does not support keypad codes' });
+  }
+  if (!b.user_id || typeof b.user_id !== 'string') {
+    return res.status(400).json({ error: 'user_id is required (pick a synced UniFi user)' });
+  }
+  const pin = typeof b.pin === 'string' ? b.pin.trim() : '';
+  if (!/^[0-9]{4,10}$/.test(pin)) {
+    return res.status(400).json({ error: 'pin must be 4 to 10 digits' });
+  }
+  try {
+    const cap = await lockDriver.userCodesCapability();
+    if (!cap.supported) {
+      return res.status(400).json({ error: cap.note || 'this lock does not support keypad codes over Z-Wave' });
+    }
+    if (cap.min_length && pin.length < cap.min_length) {
+      return res.status(400).json({ error: `this lock needs codes of at least ${cap.min_length} digits` });
+    }
+    if (cap.max_length && pin.length > cap.max_length) {
+      return res.status(400).json({ error: `this lock takes codes of at most ${cap.max_length} digits` });
+    }
+    if (cap.fixed_length && cap.configured_length && pin.length !== cap.configured_length) {
+      // Never auto-write the length parameter: changing it WIPES every code
+      // on Schlage. Tell the operator to enter a matching-length PIN instead.
+      return res.status(400).json({ error: `this lock is set to ${cap.configured_length}-digit codes (all codes share one length; changing it would wipe every stored code). Enter a ${cap.configured_length}-digit PIN` });
+    }
+    const saved = savedUserCodes();
+    for (const [slot, e] of Object.entries(saved)) {
+      if (e && e.pin_code === pin && e.user_id !== b.user_id) {
+        return res.status(409).json({ error: `that PIN is already assigned (slot ${slot}); locks reject duplicate codes` });
+      }
+    }
+    // Reuse the user's existing slot on update; otherwise take the lowest
+    // free slot within the lock's capacity.
+    let slot = null;
+    for (const [s, e] of Object.entries(saved)) {
+      if (e && e.user_id === b.user_id) { slot = Number(s); break; }
+    }
+    if (slot == null) {
+      for (let s = 1; s <= (cap.slots || 0); s++) {
+        if (!saved[String(s)]) { slot = s; break; }
+      }
+    }
+    if (slot == null) {
+      return res.status(409).json({ error: `all ${cap.slots} code slots on this lock are in use; remove one first` });
+    }
+    const result = await lockDriver.setUserCode(slot, pin);
+    if (result.confirmed === false) {
+      return res.status(409).json({ error: 'the lock rejected this code (usually a duplicate PIN or a length that does not match its code-length setting)' });
+    }
+    const known = (unifiClient && unifiClient.userNames) || new Map();
+    const name = (typeof b.name === 'string' && b.name.trim()) || known.get(b.user_id) || null;
+    persistZwaveMutation((cfg) => {
+      const lockId = activeLockId(cfg);
+      const locks = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks;
+      if (!lockId || !locks || !locks[lockId]) return;
+      locks[lockId].user_codes = locks[lockId].user_codes || {};
+      locks[lockId].user_codes[String(slot)] = {
+        user_id: b.user_id,
+        name,
+        pin_code: pin,
+        pushed_to_unifi: false,
+        updated_at: new Date().toISOString(),
+      };
+    });
+    // Optional UniFi push, decided per save by the operator ("overwrite the
+    // PIN in UniFi for this user?"). Failure keeps the lock code and is
+    // reported separately so the UI can explain (e.g. token scope).
+    let unifi = { attempted: false, success: null, permission_denied: false, error: null };
+    if (b.push_to_unifi === true) {
+      unifi.attempted = true;
+      if (unifiClient && typeof unifiClient.assignUserPin === 'function') {
+        const push = await unifiClient.assignUserPin(b.user_id, pin);
+        unifi.success = !!push.success;
+        unifi.permission_denied = !!push.permission_denied;
+        unifi.error = push.error || null;
+        if (push.success) {
+          persistZwaveMutation((cfg) => {
+            const lockId = activeLockId(cfg);
+            const entry = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
+              && cfg.devices.zwave.locks[lockId] && cfg.devices.zwave.locks[lockId].user_codes
+              && cfg.devices.zwave.locks[lockId].user_codes[String(slot)];
+            if (entry) entry.pushed_to_unifi = true;
+          });
+        }
+      } else {
+        unifi.success = false;
+        unifi.error = 'UniFi client is not connected';
+      }
+    }
+    broadcastEvent({
+      type: 'deadbolt.user_code',
+      actor: 'GUI Admin',
+      location: 'Deadbolt',
+      action: `Keypad code ${result.confirmed === true ? 'set' : 'queued'} for ${name || b.user_id} (slot ${slot}${unifi.attempted ? unifi.success ? ', also set in UniFi' : ', UniFi push failed' : ''})`,
+      success: true,
+    });
+    res.json({ slot, confirmed: result.confirmed, name, unifi });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove a keypad code slot from the deadbolt. Deliberately never touches
+// UniFi: the UniFi PIN is a separate credential still valid at UniFi readers,
+// silently revoking building access on a local cleanup would surprise, and
+// there is no restore path since UniFi never reveals PINs.
+app.delete('/api/deadbolt/user-codes/:slot', async (req, res) => {
+  const slot = Number(req.params.slot);
+  if (!Number.isInteger(slot) || slot < 1) {
+    return res.status(400).json({ error: 'slot must be a positive integer' });
+  }
+  if (zwavePairing.isActive()) {
+    return res.status(409).json({ error: 'A pairing session is in progress' });
+  }
+  if (!lockDriver || typeof lockDriver.clearUserCode !== 'function') {
+    return res.status(503).json({ error: 'No lock driver is active (pair a lock first), or the active driver does not support keypad codes' });
+  }
+  try {
+    const result = await lockDriver.clearUserCode(slot);
+    // Persist the removal even on an unconfirmed clear: the command is queued
+    // on the lock, and keeping the entry would resurrect the code on the next
+    // manual rewrite.
+    let removedName = null;
+    persistZwaveMutation((cfg) => {
+      const lockId = activeLockId(cfg);
+      const uc = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
+        && cfg.devices.zwave.locks[lockId] && cfg.devices.zwave.locks[lockId].user_codes;
+      if (uc && uc[String(slot)]) {
+        removedName = uc[String(slot)].name || null;
+        delete uc[String(slot)];
+      }
+    });
+    broadcastEvent({
+      type: 'deadbolt.user_code',
+      actor: 'GUI Admin',
+      location: 'Deadbolt',
+      action: `Keypad code removed (slot ${slot}${removedName ? `, ${removedName}` : ''}). The user's UniFi PIN is untouched`,
+      success: true,
+    });
+    res.json({ slot, confirmed: result.confirmed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manually rewrite every saved code to the lock, for after a re-pair. Never
+// automatic: dozens of queued writes on each restart would drain a battery
+// lock, so the operator presses the button once when it is actually needed.
+app.post('/api/deadbolt/user-codes/rewrite', async (req, res) => {
+  if (zwavePairing.isActive()) {
+    return res.status(409).json({ error: 'A pairing session is in progress' });
+  }
+  if (!lockDriver || typeof lockDriver.rewriteUserCodes !== 'function') {
+    return res.status(503).json({ error: 'No lock driver is active (pair a lock first), or the active driver does not support keypad codes' });
+  }
+  try {
+    const results = await lockDriver.rewriteUserCodes(savedUserCodes());
+    broadcastEvent({
+      type: 'deadbolt.user_code',
+      actor: 'GUI Admin',
+      location: 'Deadbolt',
+      action: `Rewrote ${results.filter((r) => r.ok).length}/${results.length} keypad codes to the lock`,
+      success: results.every((r) => r.ok),
+    });
+    res.json({ results });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -349,6 +349,26 @@ class ZwaveLock extends LockDriver {
     }
     if (LOCK_EVENTS.has(event)) this._updateState(LockState.LOCKED);
     else if (UNLOCK_EVENTS.has(event)) this._updateState(LockState.UNLOCKED);
+    // Keypad events carry the code slot that was used; surface it so the app
+    // can attribute the entry to the saved PIN owner in the event feed.
+    if (event === AC_NOTIFICATION.KEYPAD_LOCK || event === AC_NOTIFICATION.KEYPAD_UNLOCK) {
+      const slot = this._notificationSlot(args);
+      if (slot != null) {
+        this.emit('keypad-activity', {
+          action: event === AC_NOTIFICATION.KEYPAD_UNLOCK ? 'unlock' : 'lock',
+          slot,
+        });
+      }
+    }
+  }
+
+  /** Code slot from a keypad notification's parameters (object or Buffer). */
+  _notificationSlot(args) {
+    const p = args && args.parameters;
+    if (p == null) return null;
+    if (typeof p === 'object' && !Buffer.isBuffer(p) && typeof p.userId === 'number') return p.userId;
+    if (Buffer.isBuffer(p) && p.length > 0) return p[0];
+    return null;
   }
 
   _onValueUpdated(args) {
@@ -974,6 +994,12 @@ class ZwaveLock extends LockDriver {
     return cc.Configuration || cc.configuration || null;
   }
 
+  _userCodeCC() {
+    const cc = this._node && this._node.commandClasses;
+    if (!cc) return null;
+    return cc['User Code'] || cc.userCode || null;
+  }
+
   /**
    * Whether THIS lock's auto-relock is settable over Z-Wave, plus the saved
    * preference. Drives the dashboard's "After unlock" control; models without
@@ -1045,6 +1071,140 @@ class ZwaveLock extends LockDriver {
       this._autoRelockApplied = false;
       this.logger.warn && this.logger.warn(`ZwaveLock: re-applying auto-relock failed: ${err.message}`);
     });
+  }
+
+  // ---- keypad user codes (User Code CC) ----------------------------------
+  // Targeted per-slot operations ONLY: the interview-wide queryAllUserCodes
+  // stays disabled in the manager (Yale battery-drain guard), so nothing here
+  // may bulk-enumerate slots.
+
+  /** UserIDStatus values (Z-Wave User Code CC v1). */
+  static get USER_ID_STATUS() {
+    return Object.freeze({ AVAILABLE: 0, ENABLED: 1, DISABLED: 2 });
+  }
+
+  /**
+   * Write a keypad code into a slot and read it back. confirmed is true when
+   * the read-back shows the slot Enabled with the same code, null when the
+   * lock is unreadable right now (asleep: the write is queued) or masks codes
+   * on read-back, and false when the slot did not take the code, which is how
+   * Schlage's silent duplicate-PIN rejection surfaces. Digits are never logged.
+   */
+  async setUserCode(slot, pin) {
+    if (!this._node) {
+      throw new Error('Z-Wave driver is not running (stick unplugged or failed to start)');
+    }
+    const uc = this._userCodeCC();
+    if (!uc || typeof uc.set !== 'function') {
+      throw new Error('this lock does not expose keypad codes over Z-Wave (User Code CC unavailable)');
+    }
+    const code = String(pin);
+    await uc.set(slot, ZwaveLock.USER_ID_STATUS.ENABLED, code);
+    let confirmed = null;
+    if (typeof uc.get === 'function') {
+      try {
+        const rep = await uc.get(slot);
+        if (rep && typeof rep.userIdStatus === 'number') {
+          if (rep.userIdStatus !== ZwaveLock.USER_ID_STATUS.ENABLED) {
+            confirmed = false;
+          } else if (rep.userCode != null) {
+            const readBack = Buffer.isBuffer(rep.userCode) ? rep.userCode.toString('utf8') : String(rep.userCode);
+            // Some firmwares mask codes on read-back (e.g. all asterisks):
+            // Enabled + unreadable digits is best-effort success, not failure.
+            confirmed = readBack === code ? true : (/^\d+$/.test(readBack) ? false : null);
+          }
+        }
+      } catch (e) { confirmed = null; }
+    }
+    this.logger.info && this.logger.info(
+      `ZwaveLock: user code slot ${slot} written (${confirmed === true ? 'read-back confirmed' : confirmed === false ? 'REJECTED by the lock' : 'read-back unavailable; queued or masked'})`);
+    return { slot, confirmed };
+  }
+
+  /** Clear a keypad code slot (best-effort read-back like setUserCode). */
+  async clearUserCode(slot) {
+    if (!this._node) {
+      throw new Error('Z-Wave driver is not running (stick unplugged or failed to start)');
+    }
+    const uc = this._userCodeCC();
+    if (!uc) throw new Error('this lock does not expose keypad codes over Z-Wave (User Code CC unavailable)');
+    if (typeof uc.clear === 'function') await uc.clear(slot);
+    else if (typeof uc.set === 'function') await uc.set(slot, ZwaveLock.USER_ID_STATUS.AVAILABLE);
+    else throw new Error('User Code CC exposes no clear/set');
+    let confirmed = null;
+    if (typeof uc.get === 'function') {
+      try {
+        const rep = await uc.get(slot);
+        if (rep && typeof rep.userIdStatus === 'number') {
+          confirmed = rep.userIdStatus === ZwaveLock.USER_ID_STATUS.AVAILABLE;
+        }
+      } catch (e) { confirmed = null; }
+    }
+    this.logger.info && this.logger.info(`ZwaveLock: user code slot ${slot} cleared (confirmed: ${confirmed})`);
+    return { slot, confirmed };
+  }
+
+  /**
+   * Capability report for the dashboard: whether this lock takes keypad
+   * codes over Z-Wave, how many slots, and the code-length rules. Live
+   * answers (slot count, the configured code length) are read ONCE and
+   * memoized; catalog numbers are the fallback (live: false).
+   */
+  async userCodesCapability() {
+    const prof = this._modelProfile();
+    const meta = (prof && prof.user_codes) || null;
+    const out = {
+      supported: !!(meta && this._userCodeCC()),
+      model_key: prof ? prof.key : null,
+      slots: meta ? meta.slots : 0,
+      min_length: meta ? meta.min_length : null,
+      max_length: meta ? meta.max_length : null,
+      fixed_length: !!(meta && meta.fixed_length),
+      length_parameter: meta ? meta.length_parameter : null,
+      configured_length: null,
+      note: (meta && meta.note) || (prof && prof.user_codes_note) || null,
+      live: false,
+    };
+    if (!out.supported || !this._shouldLiveRead()) return out;
+    try {
+      if (this._liveUserSlots == null) {
+        const uc = this._userCodeCC();
+        if (uc && typeof uc.getUsersCount === 'function') {
+          const n = await uc.getUsersCount();
+          if (typeof n === 'number' && n > 0) this._liveUserSlots = n;
+        }
+      }
+      if (out.length_parameter != null && this._liveCodeLength == null) {
+        const cfg = this._configurationCC();
+        if (cfg && typeof cfg.get === 'function') {
+          const len = await cfg.get(out.length_parameter);
+          if (typeof len === 'number' && len >= 4 && len <= 10) this._liveCodeLength = len;
+        }
+      }
+    } catch (e) { /* fall back to catalog numbers */ }
+    if (this._liveUserSlots != null) { out.slots = this._liveUserSlots; out.live = true; }
+    if (this._liveCodeLength != null) { out.configured_length = this._liveCodeLength; out.live = true; }
+    return out;
+  }
+
+  /**
+   * Sequentially rewrite saved codes to the lock, for AFTER a re-pair. This
+   * is deliberately manual (an endpoint/button), never automatic on boot:
+   * dozens of queued writes on every restart would chew a battery lock flat.
+   */
+  async rewriteUserCodes(codesBySlot) {
+    const results = [];
+    for (const [slotKey, entry] of Object.entries(codesBySlot || {})) {
+      const slot = Number(slotKey);
+      if (!Number.isInteger(slot) || slot < 1 || !entry || !entry.pin_code) continue;
+      try {
+        const r = await this.setUserCode(slot, entry.pin_code);
+        results.push({ slot, ok: true, confirmed: r.confirmed });
+      } catch (err) {
+        results.push({ slot, ok: false, error: err.message });
+      }
+    }
+    return results;
   }
 
   async getState() {

@@ -4,8 +4,13 @@
 const crypto = require('crypto');
 
 // Matches config keys whose values are secrets and must never be returned to a
-// client or written to a log in cleartext.
-const SECRET_KEY_RX = /(token|secret|password|passphrase|api[_-]?key|private[_-]?key|s2_|s0_)/i;
+// client or written to a log in cleartext. pin[_-]?code covers the per-user
+// deadbolt keypad codes stored under devices.zwave.locks.<id>.user_codes
+// (anchored as pin_code, NOT a bare "pin", so keys like "mapping" or the S2
+// pairing "pin" route payloads are unaffected). The digits live in the 0600
+// config in cleartext, matching the existing S2-key precedent; redaction
+// keeps them out of GET /api/config, PUT round-trips, and diagnostics.
+const SECRET_KEY_RX = /(token|secret|password|passphrase|api[_-]?key|private[_-]?key|s2_|s0_|pin[_-]?code)/i;
 
 const REDACTION_MARKER = '***REDACTED***';
 

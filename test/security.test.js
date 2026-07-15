@@ -15,6 +15,33 @@ const {
 // redactSecrets
 // ---------------------------------------------------------------------------
 
+test('deadbolt keypad pin_code fields are redacted and strip-protected on round-trip', () => {
+  const cfg = {
+    devices: {
+      zwave: {
+        locks: {
+          front: {
+            model_key: 'schlage-be469zp',
+            user_codes: {
+              3: { user_id: 'u1', name: 'Alice', pin_code: '1234', pushed_to_unifi: true },
+            },
+          },
+        },
+      },
+    },
+    resolver: { unifi_group_to_group: { mapping: 'ok' } },
+  };
+  const out = redactSecrets(cfg);
+  assert.strictEqual(out.devices.zwave.locks.front.user_codes[3].pin_code, REDACTION_MARKER);
+  assert.strictEqual(out.devices.zwave.locks.front.user_codes[3].name, 'Alice', 'non-secret siblings untouched');
+  assert.strictEqual(out.devices.zwave.locks.front.model_key, 'schlage-be469zp', 'model_key is not a secret');
+  assert.strictEqual(out.resolver.unifi_group_to_group.mapping, 'ok', 'no over-redaction of unrelated keys');
+  // A UI that echoes the redacted config back on PUT must not clobber the pin.
+  const echo = JSON.parse(JSON.stringify(out));
+  stripRedactedPlaceholders(echo);
+  assert.ok(!('pin_code' in echo.devices.zwave.locks.front.user_codes[3]), 'redacted placeholder stripped before merge');
+});
+
 test('redactSecrets masks every secret-keyed field but leaves the rest', () => {
   const cfg = {
     server: { port: 3000, admin_api_key: 'abc123' },

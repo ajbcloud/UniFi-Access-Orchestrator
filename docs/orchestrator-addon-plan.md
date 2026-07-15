@@ -292,8 +292,11 @@ is out-of-band and may target an on-prem collector or an email relay the operato
   Minimal set for this site: `edit:space` (unlock) + `view:space` (door discovery) + `view:device`
   (WebSocket stream) + `view:user` (the existing user/group sync). Add `view:system_log` only if you
   choose to backfill or read direction from the log API; add `edit:webhook`+`view:webhook` only if you
-  register a developer-API webhook. Do not grant `edit:api_server`, credential, visitor, or policy
-  scopes. **[confirmed scope names]**
+  register a developer-API webhook. Do not grant `edit:api_server`, visitor, or policy
+  scopes. **[confirmed scope names]** Amendment (2026-07): the keypad PIN manager can optionally push
+  a user's PIN to UniFi (`PUT /users/:id/pin_codes`), which additionally requires the user-credential
+  edit scope; without it the app surfaces a clear permission error and the code still lands on the
+  deadbolt. Grant that scope only if the push feature is used.
 - **Webhook authenticity.** If you keep Alarm Manager, note it is **not HMAC-signed by UniFi**
   **[confirmed]**, so its authenticity rests on network isolation (management VLAN) plus the
   middleware's own optional shared-secret header. Because this site needs direction anyway, prefer the
@@ -524,10 +527,11 @@ state. Verify the thumbturn-retracts-bolt behavior physically during commissioni
 
 ## 13. Explicit non-goals
 
-- No per-user PINs provisioned by the middleware on the deadbolt (User Code CC management is out of
-  scope). A single facility/backup keypad code is retained on the lock itself as the manual entry
-  backstop when the middleware is offline; that is a lock-managed code, not middleware-provisioned
-  per-user PINs.
+- ~~No per-user PINs provisioned by the middleware on the deadbolt (User Code CC management is out of
+  scope).~~ **Superseded (2026-07):** the app now manages per-user keypad codes over User Code CC with
+  targeted per-slot writes only (the interview-wide `queryAllUserCodes` guard stays disabled), plus an
+  optional per-save push of the same PIN to the user's UniFi account. A lock-managed facility/backup
+  code on the device itself remains a good offline backstop.
 - No cloud services or external dependency in the control path.
 - No lock command to the UniFi side, ever (UniFi API stays unlock-only; the mag lock and strike are
   UniFi-native).

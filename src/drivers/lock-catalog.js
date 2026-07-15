@@ -34,6 +34,13 @@
  * exist, and zwave-js disables Supervision for it on purpose. Absent flag =
  * normal report-based verification.
  *
+ * `user_codes` describes keypad-code (User Code CC) management support:
+ * { slots, min_length, max_length, fixed_length, length_parameter, note }.
+ * Catalog numbers are fallback display data; the lock's own answers
+ * (getUsersCount, the length parameter) always win when reachable. Models
+ * whose codes are managed on the device or in a vendor app get
+ * `user_codes: null` plus a `user_codes_note`.
+ *
  * Sources: manufacturer manuals (Schlage/Allegion, Yale, Kwikset, Ultraloq,
  * Weiser/Baldwin), z-wavealliance.org product pages, Alarm Grid / True Home
  * KБ inclusion+reset guides, and zwave-js device-DB ids. Security classes:
@@ -48,6 +55,10 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'schlage-be469zp',
+        user_codes: {
+          slots: 30, min_length: 4, max_length: 8, fixed_length: true, length_parameter: 16,
+          note: 'All codes must match the PIN length set by parameter 16 (default 4). Changing that parameter WIPES every stored code, so the app never writes it.',
+        },
         rf_verify: 'optimistic',
         rf_verify_note: 'This model never confirms a remote move: operation reports are frozen and it sends no RF notifications. Commands are trusted once delivered; the dashboard state tracks its manual, keypad, and auto-lock reports.',
         auto_relock: { parameter: 15, size: 1, on: 255, off: 0 },
@@ -63,6 +74,10 @@ const CATALOG = Object.freeze([
       },
       {
         key: 'schlage-be469',
+        user_codes: {
+          slots: 30, min_length: 4, max_length: 8, fixed_length: true, length_parameter: 16,
+          note: 'All codes must match the PIN length set by parameter 16 (default 4). Changing that parameter WIPES every stored code, so the app never writes it.',
+        },
         rf_verify: 'optimistic',
         rf_verify_note: 'This model never confirms a remote move: operation reports are frozen and it sends no RF notifications. Commands are trusted once delivered; the dashboard state tracks its manual, keypad, and auto-lock reports.',
         auto_relock: { parameter: 15, size: 1, on: 255, off: 0 },
@@ -84,6 +99,10 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'yale-assure-zw2',
+        user_codes: {
+          slots: 25, min_length: 4, max_length: 8, fixed_length: false, length_parameter: null,
+          note: 'Codes may be 4 to 8 digits. Slot count varies by model; the lock is asked for its real capacity when reachable.',
+        },
         auto_relock: { parameter: 2, size: 1, on: 255, off: 0 },
         auto_relock_note: 'Auto relock is parameter 2; the relock delay (parameter 3, 5-255s) keeps its last value.',
         name: 'Yale Assure Deadbolt (ZW2)',
@@ -97,6 +116,10 @@ const CATALOG = Object.freeze([
       },
       {
         key: 'yale-assure-zw3',
+        user_codes: {
+          slots: 25, min_length: 4, max_length: 8, fixed_length: false, length_parameter: null,
+          note: 'Codes may be 4 to 8 digits. Slot count varies by model; the lock is asked for its real capacity when reachable.',
+        },
         auto_relock: { parameter: 2, size: 1, on: 255, off: 0 },
         auto_relock_note: 'Auto relock is parameter 2; the relock delay (parameter 3, 5-255s) keeps its last value.',
         name: 'Yale Assure (ZW3 / 700-series)',
@@ -116,6 +139,10 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'kwikset-smartcode',
+        user_codes: {
+          slots: 30, min_length: 4, max_length: 8, fixed_length: false, length_parameter: null,
+          note: 'Codes may be 4 to 8 digits; the lock is asked for its real capacity when reachable.',
+        },
         auto_relock: null,
         auto_relock_note: 'auto-relock is the switch on the interior panel (Kwikset SmartCode), not a Z-Wave setting',
         name: 'Kwikset SmartCode (910/912/914/916)',
@@ -129,6 +156,10 @@ const CATALOG = Object.freeze([
       },
       {
         key: 'kwikset-620',
+        user_codes: {
+          slots: 250, min_length: 4, max_length: 8, fixed_length: false, length_parameter: null,
+          note: 'Codes may be 4 to 8 digits; the lock is asked for its real capacity when reachable.',
+        },
         auto_relock: null,
         auto_relock_note: 'auto-relock is not exposed over Z-Wave on this model; see the lock manual',
         name: 'Kwikset Home Connect 620',
@@ -148,6 +179,8 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'ultraloq-ubolt-pro',
+        user_codes: null,
+        user_codes_note: 'manage keypad codes in the U-tec app; User Code slots are not managed over Z-Wave for this model',
         auto_relock: null,
         auto_relock_note: 'set auto-lock timing in the U-tec app; it is not exposed over Z-Wave',
         name: 'Ultraloq U-Bolt Pro Z-Wave',
@@ -167,6 +200,8 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'weiser-baldwin',
+        user_codes: null,
+        user_codes_note: 'not managed over Z-Wave for this profile; use the interior programming button (Kwikset stack)',
         auto_relock: null,
         auto_relock_note: 'auto-relock is the switch on the interior panel (Kwikset stack), not a Z-Wave setting',
         name: 'Weiser / Baldwin (Home Connect)',
@@ -186,6 +221,8 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'alfred-db',
+        user_codes: null,
+        user_codes_note: 'manage keypad codes from the Alfred keypad menu or app; not managed over Z-Wave for this model',
         auto_relock: null,
         auto_relock_note: 'set auto re-lock from the keypad menu (see the Alfred manual); it is not exposed over Z-Wave',
         name: 'Alfred DB1 / DB2 (Z-Wave module)',
@@ -205,6 +242,8 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'generic',
+        user_codes: null,
+        user_codes_note: 'keypad code management over Z-Wave is only enabled for known models; manage codes on the lock itself',
         auto_relock: null,
         auto_relock_note: "check the lock's manual; auto-relock is not managed over Z-Wave for unlisted models",
         name: 'Generic Z-Wave deadbolt',

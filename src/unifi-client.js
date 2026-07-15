@@ -10,6 +10,7 @@
  *   7.9  Remote Door Unlocking:    PUT  /doors/:id/unlock
  *   7.10 Temporary Door Lock Rule: PUT  /doors/:id/lock_rule (fw 1.24.6+)
  *   3.5  Fetch All Users:          GET  /users?expand[]=access_policy
+ *   3.x  Assign PIN to User:       PUT  /users/:id/pin_codes (write-only; PINs are never readable)
  *   3.12 Fetch All User Groups:    GET  /user_groups
  *   3.18 Fetch Users in Group:     GET  /user_groups/:id/users
  *   3.19 Fetch All Users in Group: GET  /user_groups/:id/users/all
@@ -276,6 +277,33 @@ class UniFiClient {
       return { success: false, door: doorName, error: 'Door ID not found in config or discovery' };
     }
     return this.unlockDoor(doorId, reason);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Assign a keypad PIN to a UniFi Access user (PUT /users/:id/pin_codes).
+  // Used by the deadbolt PIN manager when the operator chooses to overwrite
+  // the user's UniFi PIN so the deadbolt keypad and UniFi readers match.
+  // The API can only WRITE PINs; it never returns existing ones in plaintext
+  // (GET exposes just a hash token), so there is no read counterpart.
+  // Requires the API token to carry user-credential edit scope; a token
+  // provisioned door/webhook-only (this app's documented minimum) gets a 403,
+  // which is flagged as permission_denied so the UI can explain the fix.
+  // The PIN itself is never logged.
+  // ---------------------------------------------------------------------------
+  async assignUserPin(userId, pin) {
+    const name = this.userNames.get(userId) || userId;
+    logger.info(`Setting UniFi PIN for user "${name}"`);
+    try {
+      await this.request('PUT', `/users/${userId}/pin_codes`, { pin_code: String(pin) });
+      logger.info(`UniFi PIN updated for "${name}"`);
+      return { success: true, userId };
+    } catch (err) {
+      const statusCode = err.statusCode || err.status || 0;
+      const permissionDenied = statusCode === 403
+        || /forbidden|permission|unauthorized/i.test(err.message || '');
+      logger.error(`Failed to set UniFi PIN for "${name}": ${err.message}`);
+      return { success: false, userId, error: err.message, statusCode, permission_denied: permissionDenied };
+    }
   }
 
   // ---------------------------------------------------------------------------
