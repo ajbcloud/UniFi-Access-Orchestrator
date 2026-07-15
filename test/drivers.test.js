@@ -466,6 +466,87 @@ test('ZwaveLock: unknown-state recovery ladder re-reads until the bolt resolves'
 });
 
 // ---------------------------------------------------------------------------
+// Optimistic RF verification (rf_verify:'optimistic', the BE469ZP): the model
+// gives no truthful confirmation for commanded moves (frozen reports, no RF
+// notifications, supervision disabled by the device DB), so a delivered set
+// is trusted and reports may only resolve an unknown state.
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: optimistic model verifies instantly on a delivered set', async () => {
+  const { node, lock } = await makeZwave(
+    { current: 0xff, confirm: false }, // no confirming report will EVER come
+    { model_key: 'schlage-be469zp', verify_timeout_ms: 5000, verify_retries: 0 }
+  );
+  const t0 = Date.now();
+  const r = await lock.unlock('entry');
+  assert.equal(r.success, true);
+  assert.equal(r.verified, 'optimistic');
+  assert.equal(r.boltState, LockState.UNLOCKED);
+  assert.ok(Date.now() - t0 < 1000, 'no verify window was burned');
+  assert.equal(node.setCalls.length, 1);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: optimistic model - frozen report never stomps state, notifications stay authoritative', async () => {
+  const { node, lock } = await makeZwave(
+    { current: 0xff, confirm: false },
+    { model_key: 'schlage-be469zp', verify_retries: 0 }
+  );
+  await lock.unlock('entry'); // optimistic -> UNLOCKED
+  // The BE469ZP's frozen operation report says "locked" forever; it must not
+  // overwrite the known state on the next poll/read.
+  node.emit('value updated', node, { commandClassName: 'Door Lock', property: 'boltStatus', newValue: 'locked' });
+  node.emit('value updated', node, { commandClassName: 'Door Lock', property: 'currentMode', newValue: 0xff });
+  assert.equal((await lock.getState()).boltState, LockState.UNLOCKED, 'frozen report gated');
+  // A real transition (its auto-lock notification) still flips the state.
+  node.emit('notification', node, 0x71, { type: 6, event: 0x09 });
+  assert.equal((await lock.getState()).boltState, LockState.LOCKED);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: optimistic model - reports still RESOLVE an unknown state', async () => {
+  const node = new MockNode({ status: ST.ASLEEP, values: { '98:boltStatus': 'locked' } });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {} } }
+  );
+  await lock.init();
+  assert.equal((await lock.getState()).boltState, LockState.LOCKED, 'cache seed resolved the initial unknown');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: optimistic model - a failed transmit still fails the command', async () => {
+  const { lock } = await makeZwave(
+    { current: 0xff, failSetOnce: true, confirm: false },
+    { model_key: 'schlage-be469zp', verify_retries: 0 }
+  );
+  const r = await lock.unlock('entry');
+  assert.equal(r.success, false, 'delivery is a real gate, not a rubber stamp');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: System hardware notification (type 9 event 1) emits device-note, never state', async () => {
+  const { node, lock } = await makeZwave({ current: 0xff });
+  const notes = [];
+  lock.on('device-note', (n) => notes.push(n));
+  node.emit('notification', node, 0x71, { type: 9, event: 1 });
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].code, 'system_hardware_note');
+  assert.equal((await lock.getState()).boltState, LockState.LOCKED, 'bolt state unchanged');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: node interview completion surfaces as an interview-completed event', async () => {
+  const { node, lock } = await makeZwave({ status: ST.ASLEEP, values: {} });
+  const seen = [];
+  lock.on('interview-completed', (e) => seen.push(e));
+  node.emit('interview completed', node);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].node_id, 2);
+  await lock.shutdown();
+});
+
+// ---------------------------------------------------------------------------
 // Auto-relock ("stay unlocked"): the ~30s re-lock after an unlock is the
 // lock's OWN feature, exposed as a configuration parameter where the catalog
 // knows one.

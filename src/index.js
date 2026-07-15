@@ -81,6 +81,10 @@ const capture = new CaptureSession({ dir: captureDir });
 let notifier = new Notifier(config.alerts || {}, { logger });
 let lockDriver = null;
 let deadboltController = null;
+// Set by /api/deadbolt/reinterview so the driver's 'interview-completed'
+// event can announce the OPERATOR-requested re-interview finishing (the
+// refreshInfo() promise resolves when the interview is merely re-queued).
+let _reinterviewRequested = false;
 
 // Shared Z-Wave plumbing: ONE driver session per serial port, borrowed by both
 // the lock driver and the pairing flow so they never contend for the port.
@@ -283,6 +287,35 @@ function buildDeadbolt() {
         action: `${e.action} completed late; bolt is now ${e.boltState}`,
         success: true,
       });
+    });
+    // Device-origin informational notes (e.g. the BE469ZP's post-unlock
+    // hardware/system alarm, which fires even on successful moves): feed
+    // only, never an email alert.
+    lockDriver.on('device-note', (n) => {
+      logger.info(`Deadbolt: device note: ${n.detail || n.code}`);
+      broadcastEvent({
+        type: 'deadbolt.device_note',
+        actor: 'Deadbolt Controller',
+        location: 'Deadbolt',
+        action: n.detail || n.code || 'device note',
+        success: true,
+      });
+    });
+    // Truthful re-interview completion: refreshInfo() resolves when the
+    // interview is merely re-queued, so completion is announced from the
+    // node's own 'interview completed' event instead.
+    lockDriver.on('interview-completed', () => {
+      logger.info('Deadbolt: interview completed; bolt and battery readings are fresh');
+      if (_reinterviewRequested) {
+        _reinterviewRequested = false;
+        broadcastEvent({
+          type: 'deadbolt.reinterview',
+          actor: 'Deadbolt Controller',
+          location: 'Deadbolt',
+          action: 'Re-interview completed; readings refreshed',
+          success: true,
+        });
+      }
     });
   }
   deadboltController = new DeadboltController(config, {
@@ -1073,7 +1106,7 @@ app.post('/api/deadbolt/control', async (req, res) => {
       action: `Test ${action}`,
       success: !!(result && result.success),
     });
-    res.json({ action, success: !!(result && result.success), boltState: result && result.boltState, error: (result && result.error) || null });
+    res.json({ action, success: !!(result && result.success), boltState: result && result.boltState, verified: (result && result.verified) || null, error: (result && result.error) || null });
   } catch (err) {
     res.status(500).json({ action, success: false, error: err.message });
   }
@@ -1133,12 +1166,19 @@ app.post('/api/deadbolt/reinterview', (req, res) => {
     return res.status(503).json({ error: 'No lock driver is active (pair a lock first)' });
   }
   try {
+    _reinterviewRequested = true;
     lockDriver.reinterview().then(
-      () => logger.info('Deadbolt: re-interview completed'),
-      (err) => logger.warn(`Deadbolt: re-interview failed: ${err.message}`)
+      // refreshInfo resolves when the interview is re-QUEUED, not finished;
+      // the driver's 'interview-completed' listener logs actual completion.
+      () => logger.info('Deadbolt: re-interview request accepted (interview re-queued; completion is logged when the node finishes; wake the lock to speed it up)'),
+      (err) => {
+        _reinterviewRequested = false;
+        logger.warn(`Deadbolt: re-interview failed: ${err.message}`);
+      }
     );
     res.json({ status: 'started' });
   } catch (err) {
+    _reinterviewRequested = false;
     res.status(500).json({ error: err.message });
   }
 });

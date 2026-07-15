@@ -26,6 +26,14 @@
  * app, keypad menu) get `auto_relock: null` plus an `auto_relock_note`
  * telling the operator where to change it instead.
  *
+ * `rf_verify: 'optimistic'` marks models that give NO truthful confirmation
+ * for a commanded (RF) move, so the driver treats a transmitted command as
+ * delivered instead of failing a verification that can never succeed.
+ * Field-proven on the Schlage BE469ZP: currentMode always reads 0xfe, the
+ * operation report boltStatus is frozen, no RF lock/unlock notifications
+ * exist, and zwave-js disables Supervision for it on purpose. Absent flag =
+ * normal report-based verification.
+ *
  * Sources: manufacturer manuals (Schlage/Allegion, Yale, Kwikset, Ultraloq,
  * Weiser/Baldwin), z-wavealliance.org product pages, Alarm Grid / True Home
  * KБ inclusion+reset guides, and zwave-js device-DB ids. Security classes:
@@ -40,6 +48,8 @@ const CATALOG = Object.freeze([
     models: [
       {
         key: 'schlage-be469zp',
+        rf_verify: 'optimistic',
+        rf_verify_note: 'This model never confirms a remote move: operation reports are frozen and it sends no RF notifications. Commands are trusted once delivered; the dashboard state tracks its manual, keypad, and auto-lock reports.',
         auto_relock: { parameter: 15, size: 1, on: 255, off: 0 },
         auto_relock_note: 'Built-in auto-lock re-throws the bolt about 30 seconds after an unlock when enabled.',
         name: 'Schlage BE469ZP Touchscreen Deadbolt',
@@ -53,6 +63,8 @@ const CATALOG = Object.freeze([
       },
       {
         key: 'schlage-be469',
+        rf_verify: 'optimistic',
+        rf_verify_note: 'This model never confirms a remote move: operation reports are frozen and it sends no RF notifications. Commands are trusted once delivered; the dashboard state tracks its manual, keypad, and auto-lock reports.',
         auto_relock: { parameter: 15, size: 1, on: 255, off: 0 },
         auto_relock_note: 'Built-in auto-lock re-throws the bolt about 30 seconds after an unlock when enabled.',
         name: 'Schlage BE469 / BE468 (non-ZP)',

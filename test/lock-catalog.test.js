@@ -58,6 +58,15 @@ test('auto_relock is a well-formed parameter block or null with a note', () => {
   assert.equal(catalog.profileForKey('generic').auto_relock, null);
 });
 
+test('rf_verify optimistic is set (with a note) on exactly the two Schlage models', () => {
+  const flagged = catalog.ALL_MODELS.filter((m) => m.rf_verify != null);
+  assert.deepEqual(flagged.map((m) => m.key).sort(), ['schlage-be469', 'schlage-be469zp']);
+  for (const m of flagged) {
+    assert.equal(m.rf_verify, 'optimistic', `model ${m.key} rf_verify value`);
+    assert.ok(m.rf_verify_note, `model ${m.key} needs a note explaining the quirk`);
+  }
+});
+
 test('getCatalog groups models under manufacturers for the picker', () => {
   const cat = catalog.getCatalog();
   assert.ok(Array.isArray(cat) && cat.length >= 4);

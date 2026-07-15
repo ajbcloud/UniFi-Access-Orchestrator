@@ -3380,8 +3380,15 @@ async function deadboltControl(action) {
   toast(`Sending ${action} to the deadbolt...`, 'info'); // immediate feedback
   try {
     const r = await api('POST', '/api/deadbolt/control', { action });
-    if (r.success) toast(`Deadbolt ${action} confirmed (bolt: ${r.boltState})`, 'success');
-    else toast(`Deadbolt ${action} failed: ${r.error || 'not verified'}`, 'error');
+    if (r.success && r.verified === 'optimistic') {
+      // Models like the BE469ZP never confirm a remote move; delivered is
+      // the strongest truth available, so say that instead of "confirmed".
+      toast(`Deadbolt ${action} command sent and delivered (bolt should now be ${r.boltState}). This lock does not confirm remote moves; the badge tracks its manual, keypad, and auto-lock reports.`, 'success');
+    } else if (r.success) {
+      toast(`Deadbolt ${action} confirmed (bolt: ${r.boltState})`, 'success');
+    } else {
+      toast(`Deadbolt ${action} failed: ${r.error || 'not verified'}`, 'error');
+    }
     refreshZwaveDeadbolt();
   } catch (e) { toast(`Control failed: ${e.message}`, 'error'); refreshZwaveDeadbolt(); }
 }
@@ -3395,7 +3402,7 @@ async function startReinterview() {
   try {
     const r = await api('POST', '/api/deadbolt/reinterview');
     if (r.error) { toast(r.error, 'error'); return; }
-    toast('Re-interview started. Wake the lock at the keypad to speed it up; bolt and battery refresh automatically when it completes.', 'info');
+    toast('Re-interview started. Wake the lock at the keypad to speed it up; bolt and battery refresh automatically when it completes. Avoid Test Lock/Unlock until it finishes (watch the event feed for the completion entry).', 'info');
   } catch (e) { toast(`Re-interview failed to start: ${e.message}`, 'error'); }
 }
 
