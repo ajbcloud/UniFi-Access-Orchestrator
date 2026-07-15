@@ -41,6 +41,7 @@ const lockCatalog = require('./drivers/lock-catalog');
 const { ZwavePairing } = require('./drivers/zwave-pairing');
 const { loadSecurityKeys, ensureSecurityKeys } = require('./drivers/zwave-keys');
 const { SustainedFlagMonitor } = require('./alert-monitors');
+const deadboltRules = require('./deadbolt-rules');
 const {
   redactSecrets,
   stripRedactedPlaceholders,
@@ -58,10 +59,38 @@ const BACKUP_DIR = process.env.BACKUP_DIR || path.join(path.dirname(CONFIG_PATH)
 
 function loadConfig() {
   const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
-  return JSON.parse(raw);
+  const parsed = JSON.parse(raw);
+  // Migrate a legacy flat deadbolt_rules block to the per-lock map shape on
+  // EVERY load (startup, ConfigSync reload, hand-edited file), so the rest
+  // of the app only ever sees the map. Persisted once at startup below.
+  const migrated = deadboltRules.toMapShape(
+    parsed.deadbolt_rules,
+    parsed.devices && parsed.devices.zwave && parsed.devices.zwave.locks
+  );
+  if (migrated.changed) parsed.deadbolt_rules = migrated.rules;
+  return parsed;
 }
 
 let config = loadConfig();
+
+// One-time on-disk migration of the legacy flat deadbolt_rules shape, so
+// backups/diagnostics and external readers see the same shape the app uses.
+// writeConfigFile is hoisted; configSync does not exist yet, so no
+// markConfigApplied is needed (it initializes later from the migrated file).
+try {
+  const disk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+  const diskMigrated = deadboltRules.toMapShape(
+    disk.deadbolt_rules,
+    disk.devices && disk.devices.zwave && disk.devices.zwave.locks
+  );
+  if (diskMigrated.changed) {
+    disk.deadbolt_rules = diskMigrated.rules;
+    writeConfigFile(disk);
+    logger.info('Config: migrated deadbolt_rules to the per-lock map shape (multi-lock support)');
+  }
+} catch (e) {
+  logger.warn(`Config: deadbolt_rules migration skipped (${e.message}); continuing with the in-memory shape`);
+}
 
 // ---------------------------------------------------------------------------
 // Initialize components
@@ -145,7 +174,7 @@ const zwavePairing = new ZwavePairing({
       const zw = cfg.devices.zwave = cfg.devices.zwave || {};
       zw.locks = zw.locks || {};
       let lockId = chosenId
-        || (cfg.deadbolt_rules && cfg.deadbolt_rules.lock_id)
+        || deadboltRules.automatedLockIds(cfg.deadbolt_rules)[0]
         || Object.keys(zw.locks)[0] || 'front_deadbolt';
       // Never overwrite a different, still-paired lock that happens to share
       // the requested id: pick a free suffix instead.
@@ -174,12 +203,14 @@ const zwavePairing = new ZwavePairing({
         }
       );
       zw.enabled = true;
-      // buildDeadbolt() activates on deadbolt_rules; seed the minimal block so
-      // the freshly-paired lock is manageable. Only default the active control
-      // lock id when none is set yet, so adding a SECOND lock does not
-      // repoint the door away from the first.
+      // Seed an automation entry only for the FIRST lock (map stays empty of
+      // entries for later locks, which pair as manually-controllable but not
+      // automated). Adding a second lock therefore never repoints or dilutes
+      // the first door's automation.
       cfg.deadbolt_rules = cfg.deadbolt_rules || {};
-      if (!cfg.deadbolt_rules.lock_id) cfg.deadbolt_rules.lock_id = lockId;
+      if (!deadboltRules.automatedLockIds(cfg.deadbolt_rules).length) {
+        cfg.deadbolt_rules[lockId] = cfg.deadbolt_rules[lockId] || {};
+      }
     });
     await bringDeadboltOnline();
     logger.info(`Z-Wave: lock paired as node ${nodeId} (${securityClass || 'class unknown'}) under "${resolvedId}" and brought online`);
@@ -245,7 +276,7 @@ function buildDeadbolt() {
   if (dbCfg) {
     if (zw && zw.enabled) {
       const locks = zw.locks || {};
-      const lockId = dbCfg.lock_id || Object.keys(locks)[0];
+      const lockId = activeLockId(config);
       const lockCfg = Object.assign(
         { serial_path: zw.serial_path, cache_dir: zw.cache_dir },
         locks[lockId] || {}
@@ -332,7 +363,12 @@ function buildDeadbolt() {
       }
     });
   }
-  deadboltController = new DeadboltController(config, {
+  // deadbolt_rules is a per-lock MAP; the controller takes ONE lock's rules
+  // slice (the active lock's entry), so its internals stay shape-agnostic.
+  const controllerConfig = Object.assign({}, config, {
+    deadbolt_rules: deadboltRules.rulesForLock(config.deadbolt_rules, activeLockId(config)) || undefined,
+  });
+  deadboltController = new DeadboltController(controllerConfig, {
     lockDriver,
     getUnifiClient: () => unifiClient,
     broadcaster: broadcastEvent,
@@ -831,8 +867,7 @@ app.get('/api/debug/payloads', (req, res) => {
 function zwaveSummary() {
   const zw = (config.devices && config.devices.zwave) || {};
   const locks = zw.locks || {};
-  const lockId = (config.deadbolt_rules && config.deadbolt_rules.lock_id)
-    || Object.keys(locks)[0] || 'front_deadbolt';
+  const lockId = activeLockId(config) || 'front_deadbolt';
   const lc = locks[lockId] || {};
   const nodeId = lc.node_id || 0;
   return {
@@ -1145,11 +1180,11 @@ app.post('/api/deadbolt/auto-relock', async (req, res) => {
   try {
     const result = await lockDriver.setAutoRelock(enabled);
     // Persist on the ACTIVE lock entry, resolved the same way buildDeadbolt
-    // binds the driver (deadbolt_rules.lock_id, else the first saved lock).
+    // binds the driver (first automated lock, else the first saved lock).
     persistZwaveMutation((cfg) => {
       const zwc = cfg.devices && cfg.devices.zwave;
       if (!zwc || !zwc.locks) return;
-      const lockId = (cfg.deadbolt_rules && cfg.deadbolt_rules.lock_id) || Object.keys(zwc.locks)[0];
+      const lockId = activeLockId(cfg);
       if (lockId && zwc.locks[lockId]) zwc.locks[lockId].auto_relock = enabled;
     });
     broadcastEvent({
@@ -1177,11 +1212,13 @@ app.post('/api/deadbolt/auto-relock', async (req, res) => {
 // (the interview-wide queryAllUserCodes stays disabled: Yale battery guard).
 // ---------------------------------------------------------------------------
 
-// The lock entry the driver is bound to (same resolution buildDeadbolt uses).
+// The lock entry the driver is bound to (same resolution buildDeadbolt uses):
+// the first automated lock (deadbolt_rules map key; legacy flat lock_id also
+// honored via the shape helpers), else the first saved lock.
 function activeLockId(cfg) {
   const c = cfg || config;
   const locks = (c.devices && c.devices.zwave && c.devices.zwave.locks) || {};
-  return (c.deadbolt_rules && c.deadbolt_rules.lock_id) || Object.keys(locks)[0] || null;
+  return deadboltRules.automatedLockIds(c.deadbolt_rules)[0] || Object.keys(locks)[0] || null;
 }
 
 function savedUserCodes() {
@@ -1962,6 +1999,18 @@ app.put('/api/config', async (req, res) => {
         && updates.server.admin_api_key !== undefined
         && String(updates.server.admin_api_key).trim() === '') {
       delete updates.server.admin_api_key;
+    }
+
+    // Legacy writers (the Visual Designer, older dashboards) still PUT the
+    // FLAT deadbolt_rules shape; normalize it onto the per-lock map so the
+    // merge below cannot mix flat keys into the map (which would corrupt
+    // both shapes). The flat fields land on the first automated lock.
+    if (updates.deadbolt_rules !== undefined) {
+      updates.deadbolt_rules = deadboltRules.normalizePutRules(
+        updates.deadbolt_rules,
+        current.deadbolt_rules,
+        current.devices && current.devices.zwave && current.devices.zwave.locks
+      );
     }
 
     // Deep merge updates (only allow specific safe keys)

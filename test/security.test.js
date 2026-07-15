@@ -188,6 +188,22 @@ test('validateConfigUpdates checks deadbolt_rules and alerts shapes', () => {
   assert.strictEqual(validateConfigUpdates({ deadbolt_rules: { trigger_door: '' } }).ok, true); // empty disables retract
   assert.strictEqual(validateConfigUpdates({ deadbolt_rules: 'nope' }).ok, false);
   assert.strictEqual(validateConfigUpdates({ deadbolt_rules: { relock_cooldown_seconds: -5 } }).ok, false);
+  // Per-lock MAP shape (multi-lock): each entry validated with the same rules.
+  assert.strictEqual(validateConfigUpdates({
+    deadbolt_rules: {
+      front_deadbolt: { trigger_door: 'Front Door', relock_cooldown_seconds: 10 },
+      side_deadbolt: { trigger_door: 'Side Door' },
+    },
+  }).ok, true);
+  assert.strictEqual(validateConfigUpdates({
+    deadbolt_rules: { front_deadbolt: { relock_cooldown_seconds: -5 } },
+  }).ok, false, 'map entries are field-validated');
+  assert.strictEqual(validateConfigUpdates({
+    deadbolt_rules: { front_deadbolt: { trigger_door: 42 } },
+  }).ok, false);
+  assert.strictEqual(validateConfigUpdates({
+    deadbolt_rules: { front_deadbolt: 'nope' },
+  }).ok, false, 'map entries must be objects');
   assert.strictEqual(validateConfigUpdates({ alerts: { enabled: true, webhook_url: 'http://x', on: ['cascade_failed'] } }).ok, true);
   assert.strictEqual(validateConfigUpdates({ alerts: { enabled: 'yes' } }).ok, false);
   assert.strictEqual(validateConfigUpdates({ alerts: { on: 'all' } }).ok, false);
