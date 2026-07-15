@@ -35,11 +35,14 @@
  * normal report-based verification.
  *
  * `user_codes` describes keypad-code (User Code CC) management support:
- * { slots, min_length, max_length, fixed_length, length_parameter, note }.
+ * { slots, min_length, max_length, fixed_length, length_parameter,
+ *   reserved_slots, note }.
  * Catalog numbers are fallback display data; the lock's own answers
- * (getUsersCount, the length parameter) always win when reachable. Models
- * whose codes are managed on the device or in a vendor app get
- * `user_codes: null` plus a `user_codes_note`.
+ * (getUsersCount, the length parameter) always win when reachable, EXCEPT
+ * `reserved_slots`: slot numbers the lock counts in getUsersCount but that
+ * must never be written (Yale counts its admin/master code as slot 251).
+ * Absent means none. Models whose codes are managed on the device or in a
+ * vendor app get `user_codes: null` plus a `user_codes_note`.
  *
  * Sources: manufacturer manuals (Schlage/Allegion, Yale, Kwikset, Ultraloq,
  * Weiser/Baldwin), z-wavealliance.org product pages, Alarm Grid / True Home
@@ -100,8 +103,9 @@ const CATALOG = Object.freeze([
       {
         key: 'yale-assure-zw2',
         user_codes: {
-          slots: 25, min_length: 4, max_length: 8, fixed_length: false, length_parameter: null,
-          note: 'Codes may be 4 to 8 digits. Slot count varies by model; the lock is asked for its real capacity when reachable.',
+          slots: 250, min_length: 4, max_length: 8, fixed_length: false, length_parameter: null,
+          reserved_slots: [251],
+          note: 'Codes may be 4 to 8 digits. The lock reports 251 slots but slot 251 is its reserved admin (master) code and is never written by the app.',
         },
         auto_relock: { parameter: 2, size: 1, on: 255, off: 0 },
         auto_relock_note: 'Auto relock is parameter 2; the relock delay (parameter 3, 5-255s) keeps its last value.',
@@ -117,13 +121,14 @@ const CATALOG = Object.freeze([
       {
         key: 'yale-assure-zw3',
         user_codes: {
-          slots: 25, min_length: 4, max_length: 8, fixed_length: false, length_parameter: null,
-          note: 'Codes may be 4 to 8 digits. Slot count varies by model; the lock is asked for its real capacity when reachable.',
+          slots: 250, min_length: 4, max_length: 8, fixed_length: false, length_parameter: null,
+          reserved_slots: [251],
+          note: 'Codes may be 4 to 8 digits. The lock reports 251 slots but slot 251 is its reserved admin (master) code and is never written by the app.',
         },
         auto_relock: { parameter: 2, size: 1, on: 255, off: 0 },
         auto_relock_note: 'Auto relock is parameter 2; the relock delay (parameter 3, 5-255s) keeps its last value.',
         name: 'Yale Assure (ZW3 / 700-series)',
-        match: [],
+        match: ['0x0129:0x8002:0x46d5', '0x0129:0x8002:0xa570'],
         default_security: 's2',
         confirmed: true,
         enroll: 'Put the controller in Add mode, then on the lock enter [Master PIN] # 7 # 1 #. For S2, scan the DSK/QR on the module or enter the 5-digit PIN when prompted.',

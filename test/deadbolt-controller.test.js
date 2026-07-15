@@ -225,3 +225,74 @@ test('getStatus reports stats and lock snapshot', async () => {
   assert.equal(s.stats.retracts, 1);
   assert.ok(s.lock);
 });
+
+// ---------------------------------------------------------------------------
+// Multi-lock isolation: one controller per automated lock, fed the SAME raw
+// event stream (exactly how index.js taps events), must never cross-talk.
+// ---------------------------------------------------------------------------
+
+function makeIsolated(triggerDoor) {
+  const lock = new FakeLock({ initial: LockState.LOCKED });
+  const ctl = new DeadboltController(
+    {
+      deadbolt_rules: { trigger_door: triggerDoor, require_result: 'ACCESS' },
+      cascade_rules: { rules: [] }, // per-lock controllers carry NO cascades
+      self_trigger_actor_name: 'Access Orchestrator',
+    },
+    { lockDriver: lock, unifiClient: makeUnifi(), logger: { debug() {}, info() {}, warn() {} }, onAlert() {} }
+  );
+  return { lock, ctl };
+}
+
+test('two controllers on two doors: an entry retracts only the matching lock', async () => {
+  const front = makeIsolated('Front Door');
+  const side = makeIsolated('Side Door');
+  const feed = (raw) => { front.ctl.observe(raw); side.ctl.observe(raw); };
+
+  feed(entryGrant('Front Door'));
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(front.lock.calls.map((c) => c.action), ['unlock'], 'front lock retracted');
+  assert.deepEqual(side.lock.calls, [], 'side lock untouched by the front entry');
+
+  feed(entryGrant('Side Door'));
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(side.lock.calls.map((c) => c.action), ['unlock'], 'side lock retracted for its own door');
+  assert.equal(front.lock.calls.length, 1, 'front lock saw no second command');
+});
+
+test('two controllers on two doors: a secured transition locks only the matching lock', async () => {
+  const front = makeIsolated('Front Door');
+  const side = makeIsolated('Side Door');
+  const feed = (raw) => { front.ctl.observe(raw); side.ctl.observe(raw); };
+
+  // Seed both doors' lock state (first telemetry never fires an action).
+  feed(locationUpdate('Front Door', 'unlocked'));
+  feed(locationUpdate('Side Door', 'unlocked'));
+  // Only the SIDE door secures.
+  feed(locationUpdate('Side Door', 'locked'));
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(side.lock.calls.map((c) => c.action), ['lock'], 'side lock thrown on its own secured transition');
+  assert.deepEqual(front.lock.calls, [], 'front lock untouched');
+});
+
+test('a dedicated cascade controller fires cascades exactly once alongside per-lock controllers', async () => {
+  const front = makeIsolated('Front Door');
+  const side = makeIsolated('Side Door');
+  const unifi = makeUnifi();
+  const cascadeCtl = new DeadboltController(
+    {
+      cascade_rules: { rules: [{ trigger_door: 'Front Door', unlock: ['Interior Door'], debounce_seconds: 8 }] },
+      self_trigger_actor_name: 'Access Orchestrator',
+    },
+    { lockDriver: null, unifiClient: unifi, logger: { debug() {}, info() {}, warn() {} }, onAlert() {} }
+  );
+  const observers = [front.ctl, side.ctl, cascadeCtl];
+  const feed = (raw) => observers.forEach((c) => c.observe(raw));
+
+  feed(entryGrant('Front Door'));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(unifi.calls.length, 1, 'cascade fired exactly once');
+  assert.equal(unifi.calls[0].name, 'Interior Door');
+  assert.equal(front.lock.calls.length, 1, 'front lock still retracted');
+  assert.deepEqual(side.lock.calls, [], 'side lock untouched');
+});

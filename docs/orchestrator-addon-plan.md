@@ -535,8 +535,14 @@ state. Verify the thumbturn-retracts-bolt behavior physically during commissioni
 - No cloud services or external dependency in the control path.
 - No lock command to the UniFi side, ever (UniFi API stays unlock-only; the mag lock and strike are
   UniFi-native).
-- No design of "Configuration 2." A clean extension point is left (`cascade_rules[].scope`, the driver
-  contract, and the `devices` map) but the second configuration is not specified here.
+- ~~No design of "Configuration 2."~~ **Superseded (2026-07):** multi-lock is implemented.
+  `deadbolt_rules` is a per-lock map (auto-migrated from the legacy flat block); every PAIRED lock
+  gets its own driver on the shared Z-Wave manager (manual control, auto-relock, PIN codes), every
+  lock with a rules entry gets its own controller and trigger door, and cascade rules run on one
+  dedicated controller so they fire exactly once. Deadbolt endpoints take an optional `lock_id`
+  (required only when several locks are configured). Known limitation: the Visual Designer still
+  shows/edits only the FIRST automated lock's retract edge; its legacy flat write is normalized
+  server-side onto that entry.
 - The middleware is never placed in the egress or fire-release path.
 
 ---

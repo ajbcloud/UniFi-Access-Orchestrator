@@ -1083,6 +1083,20 @@ class ZwaveLock extends LockDriver {
     return Object.freeze({ AVAILABLE: 0, ENABLED: 1, DISABLED: 2 });
   }
 
+  /** Reserved slot numbers for this model (e.g. Yale's admin code, slot 251). */
+  _reservedUserSlots() {
+    const prof = this._modelProfile();
+    const meta = prof && prof.user_codes;
+    return (meta && Array.isArray(meta.reserved_slots)) ? meta.reserved_slots : [];
+  }
+
+  /** Throws when a slot is reserved by the lock itself and must not be touched. */
+  _guardReservedSlot(slot) {
+    if (this._reservedUserSlots().includes(slot)) {
+      throw new Error(`slot ${slot} is this lock's reserved admin/master code and cannot be managed here`);
+    }
+  }
+
   /**
    * Write a keypad code into a slot and read it back. confirmed is true when
    * the read-back shows the slot Enabled with the same code, null when the
@@ -1094,6 +1108,7 @@ class ZwaveLock extends LockDriver {
     if (!this._node) {
       throw new Error('Z-Wave driver is not running (stick unplugged or failed to start)');
     }
+    this._guardReservedSlot(slot);
     const uc = this._userCodeCC();
     if (!uc || typeof uc.set !== 'function') {
       throw new Error('this lock does not expose keypad codes over Z-Wave (User Code CC unavailable)');
@@ -1126,6 +1141,7 @@ class ZwaveLock extends LockDriver {
     if (!this._node) {
       throw new Error('Z-Wave driver is not running (stick unplugged or failed to start)');
     }
+    this._guardReservedSlot(slot);
     const uc = this._userCodeCC();
     if (!uc) throw new Error('this lock does not expose keypad codes over Z-Wave (User Code CC unavailable)');
     if (typeof uc.clear === 'function') await uc.clear(slot);
@@ -1153,6 +1169,7 @@ class ZwaveLock extends LockDriver {
   async userCodesCapability() {
     const prof = this._modelProfile();
     const meta = (prof && prof.user_codes) || null;
+    const reserved = this._reservedUserSlots();
     const out = {
       supported: !!(meta && this._userCodeCC()),
       model_key: prof ? prof.key : null,
@@ -1162,6 +1179,7 @@ class ZwaveLock extends LockDriver {
       fixed_length: !!(meta && meta.fixed_length),
       length_parameter: meta ? meta.length_parameter : null,
       configured_length: null,
+      reserved_slots: reserved,
       note: (meta && meta.note) || (prof && prof.user_codes_note) || null,
       live: false,
     };
@@ -1182,7 +1200,12 @@ class ZwaveLock extends LockDriver {
         }
       }
     } catch (e) { /* fall back to catalog numbers */ }
-    if (this._liveUserSlots != null) { out.slots = this._liveUserSlots; out.live = true; }
+    if (this._liveUserSlots != null) {
+      // The lock counts reserved slots (Yale reports 251 including its admin
+      // code); usable capacity excludes them.
+      out.slots = this._liveUserSlots - reserved.filter((s) => s <= this._liveUserSlots).length;
+      out.live = true;
+    }
     if (this._liveCodeLength != null) { out.configured_length = this._liveCodeLength; out.live = true; }
     return out;
   }

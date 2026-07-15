@@ -28,6 +28,24 @@ test('known ids resolve to the clean display names the identity layer uses', () 
   assert.equal(catalog.modelNameForIds(0x0452, 0x0004, 0x0001), 'Ultraloq U-Bolt Pro Z-Wave');
   assert.equal(catalog.modelNameForIds(0x0abc, 1, 2), null, 'unmapped -> null (driver falls back to db label)');
   assert.equal(catalog.modelNameForIds(null, null, null), null);
+  // 700-series Yale module ids (zwave-js device db, YRD256-ZW3): without
+  // these a ZW3 lock pairs as an unidentified device.
+  assert.equal(catalog.modelNameForIds(0x0129, 0x8002, 0x46d5), 'Yale Assure (ZW3 / 700-series)');
+  assert.equal(catalog.modelNameForIds(0x0129, 0x8002, 0xa570), 'Yale Assure (ZW3 / 700-series)');
+});
+
+test('Yale user_codes reflect the real capacity and reserve the admin slot', () => {
+  for (const key of ['yale-assure-zw2', 'yale-assure-zw3']) {
+    const uc = catalog.profileForKey(key).user_codes;
+    assert.equal(uc.slots, 250, `${key}: the ZW2/ZW3 modules take ~250 codes, not 25`);
+    assert.deepEqual(uc.reserved_slots, [251], `${key}: slot 251 is the lock's admin code`);
+  }
+  // reserved_slots is optional everywhere else; when present it must be an array.
+  for (const m of catalog.ALL_MODELS) {
+    if (m.user_codes && 'reserved_slots' in m.user_codes) {
+      assert.ok(Array.isArray(m.user_codes.reserved_slots), `${m.key} reserved_slots shape`);
+    }
+  }
 });
 
 test('profileForKey returns the model, and a generic fallback always exists', () => {

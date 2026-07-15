@@ -85,11 +85,12 @@
     }
   },
   "deadbolt_rules": {
-    "lock_id": "front_deadbolt",
-    "trigger_door": "Front Door",
-    "require_result": "ACCESS",
-    "mirror_unlock": false,
-    "relock_cooldown_seconds": 10
+    "front_deadbolt": {
+      "trigger_door": "Front Door",
+      "require_result": "ACCESS",
+      "mirror_unlock": false,
+      "relock_cooldown_seconds": 10
+    }
   },
   "cascade_rules": {
     "rules": [

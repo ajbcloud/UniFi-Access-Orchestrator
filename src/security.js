@@ -2,6 +2,7 @@
 // without booting the server. No Express or filesystem dependencies here.
 
 const crypto = require('crypto');
+const deadboltRules = require('./deadbolt-rules');
 
 // Matches config keys whose values are secrets and must never be returned to a
 // client or written to a log in cleartext. pin[_-]?code covers the per-user
@@ -135,10 +136,25 @@ function validateConfigUpdates(updates) {
   if (updates.deadbolt_rules !== undefined) {
     const db = updates.deadbolt_rules;
     if (!isPlainObject(db)) return { ok: false, error: 'deadbolt_rules must be an object' };
-    if (db.lock_id !== undefined && typeof db.lock_id !== 'string') return { ok: false, error: 'deadbolt_rules.lock_id must be a string' };
-    if (db.trigger_door !== undefined && typeof db.trigger_door !== 'string') return { ok: false, error: 'deadbolt_rules.trigger_door must be a string' };
-    if (db.relock_cooldown_seconds !== undefined && (typeof db.relock_cooldown_seconds !== 'number' || db.relock_cooldown_seconds < 0)) {
-      return { ok: false, error: 'deadbolt_rules.relock_cooldown_seconds must be a non-negative number' };
+    // Two accepted shapes: the legacy FLAT block (validated as one entry) and
+    // the per-lock MAP (each value validated as an entry). Mixed payloads
+    // (a stale writer spreading the map and adding flat keys) validate both
+    // ways; the server normalizes them to the map shape before merging.
+    const checkEntry = (e, label) => {
+      if (e.lock_id !== undefined && typeof e.lock_id !== 'string') return `${label}lock_id must be a string`;
+      if (e.trigger_door !== undefined && typeof e.trigger_door !== 'string') return `${label}trigger_door must be a string`;
+      if (e.relock_cooldown_seconds !== undefined && (typeof e.relock_cooldown_seconds !== 'number' || e.relock_cooldown_seconds < 0)) {
+        return `${label}relock_cooldown_seconds must be a non-negative number`;
+      }
+      return null;
+    };
+    const flatErr = checkEntry(db, 'deadbolt_rules.');
+    if (flatErr) return { ok: false, error: flatErr };
+    for (const [lockId, entry] of Object.entries(db)) {
+      if (deadboltRules.FLAT_KEYS.includes(lockId)) continue; // flat scalar, checked above
+      if (!isPlainObject(entry)) return { ok: false, error: `deadbolt_rules.${lockId} must be an object` };
+      const err = checkEntry(entry, `deadbolt_rules.${lockId}.`);
+      if (err) return { ok: false, error: err };
     }
   }
 
