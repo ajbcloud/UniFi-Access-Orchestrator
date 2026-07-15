@@ -234,6 +234,16 @@ class ConfigSync {
       throw new Error(`user sync failed: ${err.message}`);
     }
 
+    // Access policies gate keypad-PIN sync; keep them fresh on the same loop.
+    // Non-fatal: a failure here leaves the last good gating data in place.
+    if (typeof client.syncAccessPolicies === 'function') {
+      try {
+        await client.syncAccessPolicies();
+      } catch (err) {
+        logger.debug(`Config sync: access policy refresh failed (${err.message})`);
+      }
+    }
+
     if (doorsChanged) {
       this.lastChangeDetectedAt = new Date().toISOString();
       logger.info('Config sync: controller doors changed');
