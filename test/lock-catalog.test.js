@@ -58,6 +58,33 @@ test('auto_relock is a well-formed parameter block or null with a note', () => {
   assert.equal(catalog.profileForKey('generic').auto_relock, null);
 });
 
+test('user_codes is a well-formed capability block or null with a note', () => {
+  for (const m of catalog.ALL_MODELS) {
+    assert.ok('user_codes' in m, `model ${m.key} must declare user_codes (or null)`);
+    if (m.user_codes) {
+      assert.ok(m.user_codes.slots > 0, `model ${m.key} slots`);
+      assert.ok(m.user_codes.min_length <= m.user_codes.max_length, `model ${m.key} length range`);
+      assert.equal(typeof m.user_codes.fixed_length, 'boolean', `model ${m.key} fixed_length`);
+    } else {
+      assert.ok(m.user_codes_note, `model ${m.key} without user_codes needs an operator note`);
+    }
+  }
+  const schlage = catalog.profileForKey('schlage-be469zp').user_codes;
+  assert.equal(schlage.slots, 30);
+  assert.equal(schlage.length_parameter, 16, 'Schlage code length lives in parameter 16');
+  assert.equal(schlage.fixed_length, true);
+  assert.equal(catalog.profileForKey('generic').user_codes, null);
+});
+
+test('rf_verify optimistic is set (with a note) on exactly the two Schlage models', () => {
+  const flagged = catalog.ALL_MODELS.filter((m) => m.rf_verify != null);
+  assert.deepEqual(flagged.map((m) => m.key).sort(), ['schlage-be469', 'schlage-be469zp']);
+  for (const m of flagged) {
+    assert.equal(m.rf_verify, 'optimistic', `model ${m.key} rf_verify value`);
+    assert.ok(m.rf_verify_note, `model ${m.key} needs a note explaining the quirk`);
+  }
+});
+
 test('getCatalog groups models under manufacturers for the picker', () => {
   const cat = catalog.getCatalog();
   assert.ok(Array.isArray(cat) && cat.length >= 4);

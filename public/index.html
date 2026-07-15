@@ -2783,6 +2783,7 @@ function renderZwaveSetup() {
       <div id="zwavePairPanel" style="margin-top:10px"></div>
       <div id="zwaveDeadboltLive" style="margin-top:10px"></div>
       <div id="zwaveAutoRelock" style="margin-top:10px"></div>
+      <div id="zwaveUserCodes" style="margin-top:10px"></div>
       <div id="zwaveDeadboltLocks" style="margin-top:10px"></div>
       <div id="zwaveDeadboltHealth" style="margin-top:10px;font-size:12px"></div>
     </div>
@@ -3113,6 +3114,98 @@ async function applyAutoRelock() {
   } catch (e) { toast(`Auto-relock apply failed: ${e.message}`, 'error'); }
 }
 
+// Pure builder for the Keypad PIN codes panel. `info` is the server's
+// capability + assigned-codes report (digits never reach the browser; each
+// entry carries only pin_length for the masked display), `users` is the
+// synced UniFi user list for the picker. Everything user-derived is escaped;
+// the whole panel is inert while a pairing session owns the controller.
+function buildUserCodesPanel(info, users, pairingActive) {
+  const i = info || {};
+  if (!i.supported) {
+    return i.note
+      ? `<div style="font-size:12px;color:var(--text-muted)">Keypad codes: ${escapeHtml(i.note)}</div>`
+      : '';
+  }
+  const dis = pairingActive ? ' disabled' : '';
+  const codes = Array.isArray(i.codes) ? i.codes : [];
+  const lenRule = i.fixed_length && i.configured_length
+    ? `${i.configured_length}-digit codes (all codes on this lock share one length)`
+    : `${i.min_length || 4} to ${i.max_length || 8} digit codes`;
+  let rows = '';
+  for (const c of codes) {
+    const badges = (c.pushed_to_unifi ? ` <span class="badge success" title="The same PIN was pushed to this user's UniFi Access account">UniFi</span>` : '')
+      + (c.user_missing ? ` <span class="badge warning" title="This user is no longer in the UniFi sync; the code still opens the deadbolt until removed">user missing</span>` : '');
+    rows += `<tr><td style="padding:4px 10px 4px 0">${escapeHtml(c.name || c.user_id || 'unnamed')}${badges}</td>`
+      + `<td style="padding:4px 10px 4px 0;color:var(--text-muted)">slot ${escapeHtml(c.slot)}</td>`
+      + `<td style="padding:4px 10px 4px 0;font-family:monospace">${'*'.repeat(Math.max(1, c.pin_length || 0))}</td>`
+      + `<td style="padding:4px 0"><button class="btn btn-sm btn-secondary" onclick="removeUserCode(${Number(c.slot)})"${dis} title="Clears this slot on the deadbolt only. The user's UniFi PIN is not touched.">Remove</button></td></tr>`;
+  }
+  const userOpts = (Array.isArray(users) ? users : [])
+    .map((u) => `<option value="${escapeHtml(u.id)}">${escapeHtml(u.name || u.id)}</option>`)
+    .join('');
+  return `<div style="font-size:12px">`
+    + `<div style="font-weight:600;margin-bottom:4px">Keypad PIN codes`
+    + ` <span style="font-weight:400;color:var(--text-muted)">${codes.length} of ${escapeHtml(i.slots)} slots used; ${escapeHtml(lenRule)}</span></div>`
+    + (rows ? `<table style="border-collapse:collapse;font-size:12px"><tbody>${rows}</tbody></table>` : '')
+    + `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">`
+    + `<select id="ucUser" style="font-size:12px;padding:5px"${dis}><option value="">-- pick a user --</option>${userOpts}</select>`
+    + `<input id="ucPin" type="text" inputmode="numeric" autocomplete="off" maxlength="10" placeholder="PIN" style="font-size:12px;padding:6px;width:90px"${dis}>`
+    + `<button class="btn btn-sm btn-primary" onclick="saveUserCode()"${dis} title="Writes the code to the deadbolt keypad, then asks whether to also overwrite this user's PIN in UniFi Access.">Save Code</button>`
+    + (codes.length ? `<button class="btn btn-sm btn-secondary" onclick="rewriteUserCodesToLock()"${dis} title="Sends every saved code to the lock again. Use after re-pairing the lock.">Rewrite Codes to Lock</button>` : '')
+    + `</div></div>`;
+}
+
+// Write a user's keypad code: lock first, then the per-save UniFi decision.
+async function saveUserCode() {
+  const sel = document.getElementById('ucUser');
+  const pinEl = document.getElementById('ucPin');
+  if (!sel || !pinEl) return;
+  const userId = sel.value;
+  const name = userId && sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent : '';
+  const pin = (pinEl.value || '').trim();
+  if (!userId) { toast('Pick a user first.', 'error'); return; }
+  if (!/^[0-9]{4,10}$/.test(pin)) { toast('The PIN must be 4 to 10 digits.', 'error'); return; }
+  const push = confirm(`Also overwrite ${name}'s PIN in UniFi Access?\n\nOK: the same PIN replaces their UniFi keypad PIN everywhere (UniFi readers and this deadbolt will match).\nCancel: this deadbolt only; their UniFi PIN is untouched.`);
+  toast('Writing the code to the lock...', 'info');
+  try {
+    const r = await api('POST', '/api/deadbolt/user-codes', { user_id: userId, name, pin, push_to_unifi: push });
+    if (r.error) { toast(r.error, 'error'); return; }
+    if (r.confirmed === null) toast(`Code queued for slot ${r.slot}; wake the lock at the keypad to finish the write.`, 'info');
+    else toast(`Keypad code set for ${name} (slot ${r.slot}).`, 'success');
+    if (r.unifi && r.unifi.attempted) {
+      if (r.unifi.success) toast(`UniFi PIN for ${name} updated to match.`, 'success');
+      else if (r.unifi.permission_denied) toast('UniFi push failed: the API token lacks user credential edit permission. Grant it in UniFi Access API settings, then save the PIN again and choose overwrite.', 'error');
+      else toast(`UniFi push failed: ${r.unifi.error || 'unknown error'}. The deadbolt code still works.`, 'error');
+    }
+    pinEl.value = '';
+    refreshZwaveDeadbolt();
+  } catch (e) { toast(`Saving the code failed: ${e.message}`, 'error'); }
+}
+
+async function removeUserCode(slot) {
+  if (!confirm(`Remove the keypad code in slot ${slot} from the deadbolt?\n\nThe user's UniFi PIN is not touched.`)) return;
+  try {
+    const r = await api('DELETE', `/api/deadbolt/user-codes/${slot}`);
+    if (r.error) { toast(r.error, 'error'); return; }
+    toast(`Slot ${slot} cleared on the deadbolt.`, 'success');
+    refreshZwaveDeadbolt();
+  } catch (e) { toast(`Remove failed: ${e.message}`, 'error'); }
+}
+
+// After a re-pair the lock is factory-fresh: send every saved code again.
+async function rewriteUserCodesToLock() {
+  if (!confirm('Rewrite all saved keypad codes to the lock?\n\nUse this after re-pairing the lock. It sends one write per saved code.')) return;
+  toast('Rewriting codes to the lock...', 'info');
+  try {
+    const r = await api('POST', '/api/deadbolt/user-codes/rewrite');
+    if (r.error) { toast(r.error, 'error'); return; }
+    const results = r.results || [];
+    const ok = results.filter((x) => x.ok).length;
+    toast(`Rewrote ${ok} of ${results.length} codes.`, ok === results.length ? 'success' : 'error');
+    refreshZwaveDeadbolt();
+  } catch (e) { toast(`Rewrite failed: ${e.message}`, 'error'); }
+}
+
 async function refreshZwaveDeadbolt() {
   const line = document.getElementById('zwaveDeadboltStatusLine');
   const btns = document.getElementById('zwaveDeadboltButtons');
@@ -3128,6 +3221,8 @@ async function refreshZwaveDeadbolt() {
       if (live) live.innerHTML = '';
       const ar = document.getElementById('zwaveAutoRelock');
       if (ar) ar.innerHTML = '';
+      const uc = document.getElementById('zwaveUserCodes');
+      if (uc) uc.innerHTML = '';
       return;
     }
     btns.innerHTML = buildDeadboltButtons(zw);
@@ -3151,6 +3246,7 @@ async function refreshZwaveDeadbolt() {
       } catch (e) { /* inventory is optional detail; leave the panel as-is */ }
     }
     const arEl = document.getElementById('zwaveAutoRelock');
+    const ucEl = document.getElementById('zwaveUserCodes');
     if (zw.paired) {
       const lsForLine = r.lock_state || {};
       line.textContent = `${describeLockModel(lsForLine)} paired as node ${zw.node_id} ("${zw.lock_id}", ${describeLockSecurity(lsForLine)}).`;
@@ -3172,10 +3268,19 @@ async function refreshZwaveDeadbolt() {
         </div>`;
       }
       if (arEl) arEl.innerHTML = buildAutoRelockControl(zw);
+      // Keypad PIN codes: capability + assigned slots from the server (the
+      // digits never leave it), user picker from the already-loaded sync.
+      if (ucEl) {
+        try {
+          const uc = await api('GET', '/api/deadbolt/user-codes');
+          ucEl.innerHTML = uc.error ? '' : buildUserCodesPanel(uc, usersData?.users || [], pairingActive);
+        } catch (e) { /* panel is optional detail; leave as-is */ }
+      }
     } else {
       line.textContent = 'No lock paired yet.';
       if (live) live.innerHTML = '';
       if (arEl) arEl.innerHTML = '';
+      if (ucEl) ucEl.innerHTML = '';
     }
     // Resume polling if a session is running (e.g. after a page reload).
     if (pairingActive && !_pairPollTimer) pollPairingStatus();
@@ -3380,8 +3485,15 @@ async function deadboltControl(action) {
   toast(`Sending ${action} to the deadbolt...`, 'info'); // immediate feedback
   try {
     const r = await api('POST', '/api/deadbolt/control', { action });
-    if (r.success) toast(`Deadbolt ${action} confirmed (bolt: ${r.boltState})`, 'success');
-    else toast(`Deadbolt ${action} failed: ${r.error || 'not verified'}`, 'error');
+    if (r.success && r.verified === 'optimistic') {
+      // Models like the BE469ZP never confirm a remote move; delivered is
+      // the strongest truth available, so say that instead of "confirmed".
+      toast(`Deadbolt ${action} command sent and delivered (bolt should now be ${r.boltState}). This lock does not confirm remote moves; the badge tracks its manual, keypad, and auto-lock reports.`, 'success');
+    } else if (r.success) {
+      toast(`Deadbolt ${action} confirmed (bolt: ${r.boltState})`, 'success');
+    } else {
+      toast(`Deadbolt ${action} failed: ${r.error || 'not verified'}`, 'error');
+    }
     refreshZwaveDeadbolt();
   } catch (e) { toast(`Control failed: ${e.message}`, 'error'); refreshZwaveDeadbolt(); }
 }
@@ -3395,7 +3507,7 @@ async function startReinterview() {
   try {
     const r = await api('POST', '/api/deadbolt/reinterview');
     if (r.error) { toast(r.error, 'error'); return; }
-    toast('Re-interview started. Wake the lock at the keypad to speed it up; bolt and battery refresh automatically when it completes.', 'info');
+    toast('Re-interview started. Wake the lock at the keypad to speed it up; bolt and battery refresh automatically when it completes. Avoid Test Lock/Unlock until it finishes (watch the event feed for the completion entry).', 'info');
   } catch (e) { toast(`Re-interview failed to start: ${e.message}`, 'error'); }
 }
 

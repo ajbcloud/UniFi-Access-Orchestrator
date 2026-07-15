@@ -78,7 +78,8 @@
           "early_verify_read_ms": 2500,
           "poll_minutes": 20,
           "low_battery_pct": 25,
-          "auto_relock": null
+          "auto_relock": null,
+          "user_codes": {}
         }
       }
     }

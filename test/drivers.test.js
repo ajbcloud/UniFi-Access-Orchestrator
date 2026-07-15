@@ -22,7 +22,9 @@ const FakeLock = require('../src/drivers/fake-lock');
  *         modeUnknown,          // get() reports currentMode 0xfe + boltStatus
  *                               // (the Schlage BE469ZP wire behavior)
  *         failGets,             // first N get() calls throw (flaky link)
- *         configuration }       // expose a Configuration CC (params map)
+ *         configuration,        // expose a Configuration CC (params map)
+ *         userCodes }           // expose a User Code CC ({ slots, usersCount,
+ *                               // rejectDuplicates, maskReadback })
  */
 class MockNode extends EventEmitter {
   constructor(opts = {}) {
@@ -117,6 +119,35 @@ class MockNode extends EventEmitter {
           self.configParams[o.parameter] = o.value;
         },
         get: async (parameter) => self.configParams[parameter],
+      };
+    }
+    if (opts.userCodes) {
+      const uc = opts.userCodes;
+      this.userCodeSlots = Object.assign({}, uc.slots); // slot -> {status, code}
+      this.userCodeSetCalls = [];
+      this.userCodeClearCalls = [];
+      this.commandClasses['User Code'] = {
+        set: async (slot, status, code) => {
+          self.userCodeSetCalls.push({ slot, status, code });
+          if (status === 0) { delete self.userCodeSlots[slot]; return; }
+          // Schlage-style silent duplicate rejection: the slot keeps its old
+          // value and only the read-back reveals the write did not take.
+          if (uc.rejectDuplicates
+              && Object.entries(self.userCodeSlots).some(([s, e]) => Number(s) !== slot && e.code === code)) {
+            return;
+          }
+          self.userCodeSlots[slot] = { status, code };
+        },
+        get: async (slot) => {
+          const e = self.userCodeSlots[slot];
+          if (!e) return { userId: slot, userIdStatus: 0 };
+          return { userId: slot, userIdStatus: e.status, userCode: uc.maskReadback ? '****' : e.code };
+        },
+        clear: async (slot) => {
+          self.userCodeClearCalls.push(slot);
+          delete self.userCodeSlots[slot];
+        },
+        getUsersCount: async () => (uc.usersCount == null ? 30 : uc.usersCount),
       };
     }
   }
@@ -466,6 +497,87 @@ test('ZwaveLock: unknown-state recovery ladder re-reads until the bolt resolves'
 });
 
 // ---------------------------------------------------------------------------
+// Optimistic RF verification (rf_verify:'optimistic', the BE469ZP): the model
+// gives no truthful confirmation for commanded moves (frozen reports, no RF
+// notifications, supervision disabled by the device DB), so a delivered set
+// is trusted and reports may only resolve an unknown state.
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: optimistic model verifies instantly on a delivered set', async () => {
+  const { node, lock } = await makeZwave(
+    { current: 0xff, confirm: false }, // no confirming report will EVER come
+    { model_key: 'schlage-be469zp', verify_timeout_ms: 5000, verify_retries: 0 }
+  );
+  const t0 = Date.now();
+  const r = await lock.unlock('entry');
+  assert.equal(r.success, true);
+  assert.equal(r.verified, 'optimistic');
+  assert.equal(r.boltState, LockState.UNLOCKED);
+  assert.ok(Date.now() - t0 < 1000, 'no verify window was burned');
+  assert.equal(node.setCalls.length, 1);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: optimistic model - frozen report never stomps state, notifications stay authoritative', async () => {
+  const { node, lock } = await makeZwave(
+    { current: 0xff, confirm: false },
+    { model_key: 'schlage-be469zp', verify_retries: 0 }
+  );
+  await lock.unlock('entry'); // optimistic -> UNLOCKED
+  // The BE469ZP's frozen operation report says "locked" forever; it must not
+  // overwrite the known state on the next poll/read.
+  node.emit('value updated', node, { commandClassName: 'Door Lock', property: 'boltStatus', newValue: 'locked' });
+  node.emit('value updated', node, { commandClassName: 'Door Lock', property: 'currentMode', newValue: 0xff });
+  assert.equal((await lock.getState()).boltState, LockState.UNLOCKED, 'frozen report gated');
+  // A real transition (its auto-lock notification) still flips the state.
+  node.emit('notification', node, 0x71, { type: 6, event: 0x09 });
+  assert.equal((await lock.getState()).boltState, LockState.LOCKED);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: optimistic model - reports still RESOLVE an unknown state', async () => {
+  const node = new MockNode({ status: ST.ASLEEP, values: { '98:boltStatus': 'locked' } });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {} } }
+  );
+  await lock.init();
+  assert.equal((await lock.getState()).boltState, LockState.LOCKED, 'cache seed resolved the initial unknown');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: optimistic model - a failed transmit still fails the command', async () => {
+  const { lock } = await makeZwave(
+    { current: 0xff, failSetOnce: true, confirm: false },
+    { model_key: 'schlage-be469zp', verify_retries: 0 }
+  );
+  const r = await lock.unlock('entry');
+  assert.equal(r.success, false, 'delivery is a real gate, not a rubber stamp');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: System hardware notification (type 9 event 1) emits device-note, never state', async () => {
+  const { node, lock } = await makeZwave({ current: 0xff });
+  const notes = [];
+  lock.on('device-note', (n) => notes.push(n));
+  node.emit('notification', node, 0x71, { type: 9, event: 1 });
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].code, 'system_hardware_note');
+  assert.equal((await lock.getState()).boltState, LockState.LOCKED, 'bolt state unchanged');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: node interview completion surfaces as an interview-completed event', async () => {
+  const { node, lock } = await makeZwave({ status: ST.ASLEEP, values: {} });
+  const seen = [];
+  lock.on('interview-completed', (e) => seen.push(e));
+  node.emit('interview completed', node);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].node_id, 2);
+  await lock.shutdown();
+});
+
+// ---------------------------------------------------------------------------
 // Auto-relock ("stay unlocked"): the ~30s re-lock after an unlock is the
 // lock's OWN feature, exposed as a configuration parameter where the catalog
 // knows one.
@@ -511,6 +623,115 @@ test('ZwaveLock: persisted auto_relock preference is re-applied once the node is
   assert.equal(node.configSetCalls.length, 1, 'the saved preference was written to the lock');
   assert.equal(node.configSetCalls[0].parameter, 15);
   assert.equal(node.configSetCalls[0].value, 0);
+  await lock.shutdown();
+});
+
+// ---------------------------------------------------------------------------
+// Keypad user codes (User Code CC): targeted per-slot writes with read-back,
+// capability reporting, keypad attribution, and the manual rewrite path.
+// ---------------------------------------------------------------------------
+
+test('ZwaveLock: setUserCode writes the slot and confirms via read-back', async () => {
+  const node = new MockNode({ userCodes: {} });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const r = await lock.setUserCode(3, '1234');
+  assert.equal(r.slot, 3);
+  assert.equal(r.confirmed, true);
+  assert.deepEqual(node.userCodeSetCalls[0], { slot: 3, status: 1, code: '1234' });
+  await lock.shutdown();
+});
+
+test('ZwaveLock: a silently rejected duplicate code reads back as confirmed false', async () => {
+  const node = new MockNode({
+    userCodes: { rejectDuplicates: true, slots: { 1: { status: 1, code: '1234' } } },
+  });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const r = await lock.setUserCode(2, '1234'); // duplicate of slot 1
+  assert.equal(r.confirmed, false, 'read-back catches the silent rejection');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: masked read-back yields confirmed null (best effort), clear works', async () => {
+  const node = new MockNode({ userCodes: { maskReadback: true } });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const r = await lock.setUserCode(5, '2468');
+  assert.equal(r.confirmed, null, 'masked code cannot be verified, but Enabled means not-rejected');
+  const c = await lock.clearUserCode(5);
+  assert.equal(c.confirmed, true);
+  assert.deepEqual(node.userCodeClearCalls, [5]);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: userCodesCapability merges catalog rules with live lock answers', async () => {
+  const node = new MockNode({
+    userCodes: { usersCount: 30 },
+    configuration: { params: { 16: 6 } }, // lock is set to 6-digit codes
+  });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const cap = await lock.userCodesCapability();
+  assert.equal(cap.supported, true);
+  assert.equal(cap.slots, 30);
+  assert.equal(cap.fixed_length, true);
+  assert.equal(cap.configured_length, 6, 'parameter 16 read live');
+  assert.equal(cap.live, true);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: userCodesCapability is unsupported for models without metadata', async () => {
+  const node = new MockNode({ userCodes: {} });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'ultraloq-ubolt-pro' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const cap = await lock.userCodesCapability();
+  assert.equal(cap.supported, false);
+  assert.match(cap.note, /U-tec/);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: keypad unlock notification carries the slot (object and Buffer forms)', async () => {
+  const { node, lock } = await makeZwave({ current: 0xff });
+  const seen = [];
+  lock.on('keypad-activity', (e) => seen.push(e));
+  node.emit('notification', node, 0x71, { type: 6, event: 0x06, parameters: { userId: 3 } });
+  assert.equal((await lock.getState()).boltState, LockState.UNLOCKED, 'state still updates');
+  node.emit('notification', node, 0x71, { type: 6, event: 0x05, parameters: Buffer.from([4]) });
+  assert.deepEqual(seen, [{ action: 'unlock', slot: 3 }, { action: 'lock', slot: 4 }]);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: rewriteUserCodes replays saved codes sequentially', async () => {
+  const node = new MockNode({ userCodes: {} });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const results = await lock.rewriteUserCodes({
+    2: { user_id: 'u1', name: 'A', pin_code: '1111' },
+    5: { user_id: 'u2', name: 'B', pin_code: '2222' },
+    bogus: { pin_code: '3333' }, // non-integer slot is skipped
+  });
+  assert.deepEqual(results.map((r) => r.slot), [2, 5]);
+  assert.ok(results.every((r) => r.ok && r.confirmed === true));
+  assert.equal(node.userCodeSetCalls.length, 2);
   await lock.shutdown();
 });
 

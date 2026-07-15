@@ -209,10 +209,11 @@ class ZwaveManager extends EventEmitter {
       interview: {
         // Yale battery-drain guard (zwave-js issue 2725): older Yale locks
         // loop NodeInfo and flatten their batteries when all user codes are
-        // queried during the interview. This deployment uses no per-user
-        // PINs, so never query them. false matches the zwave-js default;
-        // stating it here makes the guard explicit and survives upstream
-        // default changes.
+        // queried during the interview. The PIN manager does TARGETED
+        // per-slot User Code reads/writes instead, so the interview-wide
+        // query stays off. false matches the zwave-js default; stating it
+        // here makes the guard explicit and survives upstream default
+        // changes.
         queryAllUserCodes: false,
       },
     });

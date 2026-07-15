@@ -301,7 +301,13 @@ class ZwaveLock extends LockDriver {
       // state recovers after the pairing-time interview race (see init()).
       'wake up': () => this._onNodeReachable(),
       ready: () => this._onNodeReady(),
-      'interview completed': () => this._onNodeReady(),
+      // The completion event also surfaces to the app: refreshInfo() resolves
+      // when the interview is merely RE-QUEUED, so this is the only truthful
+      // "re-interview finished" signal (operators used to test mid-interview).
+      'interview completed': () => {
+        this.emit('interview-completed', { node_id: this.nodeId });
+        this._onNodeReady();
+      },
     };
     for (const [ev, fn] of Object.entries(this._nodeHandlers)) node.on(ev, fn);
   }
@@ -321,6 +327,20 @@ class ZwaveLock extends LockDriver {
     // numbers for unrelated meanings, so gate strictly before mapping, or an
     // unrelated notification could corrupt bolt state and falsely confirm a set.
     if (ccId != null && ccId !== 0x71) return;
+    // System (type 9) event 1 "hardware failure": the BE469ZP sends this
+    // (V1 alarm type 9) a few seconds after RF unlocks, even when the bolt
+    // completes fine (field-observed). Surface it as an informational note,
+    // never a state change and never an email alert: on this hardware it
+    // usually means momentary bolt resistance, not a failure.
+    if (args.type === 9 && args.event === 1) {
+      this.logger.info && this.logger.info(
+        'ZwaveLock: lock sent a system/hardware note (V1 alarm type 9); on the BE469ZP this usually means bolt resistance while the bolt still completed');
+      this.emit('device-note', {
+        code: 'system_hardware_note',
+        detail: 'the lock reported possible bolt resistance during the last operation; check door alignment if the bolt did not fully move',
+      });
+      return;
+    }
     if (args.type != null && args.type !== 6) return;
     const event = args.event;
     if (event === AC_NOTIFICATION.LOCK_JAMMED) {
@@ -329,25 +349,57 @@ class ZwaveLock extends LockDriver {
     }
     if (LOCK_EVENTS.has(event)) this._updateState(LockState.LOCKED);
     else if (UNLOCK_EVENTS.has(event)) this._updateState(LockState.UNLOCKED);
+    // Keypad events carry the code slot that was used; surface it so the app
+    // can attribute the entry to the saved PIN owner in the event feed.
+    if (event === AC_NOTIFICATION.KEYPAD_LOCK || event === AC_NOTIFICATION.KEYPAD_UNLOCK) {
+      const slot = this._notificationSlot(args);
+      if (slot != null) {
+        this.emit('keypad-activity', {
+          action: event === AC_NOTIFICATION.KEYPAD_UNLOCK ? 'unlock' : 'lock',
+          slot,
+        });
+      }
+    }
+  }
+
+  /** Code slot from a keypad notification's parameters (object or Buffer). */
+  _notificationSlot(args) {
+    const p = args && args.parameters;
+    if (p == null) return null;
+    if (typeof p === 'object' && !Buffer.isBuffer(p) && typeof p.userId === 'number') return p.userId;
+    if (Buffer.isBuffer(p) && p.length > 0) return p[0];
+    return null;
   }
 
   _onValueUpdated(args) {
     const isDoorLock = args.commandClassName === 'Door Lock' || args.commandClass === 0x62;
     if (isDoorLock && args.property === 'currentMode') {
-      const st = modeToState(args.newValue);
       // A non-definitive mode (the BE469ZP answers every read with 0xfe
       // "unknown") must never stomp a known bolt state; the same report's
       // boltStatus carries the truth and is handled below.
-      if (st !== LockState.UNKNOWN) this._updateState(st);
+      this._updateStateFromReport(modeToState(args.newValue));
     }
     if (isDoorLock && args.property === 'boltStatus') {
-      const st = boltToState(args.newValue);
-      if (st !== LockState.UNKNOWN) this._updateState(st);
+      this._updateStateFromReport(boltToState(args.newValue));
     }
     const isBattery = args.commandClassName === 'Battery' || args.commandClass === 0x80;
     if (isBattery && args.property === 'level' && typeof args.newValue === 'number') {
       this._setBattery(args.newValue);
     }
+  }
+
+  /**
+   * Apply a REPORT-derived reading (operation report / value cache). On
+   * rf_verify:'optimistic' models a report may only RESOLVE an unknown state,
+   * never overwrite a known one: the BE469ZP's report boltStatus is frozen at
+   * "locked" regardless of the physical bolt, so letting it through would
+   * stomp the real state on every poll. Notifications (manual/keypad/
+   * auto-lock/jam) bypass this gate; they stay authoritative on all models.
+   */
+  _updateStateFromReport(st) {
+    if (st === LockState.UNKNOWN) return;
+    if (this._isOptimistic() && this._state.boltState !== LockState.UNKNOWN) return;
+    this._updateState(st);
   }
 
   _updateState(boltState) {
@@ -613,7 +665,7 @@ class ZwaveLock extends LockDriver {
     const mode = node.getValue(VALUE_ID_CURRENT_MODE);
     let st = mode != null ? modeToState(mode) : LockState.UNKNOWN;
     if (st === LockState.UNKNOWN) st = boltToState(node.getValue(VALUE_ID_BOLT_STATUS));
-    if (st !== LockState.UNKNOWN) this._updateState(st);
+    this._updateStateFromReport(st);
     const level = node.getValue(VALUE_ID_BATTERY_LEVEL);
     if (typeof level === 'number') this._setBattery(level);
   }
@@ -625,7 +677,7 @@ class ZwaveLock extends LockDriver {
       if (!rep) return;
       let st = rep.currentMode != null ? modeToState(rep.currentMode) : LockState.UNKNOWN;
       if (st === LockState.UNKNOWN) st = boltToState(rep.boltStatus);
-      if (st !== LockState.UNKNOWN) this._updateState(st);
+      this._updateStateFromReport(st);
     }
   }
 
@@ -721,7 +773,7 @@ class ZwaveLock extends LockDriver {
         // The lock itself confirmed the bolt finished moving: the strongest
         // and fastest verification there is, no report wait needed.
         this._updateState(wantState);
-        return { success: true, boltState: this._state.boltState };
+        return { success: true, boltState: this._state.boltState, verified: 'supervised' };
       }
       if (supStatus === SUPERVISION.FAIL) {
         // The lock explicitly refused/failed the motion: burning the whole
@@ -732,11 +784,23 @@ class ZwaveLock extends LockDriver {
         last = this._state.boltState;
         continue;
       }
+      // rf_verify:'optimistic' models (BE469ZP): there is no confirming
+      // signal to wait for - reports are frozen, no RF notifications, and
+      // supervision is disabled by the device DB. The set resolving means
+      // the frame was delivered and acknowledged, which is the strongest
+      // truth available; waiting used to turn every working unlock into a
+      // 30-second false "failed".
+      if (this._isOptimistic()) {
+        this._updateState(wantState);
+        this.logger.info && this.logger.info(
+          `ZwaveLock ${action} delivered (optimistic verify: this model does not confirm remote moves)`);
+        return { success: true, boltState: this._state.boltState, verified: 'optimistic' };
+      }
       // WORKING, NO_SUPPORT, or an unsupervised send: wait for a confirming
       // report (with early reads inside the window).
       const ok = await this._waitForState(wantState, this.verifyTimeoutMs);
       last = this._state.boltState;
-      if (ok) return { success: true, boltState: last };
+      if (ok) return { success: true, boltState: last, verified: 'report' };
       this.logger.warn && this.logger.warn(
         `ZwaveLock ${action} not confirmed (attempt ${attempt + 1}/${this.verifyRetries + 1}), state=${last}`);
     }
@@ -914,10 +978,26 @@ class ZwaveLock extends LockDriver {
     return prof || null;
   }
 
+  /**
+   * True for models whose commanded moves cannot be verified from reports or
+   * notifications (see lock-catalog rf_verify). For these, a transmitted
+   * command is trusted as delivered and reports never overwrite known state.
+   */
+  _isOptimistic() {
+    const prof = this._modelProfile();
+    return !!(prof && prof.rf_verify === 'optimistic');
+  }
+
   _configurationCC() {
     const cc = this._node && this._node.commandClasses;
     if (!cc) return null;
     return cc.Configuration || cc.configuration || null;
+  }
+
+  _userCodeCC() {
+    const cc = this._node && this._node.commandClasses;
+    if (!cc) return null;
+    return cc['User Code'] || cc.userCode || null;
   }
 
   /**
@@ -991,6 +1071,140 @@ class ZwaveLock extends LockDriver {
       this._autoRelockApplied = false;
       this.logger.warn && this.logger.warn(`ZwaveLock: re-applying auto-relock failed: ${err.message}`);
     });
+  }
+
+  // ---- keypad user codes (User Code CC) ----------------------------------
+  // Targeted per-slot operations ONLY: the interview-wide queryAllUserCodes
+  // stays disabled in the manager (Yale battery-drain guard), so nothing here
+  // may bulk-enumerate slots.
+
+  /** UserIDStatus values (Z-Wave User Code CC v1). */
+  static get USER_ID_STATUS() {
+    return Object.freeze({ AVAILABLE: 0, ENABLED: 1, DISABLED: 2 });
+  }
+
+  /**
+   * Write a keypad code into a slot and read it back. confirmed is true when
+   * the read-back shows the slot Enabled with the same code, null when the
+   * lock is unreadable right now (asleep: the write is queued) or masks codes
+   * on read-back, and false when the slot did not take the code, which is how
+   * Schlage's silent duplicate-PIN rejection surfaces. Digits are never logged.
+   */
+  async setUserCode(slot, pin) {
+    if (!this._node) {
+      throw new Error('Z-Wave driver is not running (stick unplugged or failed to start)');
+    }
+    const uc = this._userCodeCC();
+    if (!uc || typeof uc.set !== 'function') {
+      throw new Error('this lock does not expose keypad codes over Z-Wave (User Code CC unavailable)');
+    }
+    const code = String(pin);
+    await uc.set(slot, ZwaveLock.USER_ID_STATUS.ENABLED, code);
+    let confirmed = null;
+    if (typeof uc.get === 'function') {
+      try {
+        const rep = await uc.get(slot);
+        if (rep && typeof rep.userIdStatus === 'number') {
+          if (rep.userIdStatus !== ZwaveLock.USER_ID_STATUS.ENABLED) {
+            confirmed = false;
+          } else if (rep.userCode != null) {
+            const readBack = Buffer.isBuffer(rep.userCode) ? rep.userCode.toString('utf8') : String(rep.userCode);
+            // Some firmwares mask codes on read-back (e.g. all asterisks):
+            // Enabled + unreadable digits is best-effort success, not failure.
+            confirmed = readBack === code ? true : (/^\d+$/.test(readBack) ? false : null);
+          }
+        }
+      } catch (e) { confirmed = null; }
+    }
+    this.logger.info && this.logger.info(
+      `ZwaveLock: user code slot ${slot} written (${confirmed === true ? 'read-back confirmed' : confirmed === false ? 'REJECTED by the lock' : 'read-back unavailable; queued or masked'})`);
+    return { slot, confirmed };
+  }
+
+  /** Clear a keypad code slot (best-effort read-back like setUserCode). */
+  async clearUserCode(slot) {
+    if (!this._node) {
+      throw new Error('Z-Wave driver is not running (stick unplugged or failed to start)');
+    }
+    const uc = this._userCodeCC();
+    if (!uc) throw new Error('this lock does not expose keypad codes over Z-Wave (User Code CC unavailable)');
+    if (typeof uc.clear === 'function') await uc.clear(slot);
+    else if (typeof uc.set === 'function') await uc.set(slot, ZwaveLock.USER_ID_STATUS.AVAILABLE);
+    else throw new Error('User Code CC exposes no clear/set');
+    let confirmed = null;
+    if (typeof uc.get === 'function') {
+      try {
+        const rep = await uc.get(slot);
+        if (rep && typeof rep.userIdStatus === 'number') {
+          confirmed = rep.userIdStatus === ZwaveLock.USER_ID_STATUS.AVAILABLE;
+        }
+      } catch (e) { confirmed = null; }
+    }
+    this.logger.info && this.logger.info(`ZwaveLock: user code slot ${slot} cleared (confirmed: ${confirmed})`);
+    return { slot, confirmed };
+  }
+
+  /**
+   * Capability report for the dashboard: whether this lock takes keypad
+   * codes over Z-Wave, how many slots, and the code-length rules. Live
+   * answers (slot count, the configured code length) are read ONCE and
+   * memoized; catalog numbers are the fallback (live: false).
+   */
+  async userCodesCapability() {
+    const prof = this._modelProfile();
+    const meta = (prof && prof.user_codes) || null;
+    const out = {
+      supported: !!(meta && this._userCodeCC()),
+      model_key: prof ? prof.key : null,
+      slots: meta ? meta.slots : 0,
+      min_length: meta ? meta.min_length : null,
+      max_length: meta ? meta.max_length : null,
+      fixed_length: !!(meta && meta.fixed_length),
+      length_parameter: meta ? meta.length_parameter : null,
+      configured_length: null,
+      note: (meta && meta.note) || (prof && prof.user_codes_note) || null,
+      live: false,
+    };
+    if (!out.supported || !this._shouldLiveRead()) return out;
+    try {
+      if (this._liveUserSlots == null) {
+        const uc = this._userCodeCC();
+        if (uc && typeof uc.getUsersCount === 'function') {
+          const n = await uc.getUsersCount();
+          if (typeof n === 'number' && n > 0) this._liveUserSlots = n;
+        }
+      }
+      if (out.length_parameter != null && this._liveCodeLength == null) {
+        const cfg = this._configurationCC();
+        if (cfg && typeof cfg.get === 'function') {
+          const len = await cfg.get(out.length_parameter);
+          if (typeof len === 'number' && len >= 4 && len <= 10) this._liveCodeLength = len;
+        }
+      }
+    } catch (e) { /* fall back to catalog numbers */ }
+    if (this._liveUserSlots != null) { out.slots = this._liveUserSlots; out.live = true; }
+    if (this._liveCodeLength != null) { out.configured_length = this._liveCodeLength; out.live = true; }
+    return out;
+  }
+
+  /**
+   * Sequentially rewrite saved codes to the lock, for AFTER a re-pair. This
+   * is deliberately manual (an endpoint/button), never automatic on boot:
+   * dozens of queued writes on every restart would chew a battery lock flat.
+   */
+  async rewriteUserCodes(codesBySlot) {
+    const results = [];
+    for (const [slotKey, entry] of Object.entries(codesBySlot || {})) {
+      const slot = Number(slotKey);
+      if (!Number.isInteger(slot) || slot < 1 || !entry || !entry.pin_code) continue;
+      try {
+        const r = await this.setUserCode(slot, entry.pin_code);
+        results.push({ slot, ok: true, confirmed: r.confirmed });
+      } catch (err) {
+        results.push({ slot, ok: false, error: err.message });
+      }
+    }
+    return results;
   }
 
   async getState() {
