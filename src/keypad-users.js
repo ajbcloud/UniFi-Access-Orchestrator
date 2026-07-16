@@ -1,5 +1,7 @@
 'use strict';
 
+const { REVOKE_VERDICTS } = require('./access-gating');
+
 /**
  * One-PIN-per-user planning over the per-lock code storage, kept pure so it
  * is testable without the app.
@@ -279,10 +281,48 @@ function planNewLockProvision(locksCfg, newLockId, cap, nowIso, eligibleUserIds)
   return { assignments, skipped };
 }
 
+/**
+ * Which held keypad codes must be revoked because the user's UniFi access no
+ * longer includes the lock's gating door. Pure: the executor in the app owns
+ * the drivers and persistence. Only a CONFIRMED denial revokes; every other
+ * verdict (allowed, ungated, unknown) is skipped, so an API hiccup or an
+ * unresolved door never wipes a code. Idempotent: a slot with no held entry,
+ * or a user whose verdict is not denied, produces no row.
+ *
+ * @param {object} locksCfg            devices.zwave.locks
+ * @param {Array}  relevantLocks       [{lock_id, gating_door?}] code-capable locks
+ * @param {Map}    verdictByUserLock   Map("<userId>|<lockId>" -> verdict string
+ *                                     or {verdict, door})
+ * @returns {Array<{user_id, lock_id, slot, reason}>}
+ */
+function planReconciliation(locksCfg, relevantLocks, verdictByUserLock) {
+  const map = verdictByUserLock instanceof Map ? verdictByUserLock : new Map();
+  const out = [];
+  for (const rl of relevantLocks || []) {
+    const codes = ((locksCfg || {})[rl.lock_id] && locksCfg[rl.lock_id].user_codes) || {};
+    for (const [slot, e] of Object.entries(codes)) {
+      if (!e || !e.user_id) continue;
+      const v = map.get(`${e.user_id}|${rl.lock_id}`);
+      const verdict = (v && typeof v === 'object') ? v.verdict : v;
+      if (REVOKE_VERDICTS.has(verdict)) {
+        const door = (v && typeof v === 'object' ? v.door : null) || rl.gating_door || null;
+        out.push({
+          user_id: e.user_id,
+          lock_id: rl.lock_id,
+          slot: Number(slot),
+          reason: door ? `no UniFi access to "${door}"` : "no UniFi access to this lock's door",
+        });
+      }
+    }
+  }
+  return out;
+}
+
 module.exports = {
   canonicalPins,
   aggregateKeypadUsers,
   combinedLengthRule,
   planUserSave,
   planNewLockProvision,
+  planReconciliation,
 };

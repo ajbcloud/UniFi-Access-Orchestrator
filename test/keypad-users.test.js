@@ -14,6 +14,7 @@ const {
   combinedLengthRule,
   planUserSave,
   planNewLockProvision,
+  planReconciliation,
 } = require('../src/keypad-users');
 
 const CAP = { supported: true, slots: 30, min_length: 4, max_length: 8 };
@@ -78,6 +79,51 @@ test('aggregateKeypadUsers: confirmed null/false reads pending', () => {
   };
   const users = aggregateKeypadUsers(cfg, [{ lock_id: 'a', label: 'A' }]);
   assert.equal(users[0].locks[0].status, 'pending');
+});
+
+// ---- planReconciliation ---------------------------------------------------
+
+test('planReconciliation: lists only held slots with a confirmed denial', () => {
+  const cfg = {
+    front: { user_codes: { 1: { user_id: 'u1', name: 'A', pin_code: '1111' } } },
+    side: { user_codes: { 2: { user_id: 'u2', name: 'B', pin_code: '2222' } } },
+  };
+  const relevant = [{ lock_id: 'front', gating_door: 'Door A' }, { lock_id: 'side', gating_door: 'Door B' }];
+  const verdicts = new Map([
+    ['u1|front', { verdict: 'denied', door: 'Door A' }],
+    ['u2|side', { verdict: 'allowed', door: 'Door B' }],
+  ]);
+  const plan = planReconciliation(cfg, relevant, verdicts);
+  assert.equal(plan.length, 1, 'only the denied held code is planned');
+  assert.deepEqual(plan[0], { user_id: 'u1', lock_id: 'front', slot: 1, reason: 'no UniFi access to "Door A"' });
+});
+
+test('planReconciliation: a denied user with no held slot yields nothing', () => {
+  const cfg = { front: { user_codes: {} } };
+  const relevant = [{ lock_id: 'front', gating_door: 'Door A' }];
+  const verdicts = new Map([['u1|front', { verdict: 'denied', door: 'Door A' }]]);
+  assert.deepEqual(planReconciliation(cfg, relevant, verdicts), [], 'no entry, no revoke');
+});
+
+test('planReconciliation: unknown and allowed are never revoked (fail open)', () => {
+  const cfg = {
+    a: { user_codes: { 1: { user_id: 'u1', name: 'A', pin_code: '1111' } } },
+    b: { user_codes: { 1: { user_id: 'u2', name: 'B', pin_code: '2222' } } },
+  };
+  const relevant = [{ lock_id: 'a' }, { lock_id: 'b' }];
+  const verdicts = new Map([
+    ['u1|a', { verdict: 'unknown' }],
+    ['u2|b', { verdict: 'allowed' }],
+  ]);
+  assert.deepEqual(planReconciliation(cfg, relevant, verdicts), [],
+    'uncertainty and allowance never wipe a code');
+});
+
+test('planReconciliation: accepts a bare verdict string', () => {
+  const cfg = { a: { user_codes: { 4: { user_id: 'u1', name: 'A', pin_code: '1111' } } } };
+  const plan = planReconciliation(cfg, [{ lock_id: 'a', gating_door: 'Door A' }], new Map([['u1|a', 'denied']]));
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].slot, 4);
 });
 
 test('aggregateKeypadUsers: code_present reflects a held slot', () => {

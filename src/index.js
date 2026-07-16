@@ -134,6 +134,7 @@ pruneGhostLocksOnDisk();
 // ---------------------------------------------------------------------------
 
 let unifiClient = new UniFiClient(config);
+wireUnifiClientCallbacks(unifiClient);
 let resolver = new Resolver(config, unifiClient);
 let rulesEngine = new RulesEngine(config, unifiClient, resolver);
 let configSync = null;  // initialized in start() once Express + UniFi client are up
@@ -1085,6 +1086,87 @@ function onUnifiStateChange(state) {
     withKeypadLock(() => retryPendingClears())
       .catch((e) => logger.debug(`Deadbolt: pending-clear retry failed: ${e.message}`));
   }
+}
+
+// Revoke keypad codes for users who lost UniFi access to a lock's gating door,
+// detected by a periodic or reconnect access sync rather than a manual Save.
+// This closes the gap where the dashboard showed a lock "blocked" while the PIN
+// still opened it. Reuses the exact fail-open rule (only a confirmed 'denied'
+// verdict acts, via the shared revoke executor) so an API hiccup or an
+// unresolved door never wipes a code, and serializes with Saves and retries
+// through withKeypadLock. A no-op while access data is unavailable or a pairing
+// session owns the controller.
+async function reconcileAccessRevocations(trigger) {
+  if (zwavePairing.isActive()) return;
+  const access = currentAccessModel();
+  if (!access.available) return; // fail open: uncertainty does nothing
+  return withKeypadLock(async () => {
+    await retryPendingClears(); // finish any queued clears first
+    const capable = await codeCapableLocks();
+    const relevant = capable.filter((l) => l.cap && l.cap.supported !== false);
+    if (!relevant.length) return;
+    const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+    const userIds = new Set();
+    for (const l of relevant) {
+      for (const e of Object.values((zwLocks[l.lock_id] && zwLocks[l.lock_id].user_codes) || {})) {
+        if (e && e.user_id) userIds.add(e.user_id);
+      }
+    }
+    if (!userIds.size) return;
+    const verdictMap = new Map();
+    for (const userId of userIds) {
+      const verdicts = accessGating.classifyLocksForUser(
+        userId, relevant.map((l) => ({ lock_id: l.lock_id })), config.deadbolt_rules, access);
+      for (const v of verdicts) verdictMap.set(`${userId}|${v.lock_id}`, { verdict: v.verdict, door: v.door });
+    }
+    const plan = keypadUsers.planReconciliation(
+      zwLocks, relevant.map((l) => ({ lock_id: l.lock_id })), verdictMap);
+    if (!plan.length) return;
+    const byId = new Map(capable.map((l) => [l.lock_id, l]));
+    const done = [];
+    for (const item of plan) {
+      const le = byId.get(item.lock_id);
+      if (!le) continue;
+      done.push(await revokeHeldCode(
+        { lockId: item.lock_id, driver: le.driver, label: le.label },
+        item.slot, item.user_id, item.reason));
+    }
+    if (!done.length) return;
+    const confirmed = done.filter((r) => r.revoked).length;
+    const pending = done.filter((r) => r.revoke_pending).length;
+    broadcastEvent({
+      type: 'deadbolt.user_code',
+      actor: 'Access Reconciler',
+      location: [...new Set(done.map((r) => lockLabel(r.lock_id)))].join(', '),
+      action: `Access sync revoked ${confirmed} keypad code(s) for users who lost UniFi door access`
+        + (pending ? `; ${pending} clear(s) queued to retry when the lock responds` : ''),
+      success: pending === 0,
+    });
+    logger.info(`Deadbolt: access reconciliation (${trigger}) revoked ${confirmed}, queued ${pending}`);
+  });
+}
+
+// Trailing debounce so the 5-minute periodic sync, the 15-second config-sync
+// refresh, and the reconnect burst coalesce into one reconcile rather than
+// three back to back.
+let _reconcileTimer = null;
+function scheduleReconcile(reason) {
+  if (_reconcileTimer) clearTimeout(_reconcileTimer);
+  _reconcileTimer = setTimeout(() => {
+    _reconcileTimer = null;
+    reconcileAccessRevocations(reason).catch((e) => logger.warn(`Deadbolt: reconcile failed: ${e.message}`));
+  }, 4000);
+  if (_reconcileTimer.unref) _reconcileTimer.unref();
+}
+
+// Register the access-change hook on a (re)built UniFi client so a reconcile
+// runs after each real access change, and once after the first sync. Called at
+// every construction site so the hook survives a full reload.
+function wireUnifiClientCallbacks(client) {
+  if (!client) return;
+  client.onAccessPoliciesChanged = ({ reason, changed }) => {
+    if (changed) scheduleReconcile(reason || 'access_sync');
+  };
 }
 
 // True only when the request carries the configured admin key (header, or the
@@ -3633,6 +3715,7 @@ async function reloadServices(newConfig) {
     logger.info('Reload: controller/event-source settings changed — rebuilding UniFi client');
     unifiClient.shutdown();
     unifiClient = new UniFiClient(newConfig);
+    wireUnifiClientCallbacks(unifiClient);
     resolver = new Resolver(newConfig, unifiClient);
     rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
     patchEngineForBroadcast(rulesEngine);
@@ -3804,15 +3887,18 @@ function initConfigSync() {
     },
     onControllerDoorsChanged: async ({ reason }) => {
       // discoverDoors() already updated the in-memory door registry on
-      // the live client. Just notify the dashboard so it re-renders.
+      // the live client. Notify the dashboard so it re-renders, and reconcile
+      // keypad codes: a door rename or a newly discovered door can flip a
+      // gating verdict, so a user may have just lost access to a lock's door.
       broadcastEvent({
         type: 'system.auto_reload',
         actor: 'auto-sync',
         location: '-',
-        action: `Doors changed on controller — refreshed registry`,
+        action: `Doors changed on controller, refreshed registry`,
         success: true,
         reason
       });
+      scheduleReconcile('doors_changed');
     },
     onControllerUsersChanged: async ({ reason }) => {
       // syncUserGroups() already refreshed the resolver-backing cache.

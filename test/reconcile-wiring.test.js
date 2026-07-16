@@ -97,5 +97,23 @@ test('the manual remove endpoint routes through the shared revoke executor', () 
   // Both the gated POST revoke and the manual DELETE go through revokeHeldCode,
   // so a sleeping lock queues a retry instead of a false "removed" report.
   const calls = (indexSrc.match(/await revokeHeldCode\(/g) || []).length;
-  assert.ok(calls >= 2, 'revokeHeldCode is used by both the POST and DELETE handlers, saw ' + calls);
+  assert.ok(calls >= 3, 'revokeHeldCode is used by the POST, DELETE, and reconcile paths, saw ' + calls);
+});
+
+test('reconciliation reuses the fail-open rule and is access-gated', () => {
+  const body = fnBody(indexSrc, 'reconcileAccessRevocations');
+  assert.match(body, /if \(!access\.available\) return;/, 'reconcile is a no-op when access data is unavailable');
+  assert.match(body, /planReconciliation\(/, 'reconcile uses the pure planner (denied-only)');
+  assert.match(body, /classifyLocksForUser\(/, 'reconcile derives verdicts from the same gating layer');
+});
+
+test('reconcile is debounced and wired to real access changes only', () => {
+  const sched = fnBody(indexSrc, 'scheduleReconcile');
+  assert.match(sched, /setTimeout/, 'reconcile is trailing-debounced');
+  const wire = fnBody(indexSrc, 'wireUnifiClientCallbacks');
+  assert.match(wire, /onAccessPoliciesChanged/, 'the client access-change hook is registered');
+  assert.match(wire, /if \(changed\)/, 'a reconcile is scheduled only when the access model actually changed');
+  // The client must gate its callback on a content hash, not fire every sync.
+  const clientSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'unifi-client.js'), 'utf8');
+  assert.match(clientSrc, /_accessPolicyHash\(\)/, 'the client fingerprints the access model');
 });
