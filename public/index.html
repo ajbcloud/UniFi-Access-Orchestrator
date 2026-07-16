@@ -4988,7 +4988,7 @@ async function saveZwaveSetup() {
 }
 
 function toggleEventSourceFields() {
-  const mode = document.getElementById('eventSourceMode')?.value || 'alarm_manager';
+  const mode = document.getElementById('eventSourceMode')?.value || 'websocket';
   document.getElementById('webhookFields').style.display = mode === 'api_webhook' ? 'block' : 'none';
   document.getElementById('websocketFields').style.display = mode === 'websocket' ? 'block' : 'none';
 }

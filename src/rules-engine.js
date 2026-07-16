@@ -253,18 +253,17 @@ class RulesEngine {
   // _source containing the actual event data.
   // ---------------------------------------------------------------------------
 
-  async handleWebSocketLog(event) {
+  // Pure extraction of the inner event from a WebSocket access.logs.add
+  // wrapper. Reads only event._source / event.raw and returns a normalized
+  // event object, or null when the wrapper carries no usable inner event. No
+  // logging and no side effects, so it is safe to reuse from the display-only
+  // feed projection as well as the live routing path below.
+  _unwrapWebSocketLog(event) {
     const source = event._source;
-    if (!source) {
-      logger.debug('WebSocket access.logs.add event has no _source, skipping');
-      return;
-    }
+    if (!source) return null;
 
     const innerType = source.event?.type;
-    if (!innerType) {
-      logger.debug('WebSocket _source has no event.type, skipping');
-      return;
-    }
+    if (!innerType) return null;
 
     // Re-normalize the inner event into our standard format
     const normalized = {
@@ -303,6 +302,43 @@ class RulesEngine {
         }
       }
     }
+
+    return normalized;
+  }
+
+  // Display-only projection of a raw event for the Live Events feed. Pure:
+  // reuses normalizeEvent + _unwrapWebSocketLog, writes no stats and triggers
+  // no unlocks (live automation is the deadbolt/cascade controller, not this).
+  // Returns { type, actor, location, device, success }, or null for payloads
+  // we cannot recognize. Denials are mapped to success:false via the access
+  // result string only; doorbell reason codes are states, not failures.
+  describeForFeed(raw) {
+    const norm = this.normalizeEvent(raw);
+    if (!norm) return null;
+    let n = norm;
+    if (norm.type === 'access.logs.add') {
+      n = this._unwrapWebSocketLog(norm);
+      if (!n) return null;
+    }
+    const resultStr = n.result != null ? String(n.result) : '';
+    const denied = /DENIED|BLOCK|FAIL|REJECT/i.test(resultStr);
+    return {
+      type: n.type,
+      actor: this.normalizeSentinel(n.actorName) || this.normalizeSentinel(n.actorId) || null,
+      location: n.locationName || null,
+      device: n.deviceName || null,
+      success: !denied
+    };
+  }
+
+  async handleWebSocketLog(event) {
+    const normalized = this._unwrapWebSocketLog(event);
+    if (!normalized) {
+      logger.debug('WebSocket access.logs.add event has no usable _source or inner event.type, skipping');
+      return;
+    }
+    const source = event._source;
+    const innerType = normalized.type;
 
     logger.info(`WebSocket log unwrapped: ${innerType} at "${normalized.locationName}", actor="${normalized.actorName || normalized.actorId || 'none'}" (actorId=${normalized.actorId || 'null'}, device="${normalized.deviceName || 'none'}")`);
 

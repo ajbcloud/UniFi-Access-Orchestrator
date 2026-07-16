@@ -1509,6 +1509,15 @@ app.post('/webhook', async (req, res) => {
   lastEventTime = Date.now();
   storeRawPayload('webhook', payload);
   capture.add(payload);
+  // Display-only: mirror the observed webhook event onto the Live Events feed.
+  // Kept in its own try/catch so a projection error never turns a valid,
+  // already-received webhook into a 500. Automation stays with the observers.
+  try {
+    const feed = rulesEngine.describeForFeed(payload);
+    if (feed) broadcastEvent({ ...feed, action: '' });
+  } catch (e) {
+    logger.warn(`Live feed projection failed: ${e.message}`);
+  }
   // The deadbolt controller owns live automation now (entry, doorbell and
   // cascade/scoped unlocks), so events flow to the observers only. The rules
   // engine runs the derived projection for simulate/preflight, never live.
@@ -4059,7 +4068,12 @@ function startWatchdog() {
 // ---------------------------------------------------------------------------
 
 function startEventSource() {
-  const mode = config.event_source?.mode || 'alarm_manager';
+  // Default to websocket: it matches the shipped example configs and the
+  // README ("listens over WebSocket by default"). An unset mode previously
+  // fell back to 'alarm_manager', which has no ingestion branch here, so a
+  // config that omitted event_source.mode started no event source at all and
+  // the feed stayed empty. connectWebSocket still guards a missing host.
+  const mode = config.event_source?.mode || 'websocket';
   if (mode === 'api_webhook') {
     const webhookConfig = config.event_source.api_webhook;
     if (webhookConfig) {
@@ -4078,6 +4092,16 @@ function startEventSource() {
     unifiClient.connectWebSocket((event) => {
       lastEventTime = Date.now();
       storeRawPayload('websocket', event);
+      // Display-only: project the observed access event onto the Live Events
+      // feed. This does NOT run automation (the deadbolt/cascade controller
+      // owns that via the raw tap); it only mirrors what happened so the feed
+      // is not empty on a normal install. describeForFeed is pure.
+      try {
+        const feed = rulesEngine.describeForFeed(event);
+        if (feed) broadcastEvent({ ...feed, action: '' });
+      } catch (e) {
+        logger.warn(`Live feed projection failed: ${e.message}`);
+      }
     }, reconnectSec);
   }
 }
@@ -4107,7 +4131,7 @@ function isEventSourceDegraded() {
   // For websocket mode, treat anything other than an OPEN socket as
   // degraded so /reload escalates to a hard reconnect even when no
   // controller settings actually changed.
-  const mode = config.event_source?.mode || 'alarm_manager';
+  const mode = config.event_source?.mode || 'websocket';
   if (mode !== 'websocket') return false;
   const WebSocket = require('ws');
   return !unifiClient?.ws || unifiClient.ws.readyState !== WebSocket.OPEN;
