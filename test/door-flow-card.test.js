@@ -1,11 +1,10 @@
 'use strict';
 
-// Guards buildDoorFlowCard: one card per configured door in the Door Flows
-// editor ("everything starts at the door"). The card must always be editable
-// (the old separate automation block vanished after a save), offer only
-// usable locks for a new retract edge, and keep the retract-vs-cascade
-// distinction explicit. Extracts the REAL functions from public/index.html
-// via the shared extractFn harness.
+// Guards buildDoorFlowCard: one card per configured door ("everything starts
+// at the door"). The card holds one or more TRIGGERS (entry + doorbell), each
+// with a scope and actions (retract deadbolts, unlock other doors). On a simple
+// site with no groups the scope control is hidden. Extracts the REAL functions
+// from public/index.html.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -27,9 +26,9 @@ function extractFn(name) {
 }
 
 function load() {
-  const src = extractFn('escapeHtml') + '\n' + extractFn('cssId')
-    + '\n' + extractFn('buildRetractEdgeRow') + '\n' + extractFn('buildCascadeEditor')
-    + '\n' + extractFn('buildDoorFlowCard');
+  const src = extractFn('escapeHtml') + '\n' + extractFn('cssId') + '\n' + extractFn('_dfGroups')
+    + '\n' + extractFn('buildRetractEdgeRow') + '\n' + extractFn('buildUnlockAction')
+    + '\n' + extractFn('buildTriggerBlock') + '\n' + extractFn('buildDoorFlowCard');
   return new Function(src + '; return buildDoorFlowCard;')();
 }
 
@@ -45,22 +44,31 @@ const DATA = {
   ],
 };
 
+function entryTrigger(retract) {
+  return { type: 'entry', scope: null, actions: { unlock: null, retract: retract || [] } };
+}
 function flow(overrides = {}) {
   return Object.assign({
     door_id: 'd1',
-    retract: [{ lock_id: 'front_deadbolt', after_unlock: 'lock_default', require_result: 'ACCESS', mirror_unlock: false, relock_cooldown_seconds: 10 }],
-    cascade: null,
+    triggers: [entryTrigger([{ lock_id: 'front_deadbolt', after_unlock: 'stay_unlocked', require_result: 'ACCESS', mirror_unlock: false, relock_cooldown_seconds: 10 }])],
   }, overrides);
 }
 
-test('a card carries the door headline, its edges, Save, and Remove Flow', () => {
+test('a card carries the door name, its trigger, edges, Save, and Remove Flow', () => {
   const out = load()('Front Door', flow(), DATA);
-  assert.match(out, /When entry is granted at Front Door/);
+  assert.match(out, /Front Door/);
+  assert.match(out, /When someone enters/, 'a no-groups site shows the plain entry trigger');
   assert.match(out, /Retract <strong>Front Bolt<\/strong>/);
   assert.match(out, /data-df-save/, 'Save button carries the dirty-save hook');
   assert.match(out, /saveDoorFlow\(&quot;Front Door&quot;\)/);
   assert.match(out, /removeDoorFlow\(&quot;Front Door&quot;\)/);
   assert.match(out, /data-dirty-label/, 'unsaved-changes label present');
+});
+
+test('an add-trigger control appends a doorbell trigger', () => {
+  const out = load()('Front Door', flow(), DATA);
+  assert.match(out, /addTrigger\(&quot;Front Door&quot;\)/);
+  assert.match(out, /doorbell trigger/i);
 });
 
 test('the add-deadbolt picker offers only unwired, usable locks (no ghosts)', () => {
@@ -69,30 +77,38 @@ test('the add-deadbolt picker offers only unwired, usable locks (no ghosts)', ()
   assert.ok(!out.includes('value="ghost_bolt"'), 'unpaired ghost never offered');
   const addSel = out.match(/<select id="dfAddLock_[^>]*>[\s\S]*?<\/select>/);
   assert.ok(addSel && !addSel[0].includes('front_deadbolt'), 'already-wired lock not offered again');
+  assert.match(out, /addRetractEdge\(&quot;Front Door&quot;, 0\)/, 'add targets this door + trigger 0');
 });
 
 test('every usable lock wired -> no add picker; none usable -> pair-first hint', () => {
-  const both = flow({ retract: [
-    { lock_id: 'front_deadbolt', after_unlock: 'lock_default' },
-    { lock_id: 'side_deadbolt', after_unlock: 'lock_default' },
-  ] });
+  const both = flow({ triggers: [entryTrigger([
+    { lock_id: 'front_deadbolt', after_unlock: 'stay_unlocked' },
+    { lock_id: 'side_deadbolt', after_unlock: 'stay_unlocked' },
+  ])] });
   const wired = load()('Front Door', both, DATA);
   assert.ok(!wired.includes('dfAddLock_'), 'nothing left to add');
-  const noLocks = load()('Front Door', flow({ retract: [] }), { doors: DATA.doors, locks: [] });
+  const noLocks = load()('Front Door', flow({ triggers: [entryTrigger([])] }), { doors: DATA.doors, locks: [] });
   assert.match(noLocks, /Pair one under Deadbolt Devices/, 'empty state deep-links down to the device section');
 });
 
-test('cascade appears with 2+ doors and is absent on a single-door site', () => {
+test('the unlock-other-doors action appears with 2+ doors and is absent on a single-door site', () => {
   const out = load()('Front Door', flow(), DATA);
-  assert.match(out, /cascade/i, 'multi-door site sees the cascade block');
+  assert.match(out, /Unlock other doors/, 'multi-door site sees the unlock action');
   const single = load()('Front Door', flow(), { doors: [DATA.doors[0]], locks: DATA.locks });
-  assert.ok(!/cascade/i.test(single), 'single-door site sees no cascade block (progressive disclosure)');
+  assert.ok(!/Unlock other doors/.test(single), 'single-door site sees no unlock action (progressive disclosure)');
 });
 
-test('the copy separates retract (real lock command) from gating', () => {
+test('the inline gating note points at Keypad Users when a deadbolt retracts', () => {
   const out = load()('Front Door', flow(), DATA);
-  assert.match(out, /real Z-Wave unlock command/, 'retract copy names the physical action');
-  assert.match(out, /gate keypad PINs/, 'gating consequence stated where the edge is made');
+  assert.match(out, /follow UniFi access to <strong>Front Door<\/strong>/, 'gating stated where it is caused');
+  assert.match(out, /openKeypadTab\(\)/, 'links to the Keypad Users tab');
+  const noRetract = load()('Front Door', flow({ triggers: [entryTrigger([])] }), DATA);
+  assert.ok(!/follow UniFi access/.test(noRetract), 'no gating note without a retract');
+});
+
+test('a summary chip counts the deadbolts and doors', () => {
+  const out = load()('Front Door', flow(), DATA);
+  assert.match(out, /1 deadbolt/);
 });
 
 test('an undiscovered door is badged but stays fully editable', () => {

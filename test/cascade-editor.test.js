@@ -1,10 +1,10 @@
 'use strict';
 
-// Guards buildCascadeEditor: the cascade block of a Door Flow card. A cascade
-// momentarily unlocks OTHER UniFi doors after an entry (never a lock
-// command), so the checklist must exclude the door itself and the block must
-// vanish when there is nowhere to cascade to. Extracts the REAL function
-// from public/index.html via the shared extractFn harness.
+// Guards buildUnlockAction: the "unlock other doors" action of a trigger on a
+// door card. It momentarily unlocks OTHER UniFi doors (never a lock command),
+// so the checklist must exclude the door itself and the block must vanish when
+// there is nowhere to unlock to. It also carries a debounce and a delay.
+// Extracts the REAL function from public/index.html.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -26,8 +26,8 @@ function extractFn(name) {
 }
 
 function load() {
-  const src = extractFn('escapeHtml') + '\n' + extractFn('cssId') + '\n' + extractFn('buildCascadeEditor');
-  return new Function(src + '; return buildCascadeEditor;')();
+  const src = extractFn('escapeHtml') + '\n' + extractFn('cssId') + '\n' + extractFn('buildUnlockAction');
+  return new Function(src + '; return buildUnlockAction;')();
 }
 
 const DOORS = [
@@ -36,39 +36,48 @@ const DOORS = [
   { name: 'Elevator', id: 'd3', discovered: true },
 ];
 
-test('one known door -> no cascade block (nowhere to cascade to)', () => {
-  const out = load()('Front Door', null, [DOORS[0]]);
-  assert.equal(out, '', 'a single-door site never sees cascade UI');
+// signature: buildUnlockAction(door, tIdx, unlock, doors)
+test('one known door -> no unlock action (nowhere to unlock to)', () => {
+  const out = load()('Front Door', 0, null, [DOORS[0]]);
+  assert.equal(out, '', 'a single-door site never sees the unlock action');
 });
 
 test('the checklist offers every OTHER door, never the trigger itself', () => {
-  const out = load()('Front Door', null, DOORS);
+  const out = load()('Front Door', 0, null, DOORS);
   assert.match(out, /value="Interior Door"/);
   assert.match(out, /value="Elevator"/, 'the elevator is just another door in the list');
-  assert.ok(!out.includes('value="Front Door"'), 'a door cannot cascade to itself');
+  assert.ok(!out.includes('value="Front Door"'), 'a door cannot unlock itself');
 });
 
-test('an existing cascade pre-checks its doors and shows its debounce', () => {
-  const out = load()('Front Door', { unlock: ['Elevator'], debounce_seconds: 15 }, DOORS);
+test('an existing unlock action pre-checks its doors and shows its debounce + delay', () => {
+  const out = load()('Front Door', 0, { doors: ['Elevator'], debounce_seconds: 15, delay_seconds: 5 }, DOORS);
   assert.match(out, /value="Elevator" checked/, 'saved target checked');
   assert.ok(!/value="Interior Door" checked/.test(out), 'unselected door unchecked');
   assert.match(out, /value="15"/, 'saved debounce shown');
+  assert.match(out, /value="5"/, 'saved delay shown');
 });
 
-test('no cascade yet -> nothing checked, default 8s debounce', () => {
-  const out = load()('Front Door', null, DOORS);
+test('no unlock action yet -> nothing checked, default 8s debounce and 0s delay', () => {
+  const out = load()('Front Door', 0, null, DOORS);
   assert.ok(!out.includes(' checked'), 'nothing pre-checked');
   assert.match(out, /value="8"/, 'default debounce');
+  assert.match(out, /value="0"/, 'default delay');
 });
 
 test('copy states the safety contract: UniFi unlock only, never a lock command', () => {
-  const out = load()('Front Door', null, DOORS);
+  const out = load()('Front Door', 0, null, DOORS);
   assert.match(out, /never a lock command/);
+});
+
+test('checkboxes are keyed per door and trigger so distinct triggers do not collide', () => {
+  const out = load()('Front Door', 2, { doors: ['Elevator'] }, DOORS);
+  assert.match(out, /data-df-trig="2"/, 'the trigger index is carried on each checkbox');
+  assert.match(out, /class="df-unlock-door"/);
 });
 
 test('door names are escaped in the checklist', () => {
   const doors = [{ name: 'Front Door', id: 'd1' }, { name: 'Evil <img src=x>', id: 'd2' }];
-  const out = load()('Front Door', null, doors);
+  const out = load()('Front Door', 0, null, doors);
   assert.ok(!out.includes('<img src=x>'));
   assert.match(out, /Evil &lt;img src=x&gt;/);
 });

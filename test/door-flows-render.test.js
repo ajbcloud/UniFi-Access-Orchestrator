@@ -28,9 +28,10 @@ function extractFn(name) {
 }
 
 function loadSection() {
-  const src = extractFn('escapeHtml') + '\n' + extractFn('cssId')
-    + '\n' + extractFn('buildRetractEdgeRow') + '\n' + extractFn('buildCascadeEditor')
-    + '\n' + extractFn('buildDoorFlowCard') + '\n' + extractFn('buildDoorFlowsSection');
+  const src = extractFn('escapeHtml') + '\n' + extractFn('cssId') + '\n' + extractFn('_dfGroups')
+    + '\n' + extractFn('buildRetractEdgeRow') + '\n' + extractFn('buildUnlockAction')
+    + '\n' + extractFn('buildTriggerBlock') + '\n' + extractFn('buildDoorFlowCard')
+    + '\n' + extractFn('buildDoorFlowsSection');
   return new Function(src + '; return buildDoorFlowsSection;')();
 }
 
@@ -43,8 +44,7 @@ const DATA = {
   flows: {
     'Front Door': {
       door_id: 'd1',
-      retract: [{ lock_id: 'front_deadbolt', after_unlock: 'lock_default' }],
-      cascade: null,
+      triggers: [{ type: 'entry', scope: null, actions: { unlock: null, retract: [{ lock_id: 'front_deadbolt', after_unlock: 'stay_unlocked' }] } }],
     },
   },
   warnings: [],
@@ -52,7 +52,8 @@ const DATA = {
 
 test('the section renders a card per flow and an add picker for free doors only', () => {
   const out = loadSection()(DATA);
-  assert.match(out, /When entry is granted at Front Door/, 'existing flow gets its card');
+  assert.match(out, /Front Door/, 'existing flow gets its card');
+  assert.match(out, /When someone enters/, 'the entry trigger renders');
   assert.match(out, /id="dfAddDoor"/, 'add-flow picker present');
   assert.match(out, /value="Interior Door"/, 'unconfigured door offered');
   const picker = out.match(/<select id="dfAddDoor"[\s\S]*?<\/select>/)[0];
@@ -109,10 +110,10 @@ test('saves PUT the WHOLE flows map so removals stick (replace, not merge)', () 
 test('add/remove edge are local edits that mark the card dirty (Save commits)', () => {
   const add = extractFn('addRetractEdge');
   assert.match(add, /collectDoorFlowCard\(door\)/, 'in-progress edits on other rows survive the add');
-  assert.match(add, /after_unlock: 'lock_default'/, 'a new edge starts at the do-nothing default');
+  assert.match(add, /after_unlock: 'stay_unlocked'/, 'a new edge starts at the app-owned stay-unlocked default');
   assert.ok(!add.includes('putDoorFlows'), 'add is not an implicit save');
   const rm = extractFn('removeRetractEdge');
-  assert.match(rm, /splice\(idx, 1\)/);
+  assert.match(rm, /splice\(eIdx, 1\)/);
   assert.ok(!rm.includes('putDoorFlows'), 'remove edge is not an implicit save');
   const repaint = extractFn('repaintDoorFlowCard');
   assert.match(repaint, /markSectionDirty\(/, 'structural edits arm the Save button');
@@ -120,7 +121,7 @@ test('add/remove edge are local edits that mark the card dirty (Save commits)', 
 
 test('saveDoorFlow refuses an empty flow instead of silently dropping it', () => {
   const save = extractFn('saveDoorFlow');
-  assert.match(save, /hasContent/, 'content check present');
+  assert.match(save, /_flowHasContent/, 'content check present');
   assert.match(save, /Remove Flow/, 'the empty-flow message points at the real removal path');
   assert.match(save, /refreshZwaveDeadbolt\(\)/, 'device cards refresh their Triggered-by lines after a save');
 });

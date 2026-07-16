@@ -1,11 +1,10 @@
 'use strict';
 
-// Guards buildRetractEdgeRow: one door->deadbolt edge inside a Door Flow
-// card. The edge carries ITS OWN after-unlock behavior (one door may make a
-// deadbolt behave differently than another), the rare fields fold under an
-// Advanced expander, and a hardware auto-relock conflict is called out
-// inline. Extracts the REAL function from public/index.html via the shared
-// extractFn harness.
+// Guards buildRetractEdgeRow: one door->deadbolt edge inside a trigger block on
+// a door card. The edge carries ITS OWN after-unlock behavior (one door may
+// make a deadbolt behave differently than another), the rare fields fold under
+// an Advanced expander, and a hardware auto-relock conflict is called out
+// inline. Extracts the REAL function from public/index.html.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -39,7 +38,7 @@ const LOCKS = [
 function edge(overrides = {}) {
   return Object.assign({
     lock_id: 'front_deadbolt',
-    after_unlock: 'lock_default',
+    after_unlock: 'stay_unlocked',
     relock_seconds: null,
     require_result: 'ACCESS',
     mirror_unlock: false,
@@ -47,25 +46,31 @@ function edge(overrides = {}) {
   }, overrides);
 }
 
-test('a default edge renders the lock name, the three after-unlock modes, and Remove', () => {
-  const out = load()('Front Door', edge(), 0, LOCKS);
+// signature: buildRetractEdgeRow(door, tIdx, edge, eIdx, locks)
+test('a default edge renders the lock name, the two after-unlock modes, and Remove', () => {
+  const out = load()('Front Door', 0, edge(), 0, LOCKS);
   assert.match(out, /Retract <strong>Front Bolt<\/strong>/, 'friendly lock name shown');
-  assert.match(out, /value="lock_default" selected/, 'migration default pre-selected');
-  assert.match(out, /value="stay_unlocked"/);
+  assert.match(out, /value="stay_unlocked" selected/, 'stay unlocked is the default');
   assert.match(out, /value="relock_after"/);
-  assert.match(out, /removeRetractEdge\(&quot;Front Door&quot;, 0\)/, 'remove targets this door + edge');
+  assert.ok(!out.includes('value="lock_default"'), 'lock_default retired from the UI');
+  assert.match(out, /removeRetractEdge\(&quot;Front Door&quot;, 0, 0\)/, 'remove targets this door + trigger + edge');
   assert.match(out, /display:none/, 'relock-seconds input hidden outside relock_after');
 });
 
+test('a stale lock_default edge reads as stay unlocked', () => {
+  const out = load()('Front Door', 0, edge({ after_unlock: 'lock_default' }), 0, LOCKS);
+  assert.match(out, /value="stay_unlocked" selected/);
+});
+
 test('relock_after shows the seconds input with the stored value', () => {
-  const out = load()('Front Door', edge({ after_unlock: 'relock_after', relock_seconds: 90 }), 1, LOCKS);
+  const out = load()('Front Door', 1, edge({ after_unlock: 'relock_after', relock_seconds: 90 }), 2, LOCKS);
   assert.match(out, /value="relock_after" selected/);
   assert.match(out, /value="90"/, 'stored relock seconds surface');
   assert.ok(!/id="dfRelockWrap_[^"]*" style="display:none"/.test(out), 'seconds input visible');
 });
 
 test('advanced fields live under a details expander with their stored values', () => {
-  const out = load()('Front Door', edge({ require_result: 'GRANTED', mirror_unlock: true, relock_cooldown_seconds: 25 }), 0, LOCKS);
+  const out = load()('Front Door', 0, edge({ require_result: 'GRANTED', mirror_unlock: true, relock_cooldown_seconds: 25 }), 0, LOCKS);
   assert.match(out, /<details/, 'Advanced is an expander (collapsed by default)');
   assert.match(out, /Advanced/);
   assert.match(out, /value="GRANTED"/, 'require_result editable');
@@ -74,26 +79,28 @@ test('advanced fields live under a details expander with their stored values', (
 });
 
 test('a hardware auto-relock conflict is called out inline', () => {
-  const quiet = load()('Front Door', edge({ after_unlock: 'stay_unlocked' }), 0, LOCKS);
+  const quiet = load()('Front Door', 0, edge({ after_unlock: 'stay_unlocked' }), 0, LOCKS);
   assert.ok(!quiet.includes('notice-warn'), 'no warning without the conflict flag');
-  const out = load()('Front Door', edge({ after_unlock: 'stay_unlocked', hardware_conflict: true }), 0, LOCKS);
+  const out = load()('Front Door', 0, edge({ after_unlock: 'stay_unlocked', hardware_conflict: true }), 0, LOCKS);
   assert.match(out, /notice-warn/, 'conflict renders a warning');
-  assert.match(out, /auto-relock is ON/, 'explains why stay unlocked cannot hold');
-  assert.match(out, /Deadbolt Devices/, 'points at where to fix it');
+  assert.match(out, /hardware auto-relock is still on/i, 'explains why stay unlocked cannot hold yet');
+  assert.match(out, /turning it off/i, 'reassures the app is resolving it');
 });
 
 test('an unpaired lock is badged, and unknown lock ids still render', () => {
-  const ghost = load()('Front Door', edge({ lock_id: 'ghost_bolt' }), 0, LOCKS);
+  const ghost = load()('Front Door', 0, edge({ lock_id: 'ghost_bolt' }), 0, LOCKS);
   assert.match(ghost, /not paired/, 'saved-but-unpaired lock is flagged');
-  const orphan = load()('Front Door', edge({ lock_id: 'gone_bolt' }), 0, LOCKS);
+  const orphan = load()('Front Door', 0, edge({ lock_id: 'gone_bolt' }), 0, LOCKS);
   assert.match(orphan, /gone_bolt/, 'edge to a lock no longer saved still shows its id');
 });
 
-test('door names and values are escaped; edge ids are unique per door and index', () => {
-  const out = load()('Evil <img src=x>', edge(), 3, LOCKS);
+test('door names and values are escaped; edge ids are unique per door, trigger, and index', () => {
+  const out = load()('Evil <img src=x>', 0, edge(), 3, LOCKS);
   assert.ok(!out.includes('<img src=x>'), 'door name escaped');
-  const a = load()('Door A', edge(), 0, LOCKS);
-  const b = load()('Door A', edge(), 1, LOCKS);
+  const a = load()('Door A', 0, edge(), 0, LOCKS);
+  const b = load()('Door A', 0, edge(), 1, LOCKS);
+  const c = load()('Door A', 1, edge(), 0, LOCKS);
   const idOf = (s) => (s.match(/id="dfAfter_([^"]+)"/) || [])[1];
-  assert.notEqual(idOf(a), idOf(b), 'two edges on one door get distinct control ids');
+  assert.notEqual(idOf(a), idOf(b), 'two edges in one trigger get distinct control ids');
+  assert.notEqual(idOf(a), idOf(c), 'the same edge index in different triggers is distinct');
 });

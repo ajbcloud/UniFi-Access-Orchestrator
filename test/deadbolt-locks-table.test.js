@@ -140,11 +140,12 @@ test('no catalog -> a plain Unpair button with no tooltip (back-compat 2-arg cal
 });
 
 test('the Door Flows editor offers no unpaired ghost in the add-deadbolt picker', () => {
-  // Source-level contract on buildDoorFlowCard: only paired or bound locks
-  // are usable targets for a new retract edge, so an unpaired ghost (or a
-  // saved-but-dead entry) can never be wired to a door. Dev FakeLock
-  // bindings read as bound and stay offered.
-  const src = extractFn('buildDoorFlowCard');
+  // Source-level contract on buildTriggerBlock (the trigger block owns the
+  // per-trigger add-deadbolt picker now): only paired or bound locks are usable
+  // targets for a new retract edge, so an unpaired ghost (or a saved-but-dead
+  // entry) can never be wired. Dev FakeLock bindings read as bound and stay
+  // offered.
+  const src = extractFn('buildTriggerBlock');
   assert.match(src, /l\.paired \|\| l\.bound/, 'usable-lock filter present');
   assert.match(src, /freeLocks/, 'already-wired locks are excluded from the picker');
 });
