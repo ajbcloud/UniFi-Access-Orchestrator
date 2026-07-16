@@ -46,7 +46,7 @@
   --border-light: #B8BAB4;
   --text-primary: #0C2414;
   --text-secondary: #35473C;
-  --text-muted: #566459;
+  --text-muted: #414B45;
 
   /* accent = the readable, text-safe green ("dark highlight" on concrete) */
   --accent: #15522A;
@@ -67,6 +67,7 @@
 
   --yellow: #7E5410;
   --yellow-dim: rgba(126,84,16,0.16);
+  --on-warning: #FFFFFF;
 
   --red: #CF3A2A;
   --red-hover: #B22E20;
@@ -86,8 +87,8 @@
   --btn2-bg: #BCBDB7;
   --btn2-fg: #0C2414;
   --btn2-hover: #ADAFA9;
-  --eyebrow: #566459;
-  --mono-muted: #566459;
+  --eyebrow: #414B45;
+  --mono-muted: #414B45;
 
   --overlay: rgba(12,36,20,0.5);
   --shadow: rgba(20,30,25,0.22);
@@ -251,7 +252,7 @@
   --border-light: #AEB0AA;
   --text-primary: #0C2414;
   --text-secondary: #35473C;
-  --text-muted: #566459;
+  --text-muted: #414B45;
   --accent: #15522A;
   --accent-hover: #0E3D1F;
   --accent-dim: rgba(21,82,42,0.14);
@@ -266,6 +267,7 @@
   --on-success: #FFFFFF;
   --yellow: #7E5410;
   --yellow-dim: rgba(126,84,16,0.16);
+  --on-warning: #FFFFFF;
   --red: #CF3A2A;
   --red-hover: #B22E20;
   --red-dim: rgba(207,58,42,0.14);
@@ -276,8 +278,8 @@
   --btn2-bg: #A6A8A2;
   --btn2-fg: #0C2414;
   --btn2-hover: #999B95;
-  --eyebrow: #566459;
-  --mono-muted: #566459;
+  --eyebrow: #414B45;
+  --mono-muted: #414B45;
   --card-accent: #1B5E33;
   --shadow: rgba(20,30,25,0.22);
   color: var(--text-primary);
@@ -298,7 +300,7 @@
     --border-light: #AEB0AA;
     --text-primary: #0C2414;
     --text-secondary: #35473C;
-    --text-muted: #566459;
+    --text-muted: #414B45;
     --accent: #15522A;
     --accent-hover: #0E3D1F;
     --accent-dim: rgba(21,82,42,0.14);
@@ -313,6 +315,7 @@
     --on-success: #FFFFFF;
     --yellow: #7E5410;
     --yellow-dim: rgba(126,84,16,0.16);
+    --on-warning: #FFFFFF;
     --red: #CF3A2A;
     --red-hover: #B22E20;
     --red-dim: rgba(207,58,42,0.14);
@@ -323,8 +326,8 @@
     --btn2-bg: #A6A8A2;
     --btn2-fg: #0C2414;
     --btn2-hover: #999B95;
-    --eyebrow: #566459;
-    --mono-muted: #566459;
+    --eyebrow: #414B45;
+    --mono-muted: #414B45;
     --card-accent: #1B5E33;
     --shadow: rgba(20,30,25,0.22);
     color: var(--text-primary);
@@ -435,10 +438,15 @@ body {
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--card-accent);
   border-radius: var(--radius);
   padding: 20px;
 }
+
+/* The left stripe now encodes state, not decoration. Apply a modifier only
+   where a card reflects a live condition (for example the deadbolt card). */
+.card-state-ok { border-left: 3px solid var(--green); }
+.card-state-degraded { border-left: 3px solid var(--yellow); }
+.card-state-fault { border-left: 3px solid var(--red); }
 
 .card-title {
   font-size: 11px;
@@ -517,10 +525,20 @@ body {
   font-weight: 600;
 }
 
-.badge.success { background: var(--green-dim); color: var(--green); }
-.badge.warning { background: var(--yellow-dim); color: var(--yellow); }
-.badge.error { background: var(--red-dim); color: var(--red); }
-.badge.info { background: var(--blue-dim); color: var(--accent); }
+/* Status chips are solid fills with on-color text so they clear 4.5:1 on the
+   grey concrete cards, where the raw status colors fail as text. */
+.badge.success { background: var(--green); color: var(--on-success); }
+.badge.warning { background: var(--yellow); color: var(--on-warning); }
+.badge.error { background: var(--red); color: var(--on-danger); }
+.badge.info { background: var(--accent); color: var(--on-accent); }
+.badge.neon { background: var(--neon); color: var(--on-neon); }
+
+/* Full-width notice block for panel-level warnings (for example the keypad
+   gating banner). Solid fill, readable text, meaning carried by color. */
+.notice { display: block; padding: 8px 10px; border-radius: var(--radius);
+  font-size: 12px; font-weight: 500; line-height: 1.4; margin-bottom: 8px; }
+.notice-warn { background: var(--yellow); color: var(--on-warning); }
+.notice-danger { background: var(--red); color: var(--on-danger); }
 
 /* Event log container */
 .event-log {
@@ -558,7 +576,13 @@ select, input[type="text"], input[type="number"] {
   transition: border-color 0.15s;
 }
 
-select:focus, input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px var(--neon-glow); }
+/* Focus rings by zone: content-zone controls (inside grey cards) use the
+   readable dark-green accent; chrome-zone controls (banner, tabs) use neon.
+   Every interactive element gets a visible ring for keyboard users. */
+select:focus-visible, input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: none; }
+.header :focus-visible, .tabs [role="tab"]:focus-visible { outline: 2px solid var(--neon); outline-offset: -2px; }
 
 select { cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%236a7d72'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
 
@@ -580,6 +604,8 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .btn-primary:hover { background: var(--neon-strong); box-shadow: 0 2px 14px var(--neon-glow); }
 .btn-secondary { background: var(--btn2-bg); color: var(--btn2-fg); border-color: var(--border); }
 .btn-secondary:hover { background: var(--btn2-hover); }
+.btn-ghost { background: transparent; color: var(--accent); border-color: var(--border); }
+.btn-ghost:hover { background: var(--accent-dim); }
 .btn-danger { background: var(--red); color: var(--on-danger); }
 .btn-danger:hover { background: var(--red-hover); }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
@@ -590,7 +616,6 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .config-section {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--card-accent);
   border-radius: var(--radius);
   margin-bottom: 16px;
 }
@@ -1347,7 +1372,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
           </div>
 
           <div id="discoveryStatus" style="margin-bottom:16px">
-            <button class="btn btn-primary" onclick="runDiscovery()" id="discoverBtn">
+            <button class="btn btn-secondary" onclick="runDiscovery()" id="discoverBtn">
               Scan Network
             </button>
           </div>
@@ -1402,7 +1427,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
           </div>
 
           <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
-            <button class="btn btn-primary" onclick="testConnection()" id="setupTestBtn">Test Connection</button>
+            <button class="btn btn-secondary" onclick="testConnection()" id="setupTestBtn">Test Connection</button>
           </div>
 
           <div id="setupStatus" style="margin-top:16px;font-size:13px"></div>
@@ -1601,7 +1626,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <div style="display:flex;gap:8px;align-items:center">
         <span id="autoSyncPill" class="badge info" title="Background config sync status" style="font-size:11px">Auto-sync: …</span>
         <button class="btn btn-sm btn-secondary" onclick="loadConfig()">Refresh</button>
-        <button class="btn btn-sm btn-primary" onclick="reloadService()">Reload Service</button>
+        <button class="btn btn-sm btn-secondary" onclick="reloadService()">Reload Service</button>
       </div>
     </div>
 
@@ -1621,7 +1646,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <div class="config-section">
       <div class="config-header">
         Access Rules (NFC / PIN / Face / Mobile)
-        <button class="btn btn-sm btn-primary" onclick="showNfcRuleForm()">Add Rule</button>
+        <button class="btn btn-sm btn-ghost" onclick="showNfcRuleForm()">Add Rule</button>
       </div>
       <div class="config-body" id="configNfcRules">Loading...</div>
     </div>
@@ -1629,7 +1654,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <div class="config-section">
       <div class="config-header">
         Visitor Rules (Doorbell / Buzz-in)
-        <button class="btn btn-sm btn-primary" onclick="showDoorbellRuleForm()">Add Rule</button>
+        <button class="btn btn-sm btn-ghost" onclick="showDoorbellRuleForm()">Add Rule</button>
       </div>
       <div class="config-body" id="configDoorbellRules">Loading...</div>
     </div>
@@ -1751,7 +1776,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
           Your configuration is automatically backed up every time you save changes. You can also create manual backups, download them, or restore from a previous backup.
         </p>
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
-          <button class="btn btn-primary" onclick="createManualBackup()">Create Backup Now</button>
+          <button class="btn btn-secondary" onclick="createManualBackup()">Create Backup Now</button>
           <button class="btn btn-secondary" onclick="loadBackups()">Refresh</button>
         </div>
         <div id="backupInfo" style="font-size:12px;color:var(--text-muted);margin-bottom:12px"></div>
@@ -1852,7 +1877,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
         Test the connection to your Access Gateway without leaving the app.
       </div>
-      <button class="btn btn-primary" onclick="runConnectivityTest()" id="connTestBtn">Test Connection</button>
+      <button class="btn btn-secondary" onclick="runConnectivityTest()" id="connTestBtn">Test Connection</button>
       <div id="connTestResults" style="margin-top:16px"></div>
     </div>
 
@@ -2354,15 +2379,29 @@ function describeLockBolt(ls) {
 // Renders the Smart Deadbolt card from /health. Hidden unless the add-on is
 // enabled. Controller-derived strings (last-action detail carries event actor
 // names) are escaped; internal enums/config go in via textContent.
+// Map a semantic state to a card left-stripe modifier class. Pure.
+function cardStateClass(kind) {
+  return kind ? 'card-state-' + kind : '';
+}
+
+// Apply (or clear) the state stripe on a card element. DOM mutator.
+function setCardState(el, kind) {
+  if (!el || !el.classList) return;
+  el.classList.remove('card-state-ok', 'card-state-degraded', 'card-state-fault');
+  if (kind) el.classList.add('card-state-' + kind);
+}
+
 function renderDeadbolt(h) {
   const card = document.getElementById('deadboltCard');
   if (!card) return;
   const db = h && h.deadbolt;
-  if (!db || !db.enabled) { card.style.display = 'none'; return; }
+  if (!db || !db.enabled) { card.style.display = 'none'; setCardState(card, null); return; }
   card.style.display = '';
 
   const lock = db.lock || {};
   const bolt = describeLockBolt(lock);
+  // The stripe now carries state: fault when jammed, degraded when open, ok when locked.
+  setCardState(card, bolt === 'jammed' ? 'fault' : bolt === 'unlocked' ? 'degraded' : bolt === 'locked' ? 'ok' : null);
   const stateEl = document.getElementById('deadboltState');
   stateEl.className = 'badge ' + (bolt === 'locked' ? 'success' : bolt === 'unlocked' ? 'warning' : bolt === 'jammed' ? 'error' : 'info');
   stateEl.textContent = bolt;
@@ -3437,7 +3476,7 @@ function keypadLockBadge(s, lockName, doorName) {
 function accessGatingBanner(ag, gatedCount) {
   const a = ag || {};
   if (!gatedCount) return '';
-  const box = (msg) => `<div class="badge warning" style="display:block;margin-bottom:6px;padding:6px 8px">${msg}</div>`;
+  const box = (msg) => `<div class="notice notice-warn">${msg}</div>`;
   if (!a.available) {
     return box(`Access policies not synced yet${a.error ? ` (${escapeHtml(a.error)})` : ''}: gating can't be enforced, so no codes are blocked or removed. Codes still write to every lock until access data loads.`);
   }
@@ -4609,7 +4648,7 @@ function renderTestRules() {
             ${userOptions}
           </select>
           <button class="btn btn-sm btn-secondary" onclick="runPreflight('access', ${idx})" id="testAccessPfBtn-${idx}">Preflight</button>
-          <button class="btn btn-sm btn-primary" onclick="simulateRule('access', ${idx})" id="testAccessBtn-${idx}">Simulate</button>
+          <button class="btn btn-sm btn-secondary" onclick="simulateRule('access', ${idx})" id="testAccessBtn-${idx}">Simulate</button>
         </div>
         <div class="test-rule-controls">
           <label class="real-unlock-toggle" title="WARNING: actually issues PUT /doors/:id/unlock to your controller">
@@ -4659,7 +4698,7 @@ function renderTestRules() {
             ${actorOptions}
           </select>
           <button class="btn btn-sm btn-secondary" onclick="runPreflight('visitor', ${idx})" id="testVisitorPfBtn-${idx}">Preflight</button>
-          <button class="btn btn-sm btn-primary" onclick="simulateRule('visitor', ${idx})" id="testVisitorBtn-${idx}">Simulate</button>
+          <button class="btn btn-sm btn-secondary" onclick="simulateRule('visitor', ${idx})" id="testVisitorBtn-${idx}">Simulate</button>
         </div>
         <div class="test-rule-controls">
           <label class="real-unlock-toggle" title="WARNING: actually issues PUT /doors/:id/unlock to your controller">
