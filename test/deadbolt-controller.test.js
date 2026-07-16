@@ -491,6 +491,228 @@ test('edge mode: per-edge mirror_unlock and require_result', async () => {
   ctl.destroy();
 });
 
+// ---------------------------------------------------------------------------
+// Trigger scope + doorbell (the door-flow spine): edges/cascade rules carry a
+// type ('entry'|'doorbell') and a scope (null | {any_group} | {groups}). A
+// deps.resolveGroup resolves the acting user's group so scope can gate.
+// ---------------------------------------------------------------------------
+
+function scopedGrant(door, opts = {}) {
+  const g = entryGrant(door, opts);
+  if (opts.actorId) g.data._source.actor.id = opts.actorId;
+  return g;
+}
+
+function doorbellEvent(door, opts = {}) {
+  const { reason = 107, actorId, actorName, deviceName, doorId = 'door-1' } = opts;
+  return {
+    event: 'access.doorbell.completed',
+    data: {
+      object: { reason_code: reason },
+      location: { name: door, id: doorId },
+      actor: { id: actorId || null, name: actorName || null },
+      device: { name: deviceName || null },
+    },
+  };
+}
+
+function makeScopedController({ edges = [], cascade = [], groups = {} } = {}) {
+  const lock = new FakeLock({ initial: LockState.LOCKED });
+  const unifi = makeUnifi();
+  let clock = { t: 0 };
+  const ctl = new DeadboltController(
+    { edges, cascade_rules: { rules: cascade } },
+    {
+      lockDriver: lock,
+      unifiClient: unifi,
+      now: () => clock.t,
+      logger: { debug() {} },
+      resolveGroup: ({ actorId }) => groups[actorId] || null,
+    }
+  );
+  return { ctl, lock, unifi, clock };
+}
+
+test('scope: a group-scoped entry edge retracts only for a matching resolved group', async () => {
+  const { ctl, lock } = makeScopedController({
+    edges: [{ trigger_door: 'Main', type: 'entry', scope: { groups: ['Staff'] }, after_unlock: 'stay_unlocked' }],
+    groups: { 'u-staff': 'Staff', 'u-visitor': 'Visitors' },
+  });
+  await lock.init();
+  ctl.observe(scopedGrant('Main', { actorId: 'u-visitor' }));
+  await flush();
+  assert.equal(lock.calls.filter((c) => c.action === 'unlock').length, 0, 'a non-matching group does not retract');
+  ctl.observe(scopedGrant('Main', { actorId: 'u-staff' }));
+  await flush();
+  assert.equal(lock.calls.filter((c) => c.action === 'unlock').length, 1, 'the Staff user retracts');
+});
+
+test('scope: null (everyone) retracts even for an unresolved user; any_group needs a resolved group', async () => {
+  const everyone = makeScopedController({
+    edges: [{ trigger_door: 'Main', type: 'entry', scope: null, after_unlock: 'stay_unlocked' }],
+  });
+  await everyone.lock.init();
+  everyone.ctl.observe(scopedGrant('Main', { actorId: 'nobody' }));
+  await flush();
+  assert.equal(everyone.lock.calls.filter((c) => c.action === 'unlock').length, 1, 'everyone includes unresolved');
+
+  const anyGroup = makeScopedController({
+    edges: [{ trigger_door: 'Main', type: 'entry', scope: { any_group: true }, after_unlock: 'stay_unlocked' }],
+    groups: { 'u-staff': 'Staff' },
+  });
+  await anyGroup.lock.init();
+  anyGroup.ctl.observe(scopedGrant('Main', { actorId: 'nobody' }));
+  await flush();
+  assert.equal(anyGroup.lock.calls.filter((c) => c.action === 'unlock').length, 0, 'unresolved is skipped by any_group');
+  anyGroup.ctl.observe(scopedGrant('Main', { actorId: 'u-staff' }));
+  await flush();
+  assert.equal(anyGroup.lock.calls.filter((c) => c.action === 'unlock').length, 1, 'any resolved group matches');
+});
+
+test('scope: a group-scoped cascade unlocks only for the matching group', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [
+      { trigger_door: 'Main', type: 'entry', scope: { groups: ['Staff'] }, unlock: ['Elevator', 'Stairwell'], debounce_seconds: 0 },
+    ],
+    groups: { 'u-staff': 'Staff', 'u-visitor': 'Visitors' },
+  });
+  ctl.observe(scopedGrant('Main', { actorId: 'u-visitor' }));
+  await flush();
+  assert.equal(unifi.calls.length, 0, 'visitor gets no scoped unlock');
+  ctl.observe(scopedGrant('Main', { actorId: 'u-staff' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name).sort(), ['Elevator', 'Stairwell']);
+});
+
+test('doorbell: reason 107 fires a doorbell trigger; an entry grant does not', async () => {
+  const { ctl, unifi, lock } = makeScopedController({
+    edges: [{ trigger_door: 'Gate', type: 'doorbell', scope: { groups: ['Staff'] }, doorbell: { reason_code: 107 }, after_unlock: 'stay_unlocked' }],
+    cascade: [{ trigger_door: 'Gate', type: 'doorbell', scope: { groups: ['Staff'] }, doorbell: { reason_code: 107 }, unlock: ['Lobby'], debounce_seconds: 0 }],
+    groups: { 'admin-1': 'Staff' },
+  });
+  await lock.init();
+  // An entry grant at the doorbell door must NOT fire the doorbell trigger.
+  ctl.observe(scopedGrant('Gate', { actorId: 'admin-1' }));
+  await flush();
+  assert.equal(unifi.calls.length, 0, 'entry does not fire the doorbell unlock');
+  assert.equal(lock.calls.filter((c) => c.action === 'unlock').length, 0, 'entry does not fire the doorbell retract');
+  // A doorbell answered by a Staff admin fires it.
+  ctl.observe(doorbellEvent('Gate', { actorId: 'admin-1' }));
+  await flush();
+  assert.equal(unifi.calls[0].name, 'Lobby');
+  assert.equal(lock.calls.filter((c) => c.action === 'unlock').length, 1, 'doorbell retracts the deadbolt');
+});
+
+test('doorbell: the wrong reason code is ignored', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [{ trigger_door: 'Gate', type: 'doorbell', scope: { any_group: true }, doorbell: { reason_code: 107 }, unlock: ['Lobby'], debounce_seconds: 0 }],
+    groups: { 'admin-1': 'Staff' },
+  });
+  ctl.observe(doorbellEvent('Gate', { actorId: 'admin-1', reason: 106 })); // admin declined
+  await flush();
+  assert.equal(unifi.calls.length, 0, 'reason 106 does not unlock');
+});
+
+test('doorbell: a viewer device resolves the group when there is no actor id', async () => {
+  const lock = new FakeLock({ initial: LockState.LOCKED });
+  const unifi = makeUnifi();
+  const ctl = new DeadboltController(
+    { edges: [], cascade_rules: { rules: [
+      { trigger_door: 'Gate', type: 'doorbell', scope: { groups: ['Royal Palm'] }, doorbell: { reason_code: 107 }, unlock: ['RP Lobby'], debounce_seconds: 0 },
+    ] } },
+    {
+      lockDriver: lock, unifiClient: unifi, logger: { debug() {} },
+      resolveGroup: ({ deviceName }) => (deviceName === 'RP Concierge' ? 'Royal Palm' : null),
+    }
+  );
+  ctl.observe(doorbellEvent('Gate', { deviceName: 'RP Concierge' }));
+  await flush();
+  assert.equal(unifi.calls[0].name, 'RP Lobby', 'viewer-device fallback resolved the group');
+});
+
+test('delay: a cascade with delay_seconds fires after the delay, and destroy cancels a pending one', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [{ trigger_door: 'Main', type: 'entry', scope: null, unlock: ['Elevator'], debounce_seconds: 0, delay_seconds: 0.05 }],
+  });
+  ctl.observe(scopedGrant('Main'));
+  await flush();
+  assert.equal(unifi.calls.length, 0, 'not yet: the delay is pending');
+  await wait(90);
+  assert.equal(unifi.calls.length, 1, 'fired after the delay');
+  // A second, then destroy before it fires -> cancelled.
+  ctl.observe(scopedGrant('Main'));
+  await flush();
+  ctl.destroy();
+  await wait(90);
+  assert.equal(unifi.calls.length, 1, 'destroy cancelled the pending delayed cascade');
+});
+
+test('scope: a group-scoped unlock does NOT fire on a denied (BLOCKED) event', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [{ trigger_door: 'Gate', type: 'entry', scope: { groups: ['Staff'] }, unlock: ['Lobby'], debounce_seconds: 0 }],
+    groups: { 'u-staff': 'Staff' },
+  });
+  ctl.observe(scopedGrant('Gate', { actorId: 'u-staff', result: 'BLOCKED' }));
+  await flush();
+  assert.equal(unifi.calls.length, 0, 'a denied entry never opens the interior door, scoped or not');
+  ctl.observe(scopedGrant('Gate', { actorId: 'u-staff', result: 'ACCESS' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Lobby'], 'a granted entry still fires');
+});
+
+test('any_group is a fallback: it is suppressed when a group-specific rule matched the same door', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [
+      { trigger_door: 'Main', type: 'entry', scope: { groups: ['Staff'] }, unlock: ['Elevator'], debounce_seconds: 0 },
+      { trigger_door: 'Main', type: 'entry', scope: { any_group: true }, unlock: ['Lobby'], debounce_seconds: 0 },
+    ],
+    groups: { 'u-staff': 'Staff', 'u-other': 'Visitors' },
+  });
+  ctl.observe(scopedGrant('Main', { actorId: 'u-staff' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name).sort(), ['Elevator'], 'Staff (has a specific rule) does not also get the any_group fallback');
+  unifi.calls.length = 0;
+  ctl.observe(scopedGrant('Main', { actorId: 'u-other' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Lobby'], 'a resolved group with no specific rule gets the any_group fallback');
+});
+
+test('alarm mode: a denial door alarm never fires the cascade, but an unlock alarm does', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [{ trigger_door: 'Front Door', type: 'entry', scope: null, unlock: ['Interior'], debounce_seconds: 0 }],
+  });
+  ctl.observe({ alarm: { name: 'Front Door', triggers: [{ key: 'access.door.access_denied', actor: { name: 'Mallory' } }] } });
+  await flush();
+  assert.equal(unifi.calls.length, 0, 'a denial/lockdown door alarm is not treated as an unlock');
+  ctl.observe({ alarm: { name: 'Front Door', triggers: [{ key: 'access.door.unlock', actor: { name: 'Kim' } }] } });
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Interior'], 'a real door-unlock alarm still cascades');
+});
+
+test('acceptance B: front stays open, side relocks 30s, on ONE shared lock (last writer wins)', async () => {
+  // Front edge stay_unlocked; side edge relock_after. Both drive the same lock.
+  const { ctl, lock } = makeEdgeController([
+    { trigger_door: 'Front Door', type: 'entry', scope: null, after_unlock: 'stay_unlocked' },
+    { trigger_door: 'Side Door', type: 'entry', scope: null, after_unlock: 'relock_after', relock_seconds: 0.05 },
+  ]);
+  await lock.init();
+  // Badge at the side door: arms the 30s (here 50ms) relock.
+  ctl.observe(entryGrant('Side Door', { doorId: 'd-side' }));
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, true, 'side armed a relock');
+  await wait(90);
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 1, 'side relocked');
+  // Badge at side then front within the window: front (stay_unlocked) wins.
+  await lock.unlock('reset');
+  ctl.observe(entryGrant('Side Door', { doorId: 'd-side' }));
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, true);
+  ctl.observe(entryGrant('Front Door', { doorId: 'd-front' }));
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, false, 'front stay_unlocked cancelled the pending relock');
+  ctl.destroy();
+});
+
 test('edge mode: destroy() clears the timer and the driver listener', async () => {
   const { ctl, lock } = makeEdgeController([
     { trigger_door: 'Front Door', after_unlock: 'relock_after', relock_seconds: 0.05 },

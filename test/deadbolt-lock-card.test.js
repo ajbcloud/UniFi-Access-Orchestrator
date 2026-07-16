@@ -1,11 +1,11 @@
 'use strict';
 
 // Guards buildLockCard: the per-lock card that carries a paired lock's
-// identity, live badges, action buttons, and after-unlock control in the
-// multi-lock Smart Deadbolt panel. Two locks must render two fully
-// independent cards with their own lock_id threaded through every control.
-// Extracts the REAL functions from public/index.html via the shared
-// extractFn harness.
+// identity, live badges, and action buttons in the multi-lock Smart Deadbolt
+// panel. The card is HARDWARE ONLY now: after-unlock behavior moved to the
+// door's card, so there is no auto-relock control here. Two locks must render
+// two fully independent cards with their own lock_id threaded through every
+// control. Extracts the REAL functions from public/index.html.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -31,7 +31,7 @@ function load() {
   // 'buildLockCardButtons' first (prefix collision).
   const deps = ['escapeHtml', 'cssId', 'describeLockBolt', 'describeLockBattery',
     'describeLockLink', 'describeLockModel', 'describeLockSecurity',
-    'buildAutoRelockControl', 'buildLockCardButtons', 'buildLockCard('];
+    'buildLockCardButtons', 'buildLockCard('];
   const src = deps.map(extractFn).join('\n');
   return new Function(src + '; return buildLockCard;')();
 }
@@ -54,18 +54,18 @@ function summary(overrides = {}) {
   }, overrides);
 }
 
-test('a card carries identity, live badges, buttons, and the after-unlock control', () => {
+test('a card carries identity, live badges, buttons, and a read-only trigger summary', () => {
   const build = load();
   const out = build(summary());
   assert.match(out, /id="zwaveLockCard_front_deadbolt_/);
   assert.match(out, /Front Door/);
   assert.match(out, /node 14/);
   assert.match(out, /Triggered by: <strong>Front Door<\/strong>/, 'read-only trigger summary');
-  assert.match(out, /edit in Door Flows/, 'cross-link to the one editor for door wiring');
+  assert.match(out, /edit on the door's card/, 'cross-link to the one editor for door wiring');
   assert.match(out, /Test Lock/);
-  assert.match(out, /After unlock:/);
-  assert.match(out, /id="zwaveAutoRelockSel_front_deadbolt_/, 'auto-relock select id is per-lock');
-  assert.match(out, /applyAutoRelock\(&quot;front_deadbolt&quot;\)/, 'apply targets this lock');
+  assert.ok(!out.includes('After unlock:'), 'after-unlock control removed from the hardware card');
+  assert.ok(!out.includes('zwaveAutoRelockSel_'), 'no auto-relock select on the device card');
+  assert.ok(!out.includes('applyAutoRelock'), 'no auto-relock write path on the device card');
   assert.ok(!out.includes('zwaveUserCodes_'), 'no per-lock keypad-codes container (PINs live on the Keypad Users tab)');
   assert.ok(!out.includes('deadboltTriggerDoor_'), 'no editable trigger control on the card');
 });
@@ -96,7 +96,7 @@ test('a manual-only (not automated) lock says so instead of claiming a trigger',
   const build = load();
   const out = build(summary({ automated: false, trigger_door: null, trigger_doors: [] }));
   assert.match(out, /Manual control only/);
-  assert.match(out, /add this deadbolt to a door in Door Flows/, 'points at the editor');
+  assert.match(out, /add this deadbolt to a door on the door's card/i, 'points at the editor');
   assert.ok(!out.includes('Triggered by:'));
 });
 

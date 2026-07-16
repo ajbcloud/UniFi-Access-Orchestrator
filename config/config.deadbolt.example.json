@@ -29,16 +29,6 @@
     "manual_overrides": {}
   },
   "doors": {},
-  "unlock_rules": {
-    "rules": [],
-    "default_action": { "unlock": [] }
-  },
-  "doorbell_rules": {
-    "rules": [],
-    "trigger_reason_code": 107,
-    "viewer_to_group": {},
-    "default_action": { "unlock": [] }
-  },
   "self_trigger_prevention": {
     "marker_key": "source",
     "marker_value": "middleware"
@@ -78,28 +68,34 @@
           "early_verify_read_ms": 2500,
           "poll_minutes": 20,
           "low_battery_pct": 25,
-          "auto_relock": null,
+          "auto_relock": false,
           "user_codes": {}
         }
       }
     }
   },
-  "deadbolt_rules": {
-    "front_deadbolt": {
-      "trigger_door": "Front Door",
-      "require_result": "ACCESS",
-      "mirror_unlock": false,
-      "relock_cooldown_seconds": 10
+  "door_flows": {
+    "Front Door": {
+      "door_id": null,
+      "triggers": [
+        {
+          "type": "entry",
+          "scope": null,
+          "actions": {
+            "unlock": { "doors": ["Interior Door"], "debounce_seconds": 8, "delay_seconds": 0 },
+            "retract": [
+              {
+                "lock_id": "front_deadbolt",
+                "after_unlock": "stay_unlocked",
+                "require_result": "ACCESS",
+                "mirror_unlock": false,
+                "relock_cooldown_seconds": 10
+              }
+            ]
+          }
+        }
+      ]
     }
-  },
-  "cascade_rules": {
-    "rules": [
-      {
-        "trigger_door": "Front Door",
-        "unlock": ["Interior Door"],
-        "debounce_seconds": 8
-      }
-    ]
   },
   "alerts": {
     "enabled": false,

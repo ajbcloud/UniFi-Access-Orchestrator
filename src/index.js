@@ -73,17 +73,29 @@ function loadConfig() {
     parsed.devices && parsed.devices.zwave && parsed.devices.zwave.locks
   );
   if (migrated.changed) parsed.deadbolt_rules = migrated.rules;
-  // Door-centric canonical shape: fold {deadbolt_rules, cascade_rules} into
-  // door_flows on EVERY load. From here the live app reads ONLY door_flows;
-  // the legacy keys exist transitionally for old writers/readers (PUT still
-  // accepts them, GET projects them) and are deleted from disk at startup.
-  const flowsResult = doorFlows.migrateToFlows(parsed, parsed.devices && parsed.devices.zwave && parsed.devices.zwave.locks);
+  // Door-flow spine: fold {deadbolt_rules, cascade_rules, unlock_rules,
+  // doorbell_rules} into the trigger-shaped door_flows on EVERY load. From here
+  // the live app reads ONLY door_flows; the legacy keys exist transitionally
+  // for old readers (GET projects them) and are deleted from disk at startup.
+  const flowsResult = doorFlows.migrateToTriggers(parsed, parsed.devices && parsed.devices.zwave && parsed.devices.zwave.locks);
   parsed.door_flows = flowsResult.flows;
   // One source of truth in memory: the legacy keys are consumed above and
   // must never be read again (GET /api/config serves a computed projection).
   delete parsed.deadbolt_rules;
   delete parsed.cascade_rules;
+  delete parsed.unlock_rules;
+  delete parsed.doorbell_rules;
   return parsed;
+}
+
+// The rules engine runs a derived, read-only PROJECTION of the automation
+// (unlock_rules / doorbell_rules) so the simulate + preflight endpoints keep
+// working off the door-flow triggers. It is NOT fed live events any more (the
+// deadbolt controller owns live entry + doorbell + cascade execution), so it
+// never double-fires.
+function rulesEngineConfig(cfg) {
+  const proj = doorFlows.legacyProjection(cfg.door_flows || {});
+  return Object.assign({}, cfg, { unlock_rules: proj.unlock_rules, doorbell_rules: proj.doorbell_rules });
 }
 
 let config = loadConfig();
@@ -128,19 +140,26 @@ migrateConfigFileOnDisk(false);
 function migrateDoorFlowsOnDisk(markApplied) {
   try {
     const disk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-    const hadLegacy = disk.deadbolt_rules !== undefined || disk.cascade_rules !== undefined;
-    const result = doorFlows.migrateToFlows(disk, disk.devices && disk.devices.zwave && disk.devices.zwave.locks);
+    const hadLegacy = disk.deadbolt_rules !== undefined || disk.cascade_rules !== undefined
+      || disk.unlock_rules !== undefined || disk.doorbell_rules !== undefined;
+    // migrateToTriggers reports changed=true when a flat door_flows is upgraded,
+    // so a single call covers both the legacy-keys and flat-door_flows cases.
+    const result = doorFlows.migrateToTriggers(disk, disk.devices && disk.devices.zwave && disk.devices.zwave.locks);
     if (!result.changed && !hadLegacy) return false;
+    // One-time safety: snapshot the pre-spine config before the first rewrite
+    // (the app does not otherwise back up on save).
+    try { createBackup(CONFIG_PATH, BACKUP_DIR); } catch (e) { logger.warn(`Config: pre-migration backup skipped (${e.message})`); }
     disk.door_flows = result.flows;
     delete disk.deadbolt_rules;
     delete disk.cascade_rules;
+    delete disk.unlock_rules;
+    delete disk.doorbell_rules;
     writeConfigFile(disk);
     if (markApplied && configSync && typeof configSync.markConfigApplied === 'function') {
       configSync.markConfigApplied();
     }
-    const merged = Object.values(result.flows).some((f) => f && f.cascade && f.cascade.merged);
-    logger.info(`Config: migrated deadbolt/cascade rules to door_flows (${Object.keys(result.flows).length} door(s))`
-      + (merged ? '; multiple cascade rules on one door were unioned under a single debounce' : ''));
+    for (const line of result.logs) logger.info(`Config: ${line}`);
+    logger.info(`Config: migrated automation rules to the door-flow spine (${Object.keys(result.flows).length} door(s))`);
     return true;
   } catch (e) {
     logger.warn(`Config: door_flows migration skipped (${e.message}); continuing with the in-memory shape`);
@@ -176,8 +195,13 @@ pruneGhostLocksOnDisk();
 let unifiClient = new UniFiClient(config);
 wireUnifiClientCallbacks(unifiClient);
 let resolver = new Resolver(config, unifiClient);
-let rulesEngine = new RulesEngine(config, unifiClient, resolver);
+// The rules engine runs on the derived projection (simulate/preflight only);
+// live entry/doorbell/cascade execution belongs to the deadbolt controller.
+let rulesEngine = new RulesEngine(rulesEngineConfig(config), unifiClient, resolver);
 let configSync = null;  // initialized in start() once Express + UniFi client are up
+// Case-insensitive viewer-device -> group map, merged from every doorbell
+// trigger, used to resolve the answering viewer when a doorbell has no actor id.
+let _viewerToGroupCI = {};
 
 // ---------------------------------------------------------------------------
 // Smart-deadbolt add-on (Phase 2). Entirely inert unless deadbolt_rules or
@@ -494,17 +518,49 @@ function destroyDeadboltControllers() {
   cascadeController = null;
 }
 
+// Resolve the acting user's group for a scoped trigger. Tries the resolver
+// (by actor id) first, then falls back to the doorbell viewer-device map (an
+// answered doorbell often carries no actor id). Returns null when unresolved.
+function resolveGroupForEvent(info) {
+  const i = info || {};
+  let group = null;
+  if (i.actorId) {
+    const r = resolver.resolve(i.actorId);
+    group = (r && r.group) || null;
+  }
+  if (!group) {
+    const a = i.actorName ? String(i.actorName).trim().toLowerCase() : '';
+    const d = i.deviceName ? String(i.deviceName).trim().toLowerCase() : '';
+    group = (a && _viewerToGroupCI[a]) || (d && _viewerToGroupCI[d]) || null;
+  }
+  return group;
+}
+
 function buildDeadboltControllers() {
   destroyDeadboltControllers();
+  // Refresh the merged viewer->group map from EVERY doorbell trigger, including
+  // retract-only ones (unlockRulesFromFlows drops triggers with no unlock, which
+  // would lose the viewer map for a doorbell that only retracts a deadbolt).
+  _viewerToGroupCI = {};
+  for (const flow of Object.values(config.door_flows || {})) {
+    for (const trig of doorFlows.triggersOf(flow)) {
+      if (trig.type === 'doorbell' && trig.doorbell && trig.doorbell.viewer_to_group) {
+        for (const [k, v] of Object.entries(trig.doorbell.viewer_to_group)) {
+          if (typeof k === 'string' && v) _viewerToGroupCI[k.trim().toLowerCase()] = v;
+        }
+      }
+    }
+  }
   const deps = {
     getUnifiClient: () => unifiClient,
     broadcaster: broadcastEvent,
     logger,
+    resolveGroup: resolveGroupForEvent,
     onAlert: (a) => { logger.warn(`ALERT ${a.type}: ${JSON.stringify(a)}`); notifier.notify(a); },
   };
   // One controller per lock referenced by any door's retract edges, fed the
-  // full list of door->lock edges so several doors can drive one deadbolt
-  // (each with its own after-unlock behavior).
+  // full list of door->lock edges (each carrying its own after-unlock, trigger
+  // type and scope) so several doors can drive one deadbolt differently.
   for (const lockId of doorFlows.automatedLockIdsFromFlows(config.door_flows)) {
     const edges = doorFlows.edgesForLock(config.door_flows, lockId);
     const controller = new DeadboltController(
@@ -513,9 +569,11 @@ function buildDeadboltControllers() {
     );
     if (controller.enabled) deadboltControllers.set(lockId, controller);
   }
-  // Cascade stays on ONE dedicated controller (lockDriver: null, never a lock
-  // command), fed the exact legacy rule shape derived from the flows.
-  const cascadeRules = doorFlows.cascadeRulesFromFlows(config.door_flows);
+  // One dedicated controller (lockDriver: null, never a lock command) owns every
+  // scoped/unscoped UNLOCK action across all triggers (entry cascades, group
+  // unlocks and doorbell unlocks), so they never double-fire when several locks
+  // are automated.
+  const cascadeRules = doorFlows.unlockRulesFromFlows(config.door_flows);
   if (cascadeRules.length) {
     cascadeController = new DeadboltController(
       Object.assign({}, config, { deadbolt_rules: undefined, cascade_rules: { rules: cascadeRules } }),
@@ -630,7 +688,41 @@ async function bringDeadboltOnline() {
   for (const id of succeeded) _alertedInitLocks.delete(id);
   if (_failedInitLocks.size) scheduleDeadboltInitRetry();
   applyEventTaps();
+  // Decision 2: the app owns relock in software now, so hand the hardware
+  // auto-relock off for every flow-wired lock (best-effort; retried on the
+  // next rebuild if the lock is asleep).
+  ensureHardwareAutoRelockOff().catch((e) => logger.warn(`Deadbolt: hardware auto-relock handoff error: ${e.message}`));
   return _failedInitLocks.size === 0 && lockDrivers.size > 0;
+}
+
+// Force every flow-wired lock's OWN hardware auto-relock OFF (decision 2: the
+// app schedules relock in software). Only touches locks currently known to be
+// ON, so it converges and never churns unsupported/already-off locks. A lock
+// that cannot be written now (asleep) keeps its state and is retried on the
+// next rebuild; doorFlowWarnings stays honest until the write confirms.
+async function ensureHardwareAutoRelockOff() {
+  const locks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  for (const lockId of doorFlows.automatedLockIdsFromFlows(config.door_flows)) {
+    const driver = lockDrivers.get(lockId);
+    const lc = locks[lockId];
+    if (!driver || typeof driver.setAutoRelock !== 'function') continue;
+    if (!lc || lc.auto_relock !== true) continue; // only turn OFF locks currently on
+    try {
+      const r = await driver.setAutoRelock(false);
+      if (r && r.confirmed !== false) {
+        persistZwaveMutation((cfg) => {
+          const zwc = cfg.devices && cfg.devices.zwave;
+          if (zwc && zwc.locks && zwc.locks[lockId]) zwc.locks[lockId].auto_relock = false;
+        });
+        if (locks[lockId]) locks[lockId].auto_relock = false;
+        logger.info(`Deadbolt: forced hardware auto-relock OFF on "${lockLabel(lockId)}" (the app owns relock now)`);
+      } else {
+        logger.info(`Deadbolt: hardware auto-relock off not confirmed for "${lockLabel(lockId)}" (asleep?); will retry on the next rebuild`);
+      }
+    } catch (e) {
+      logger.warn(`Deadbolt: could not turn off hardware auto-relock for "${lockLabel(lockId)}" (${e.message}); will retry`);
+    }
+  }
 }
 
 // One PIN per user: after a NEW lock pairs, write every saved user's PIN to
@@ -1417,12 +1509,13 @@ app.post('/webhook', async (req, res) => {
   lastEventTime = Date.now();
   storeRawPayload('webhook', payload);
   capture.add(payload);
-  for (const controller of deadboltObservers()) {
-    try { controller.observe(payload); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
-  }
-
+  // The deadbolt controller owns live automation now (entry, doorbell and
+  // cascade/scoped unlocks), so events flow to the observers only. The rules
+  // engine runs the derived projection for simulate/preflight, never live.
   try {
-    await rulesEngine.handleEvent(payload);
+    for (const controller of deadboltObservers()) {
+      try { controller.observe(payload); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
+    }
     res.status(200).json({ status: 'ok' });
   } catch (err) {
     logger.error(`Error processing webhook: ${err.message}`);
@@ -2666,7 +2759,7 @@ app.post('/test/event', async (req, res) => {
       actor: user_id ? { id: user_id, name: user_name || 'Test User', type: 'user' } : null,
       object: {
         authentication_type: event_type === 'access.doorbell.completed' ? 'CALL' : 'NFC',
-        policy_id: '', policy_name: '', result: 'Access Granted',
+        policy_id: '', policy_name: '', result: 'ACCESS',
         reason_code: reason_code !== undefined ? parseInt(reason_code) : undefined
       }
     }
@@ -2675,7 +2768,11 @@ app.post('/test/event', async (req, res) => {
   logger.info(`Simulating event: type=${synthetic.event} at "${location}"`);
 
   try {
-    await rulesEngine.handleEvent(synthetic);
+    // Drive the live automation path (the deadbolt controller observers) the
+    // same way a real event does; the rules engine is no longer live.
+    for (const controller of deadboltObservers()) {
+      try { controller.observe(synthetic); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
+    }
     res.json({ status: 'ok', simulated_event: synthetic.event });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3051,6 +3148,8 @@ app.get('/api/config', (req, res) => {
   const projection = doorFlows.legacyProjection(config.door_flows);
   out.deadbolt_rules = projection.deadbolt_rules;
   out.cascade_rules = projection.cascade_rules;
+  out.unlock_rules = projection.unlock_rules;
+  out.doorbell_rules = projection.doorbell_rules;
   res.json(out);
 });
 
@@ -3094,54 +3193,109 @@ app.put('/api/config', async (req, res) => {
       delete updates.server.admin_api_key;
     }
 
-    // Transition (one release): legacy writers still PUT deadbolt_rules /
-    // cascade_rules (flat or map). Fold them into the door-centric shape:
-    // migrate the LEGACY payload against the CURRENT flows so an old
-    // single-door write updates that lock's edge without dropping the other
-    // doors. The legacy keys never reach the file (door_flows is the sole
-    // persisted shape).
-    if (updates.deadbolt_rules !== undefined || updates.cascade_rules !== undefined) {
+    // Transition (one release): external writers may still PUT the legacy
+    // automation keys (deadbolt_rules, cascade_rules, unlock_rules,
+    // doorbell_rules). Fold each into the trigger-shaped door_flows WITHOUT
+    // disturbing the categories it does not own: retract edges, everyone
+    // cascades, group unlocks and doorbell triggers are independent. door_flows
+    // stays the sole persisted shape.
+    const legacyRuleKeys = ['deadbolt_rules', 'cascade_rules', 'unlock_rules', 'doorbell_rules'];
+    if (legacyRuleKeys.some((k) => updates[k] !== undefined)) {
       const locks = current.devices && current.devices.zwave && current.devices.zwave.locks;
-      const normalized = deadboltRules.normalizePutRules(
-        updates.deadbolt_rules,
-        doorFlows.legacyProjection(current.door_flows || {}).deadbolt_rules,
-        locks
-      );
-      const incoming = doorFlows.migrateToFlows(
-        { deadbolt_rules: normalized, cascade_rules: updates.cascade_rules },
-        locks
-      ).flows;
-      const merged = Object.assign({}, current.door_flows);
-      // A legacy deadbolt_rules write repoints each mentioned lock: remove
-      // that lock's old edges, then graft the incoming ones. A legacy cascade
-      // write replaces each mentioned door's cascade.
+      const flows = JSON.parse(JSON.stringify(current.door_flows || {}));
+      const isEntry = (t) => (t.type || 'entry') === 'entry';
+      const everyoneEntry = (door) => {
+        flows[door] = flows[door] || { door_id: null, triggers: [] };
+        if (!Array.isArray(flows[door].triggers)) flows[door].triggers = [];
+        let t = flows[door].triggers.find((x) => isEntry(x) && x.scope == null);
+        if (!t) { t = { type: 'entry', scope: null, actions: { unlock: null, retract: [] } }; flows[door].triggers.push(t); }
+        if (!t.actions) t.actions = { unlock: null, retract: [] };
+        if (!Array.isArray(t.actions.retract)) t.actions.retract = [];
+        return t;
+      };
+
+      // deadbolt_rules -> everyone-entry retract edges (repoint each lock).
       if (updates.deadbolt_rules !== undefined) {
+        const normalized = deadboltRules.normalizePutRules(
+          updates.deadbolt_rules,
+          doorFlows.legacyProjection(current.door_flows || {}).deadbolt_rules,
+          locks
+        );
+        const incoming = doorFlows.migrateToFlows({ deadbolt_rules: normalized }, locks).flows;
         const touchedLocks = new Set(doorFlows.automatedLockIdsFromFlows(incoming));
-        // A cleared trigger ('' -> no edge) must also drop the lock's edges:
-        // collect every lock the normalized legacy payload mentions.
         for (const k of Object.keys(normalized || {})) {
           if (!deadboltRules.FLAT_KEYS.includes(k)) touchedLocks.add(k);
         }
-        for (const door of Object.keys(merged)) {
-          const flow = merged[door];
-          if (!flow || !Array.isArray(flow.retract)) continue;
-          flow.retract = flow.retract.filter((e) => !e || !touchedLocks.has(e.lock_id));
+        // Only the everyone-entry trigger owns the legacy deadbolt_rules retract;
+        // a doorbell or group-scoped retract is a category deadbolt_rules never
+        // expressed, so it must survive an unrelated deadbolt_rules PUT.
+        for (const door of Object.keys(flows)) {
+          for (const t of (flows[door].triggers || [])) {
+            if (isEntry(t) && t.scope == null && t.actions && Array.isArray(t.actions.retract)) {
+              t.actions.retract = t.actions.retract.filter((e) => !e || !touchedLocks.has(e.lock_id));
+            }
+          }
+        }
+        for (const [door, flow] of Object.entries(incoming)) {
+          const t = everyoneEntry(door);
+          if (flow.door_id && !flows[door].door_id) flows[door].door_id = flow.door_id;
+          for (const edge of (flow.retract || [])) t.actions.retract.push(edge);
         }
       }
-      for (const [door, flow] of Object.entries(incoming)) {
-        merged[door] = merged[door] || { door_id: flow.door_id || null, retract: [], cascade: null };
-        for (const edge of flow.retract || []) merged[door].retract.push(edge);
-        if (updates.cascade_rules !== undefined && flow.cascade) merged[door].cascade = flow.cascade;
+
+      // cascade_rules -> everyone-entry unlock action (per mentioned door).
+      if (updates.cascade_rules !== undefined) {
+        const incoming = doorFlows.migrateToFlows({ cascade_rules: updates.cascade_rules }, locks).flows;
+        for (const [door, flow] of Object.entries(incoming)) {
+          if (!flow.cascade || !Array.isArray(flow.cascade.unlock) || !flow.cascade.unlock.length) continue;
+          const t = everyoneEntry(door);
+          if (flow.door_id && !flows[door].door_id) flows[door].door_id = flow.door_id;
+          t.actions.unlock = {
+            doors: [...flow.cascade.unlock],
+            door_ids: Array.isArray(flow.cascade.unlock_ids) ? [...flow.cascade.unlock_ids] : undefined,
+            debounce_seconds: flow.cascade.debounce_seconds == null ? 8 : flow.cascade.debounce_seconds,
+            delay_seconds: 0,
+          };
+        }
       }
-      // Drop doors left with nothing.
-      for (const door of Object.keys(merged)) {
-        const f = merged[door];
-        const hasCascade = f.cascade && Array.isArray(f.cascade.unlock) && f.cascade.unlock.length;
-        if ((!f.retract || !f.retract.length) && !hasCascade) delete merged[door];
+
+      // unlock_rules -> scoped entry triggers (full replace of that category).
+      if (updates.unlock_rules !== undefined) {
+        for (const door of Object.keys(flows)) {
+          flows[door].triggers = (flows[door].triggers || []).filter((t) => !(isEntry(t) && t.scope != null));
+        }
+        const fresh = doorFlows.migrateToTriggers({ unlock_rules: updates.unlock_rules }, locks).flows;
+        for (const [door, flow] of Object.entries(fresh)) {
+          flows[door] = flows[door] || { door_id: flow.door_id || null, triggers: [] };
+          if (!Array.isArray(flows[door].triggers)) flows[door].triggers = [];
+          for (const t of flow.triggers) if (isEntry(t) && t.scope != null) flows[door].triggers.push(t);
+        }
       }
-      updates.door_flows = merged;
-      delete updates.deadbolt_rules;
-      delete updates.cascade_rules;
+
+      // doorbell_rules -> doorbell triggers (full replace of that category).
+      if (updates.doorbell_rules !== undefined) {
+        for (const door of Object.keys(flows)) {
+          flows[door].triggers = (flows[door].triggers || []).filter((t) => (t.type || 'entry') !== 'doorbell');
+        }
+        const fresh = doorFlows.migrateToTriggers({ doorbell_rules: updates.doorbell_rules }, locks).flows;
+        for (const [door, flow] of Object.entries(fresh)) {
+          flows[door] = flows[door] || { door_id: flow.door_id || null, triggers: [] };
+          if (!Array.isArray(flows[door].triggers)) flows[door].triggers = [];
+          for (const t of flow.triggers) if ((t.type || 'entry') === 'doorbell') flows[door].triggers.push(t);
+        }
+      }
+
+      // Drop empty triggers / doors.
+      for (const door of Object.keys(flows)) {
+        flows[door].triggers = (flows[door].triggers || []).filter((t) => {
+          const hasUnlock = t.actions && t.actions.unlock && Array.isArray(t.actions.unlock.doors) && t.actions.unlock.doors.length;
+          const hasRetract = t.actions && Array.isArray(t.actions.retract) && t.actions.retract.length;
+          return hasUnlock || hasRetract;
+        });
+        if (!flows[door].triggers.length) delete flows[door];
+      }
+      updates.door_flows = flows;
+      for (const k of legacyRuleKeys) delete updates[k];
     }
 
     // door_flows is validated and REPLACED whole (deep-merge cannot express
@@ -3155,7 +3309,9 @@ app.put('/api/config', async (req, res) => {
 
     // Deep merge updates (only allow specific safe keys). door_flows is
     // handled with REPLACE semantics below, never deep-merged.
-    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog', 'auto_lock', 'auto_sync', 'devices', 'door_flows', 'alerts', 'setup_wizard'];
+    // unlock_rules / doorbell_rules are NOT here: they are folded into
+    // door_flows above and deleted, so they never deep-merge onto disk.
+    const safeKeys = ['event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog', 'auto_lock', 'auto_sync', 'devices', 'door_flows', 'alerts', 'setup_wizard'];
 
     // recursive merge for plain objects: source values override primitives/arrays
     function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
@@ -3196,6 +3352,8 @@ app.put('/api/config', async (req, res) => {
     // edit) are dropped on every save.
     delete current.deadbolt_rules;
     delete current.cascade_rules;
+    delete current.unlock_rules;
+    delete current.doorbell_rules;
 
     writeConfigFile(current);
     logger.info('Config saved to disk');
@@ -3237,11 +3395,14 @@ function doorFlowWarnings(flows) {
   const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
   const warnings = [];
   for (const [door, flow] of Object.entries(flows || {})) {
-    for (const edge of (flow && Array.isArray(flow.retract) ? flow.retract : [])) {
-      if (!edge || !edge.lock_id) continue;
-      const hw = zwLocks[edge.lock_id] && zwLocks[edge.lock_id].auto_relock;
-      if (edge.after_unlock === 'stay_unlocked' && hw === true) {
-        warnings.push(`"${lockLabel(edge.lock_id)}" has its hardware auto-relock ON, so "stay unlocked" from "${door}" cannot hold it open. Turn off the lock's After-unlock default in Deadbolt Devices to make this stick.`);
+    for (const trig of doorFlows.triggersOf(flow)) {
+      const retract = trig.actions && Array.isArray(trig.actions.retract) ? trig.actions.retract : [];
+      for (const edge of retract) {
+        if (!edge || !edge.lock_id) continue;
+        const hw = zwLocks[edge.lock_id] && zwLocks[edge.lock_id].auto_relock;
+        if (edge.after_unlock === 'stay_unlocked' && hw === true) {
+          warnings.push(`"${lockLabel(edge.lock_id)}" still has its hardware auto-relock on, so "stay unlocked" from "${door}" cannot hold it open yet. The app is turning it off; this clears once the lock confirms.`);
+        }
       }
     }
   }
@@ -3261,15 +3422,18 @@ app.get('/api/door-flows', (req, res) => {
     for (const [door, flow] of Object.entries(flows)) {
       if (!doorSet.has(door)) doorSet.set(door, (flow && flow.door_id) || null);
     }
-    // Annotate per-edge hardware conflicts (computed, never persisted).
+    // Annotate per-edge hardware conflicts (computed, never persisted). The
+    // editor consumes the trigger shape; a flat legacy flow normalizes first.
     const annotated = {};
     for (const [door, flow] of Object.entries(flows)) {
-      annotated[door] = Object.assign({}, flow, {
-        retract: (Array.isArray(flow.retract) ? flow.retract : []).map((e) => Object.assign({}, e, {
+      const triggers = doorFlows.triggersOf(flow).map((trig) => {
+        const retract = (trig.actions && Array.isArray(trig.actions.retract) ? trig.actions.retract : []).map((e) => Object.assign({}, e, {
           hardware_conflict: !!(e && e.after_unlock === 'stay_unlocked'
             && zwLocks[e.lock_id] && zwLocks[e.lock_id].auto_relock === true),
-        })),
+        }));
+        return Object.assign({}, trig, { actions: Object.assign({}, trig.actions, { retract }) });
       });
+      annotated[door] = { door_id: (flow && flow.door_id) || null, triggers };
     }
     res.json({
       doors: [...doorSet.entries()].map(([name, id]) => ({ name, id, discovered: !!(unifiClient && unifiClient.doors && unifiClient.doors.has(name)) }))
@@ -3289,6 +3453,49 @@ app.get('/api/door-flows', (req, res) => {
   }
 });
 
+// Canonicalize one trigger from the editor: drop annotations, fill defaults,
+// keep only the two written after-unlock modes.
+function cleanDoorFlowTrigger(trig) {
+  const type = trig && trig.type === 'doorbell' ? 'doorbell' : 'entry';
+  let scope = null;
+  const rs = trig && trig.scope;
+  if (rs && typeof rs === 'object') {
+    if (rs.any_group === true) scope = { any_group: true };
+    else if (Array.isArray(rs.groups)) {
+      const g = rs.groups.filter((x) => typeof x === 'string' && x.trim());
+      if (g.length) scope = { groups: g };
+    }
+  }
+  const actions = (trig && trig.actions) || {};
+  const retract = (Array.isArray(actions.retract) ? actions.retract : []).map((e) => ({
+    lock_id: e.lock_id,
+    after_unlock: (e.after_unlock === 'relock_after' || e.after_unlock === 'stay_unlocked') ? e.after_unlock
+      : (e.after_unlock === 'lock_default' ? 'lock_default' : 'stay_unlocked'),
+    relock_seconds: e.relock_seconds == null ? null : e.relock_seconds,
+    require_result: e.require_result || 'ACCESS',
+    mirror_unlock: !!e.mirror_unlock,
+    relock_cooldown_seconds: e.relock_cooldown_seconds == null ? 10 : e.relock_cooldown_seconds,
+  })).filter((e) => typeof e.lock_id === 'string' && e.lock_id);
+  let unlock = null;
+  if (actions.unlock && Array.isArray(actions.unlock.doors) && actions.unlock.doors.filter((d) => typeof d === 'string' && d).length) {
+    unlock = {
+      doors: actions.unlock.doors.filter((d) => typeof d === 'string' && d),
+      door_ids: Array.isArray(actions.unlock.door_ids) ? [...actions.unlock.door_ids] : undefined,
+      debounce_seconds: actions.unlock.debounce_seconds == null ? 8 : actions.unlock.debounce_seconds,
+      delay_seconds: actions.unlock.delay_seconds == null ? 0 : actions.unlock.delay_seconds,
+    };
+  }
+  const out = { type, scope, actions: { unlock, retract } };
+  if (type === 'doorbell') {
+    const db = (trig && trig.doorbell) || {};
+    out.doorbell = {
+      reason_code: Number.isFinite(db.reason_code) ? db.reason_code : 107,
+      viewer_to_group: (db.viewer_to_group && typeof db.viewer_to_group === 'object') ? db.viewer_to_group : {},
+    };
+  }
+  return out;
+}
+
 app.put('/api/door-flows', async (req, res) => {
   const body = req.body || {};
   // Accept {flows: {...}} or the bare flows object.
@@ -3297,35 +3504,23 @@ app.put('/api/door-flows', async (req, res) => {
   if (errors.length) {
     return res.status(400).json({ error: errors.join('; ') });
   }
-  // Strip client-side annotations before persisting.
+  // Strip client-side annotations and canonicalize before persisting. The
+  // editor sends the trigger shape; a flat legacy payload normalizes first.
   const clean = {};
   for (const [door, flow] of Object.entries(flows)) {
-    clean[door] = {
-      door_id: flow.door_id || null,
-      retract: (Array.isArray(flow.retract) ? flow.retract : []).map((e) => ({
-        lock_id: e.lock_id,
-        after_unlock: e.after_unlock || 'lock_default',
-        relock_seconds: e.relock_seconds == null ? null : e.relock_seconds,
-        require_result: e.require_result || 'ACCESS',
-        mirror_unlock: !!e.mirror_unlock,
-        relock_cooldown_seconds: e.relock_cooldown_seconds == null ? 10 : e.relock_cooldown_seconds,
-      })),
-      cascade: flow.cascade && Array.isArray(flow.cascade.unlock) && flow.cascade.unlock.length
-        ? {
-          unlock: [...flow.cascade.unlock],
-          unlock_ids: Array.isArray(flow.cascade.unlock_ids) ? [...flow.cascade.unlock_ids] : undefined,
-          debounce_seconds: flow.cascade.debounce_seconds == null ? 8 : flow.cascade.debounce_seconds,
-        }
-        : null,
-    };
-    // Drop a door left with nothing at all.
-    if (!clean[door].retract.length && !clean[door].cascade) delete clean[door];
+    const triggers = doorFlows.triggersOf(flow).map(cleanDoorFlowTrigger).filter((t) => {
+      const hasUnlock = t.actions.unlock && t.actions.unlock.doors.length;
+      return hasUnlock || t.actions.retract.length;
+    });
+    if (triggers.length) clean[door] = { door_id: flow.door_id || null, triggers };
   }
   try {
     const current = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
     current.door_flows = clean;    // REPLACE, never merge
     delete current.deadbolt_rules; // door_flows is the sole persisted shape
     delete current.cascade_rules;
+    delete current.unlock_rules;
+    delete current.doorbell_rules;
     writeConfigFile(current);
     if (configSync) configSync.markConfigApplied();
     logger.info(`Door flows saved (${Object.keys(clean).length} door(s))`);
@@ -3877,10 +4072,12 @@ function startEventSource() {
     }
   } else if (mode === 'websocket') {
     const reconnectSec = config.event_source.websocket?.reconnect_interval_seconds || 5;
+    // Live automation runs off the raw tap (setRawTap -> deadbolt observers),
+    // which sees every event pre-whitelist. This whitelisted callback only
+    // records liveness + the raw log; the rules engine is no longer live.
     unifiClient.connectWebSocket((event) => {
       lastEventTime = Date.now();
       storeRawPayload('websocket', event);
-      rulesEngine.handleEvent(event).catch(err => logger.error(`WebSocket event error: ${err.message}`));
     }, reconnectSec);
   }
 }
@@ -3982,6 +4179,8 @@ async function maybeRebuildDeadboltRules(oldSig) {
   // the Z-Wave connections are never touched by a rules edit.
   buildDeadboltControllers();
   applyEventTaps();
+  // A rules edit may have newly wired a lock; hand its hardware auto-relock off.
+  ensureHardwareAutoRelockOff().catch((e) => logger.warn(`Deadbolt: hardware auto-relock handoff error: ${e.message}`));
   logger.info(`Deadbolt rules updated live (automated: ${deadboltControllers.size}, cascade rules: ${cascadeController ? cascadeController.cascadeRules.length : 0}); lock drivers untouched`);
 }
 
@@ -4001,7 +4200,7 @@ async function reloadServices(newConfig) {
     unifiClient = new UniFiClient(newConfig);
     wireUnifiClientCallbacks(unifiClient);
     resolver = new Resolver(newConfig, unifiClient);
-    rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
+    rulesEngine = new RulesEngine(rulesEngineConfig(newConfig), unifiClient, resolver);
     patchEngineForBroadcast(rulesEngine);
     config = newConfig;
     notifier = new Notifier(config.alerts || {}, { logger }); // pick up alert config changes
@@ -4143,6 +4342,9 @@ async function start() {
     if (_failedInitLocks.size) scheduleDeadboltInitRetry();
   }
   applyEventTaps();
+  // Decision 2: hand the hardware auto-relock off for flow-wired locks so the
+  // app owns relock in software (best-effort; retried on rebuild).
+  ensureHardwareAutoRelockOff().catch((e) => logger.warn(`Deadbolt: hardware auto-relock handoff error: ${e.message}`));
 
   startEventSource();
   startWatchdog();

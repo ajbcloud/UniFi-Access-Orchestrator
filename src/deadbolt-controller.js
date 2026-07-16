@@ -44,7 +44,10 @@
  *     access.data.device.location_update_v2) with data.state.lock
  */
 
+const { scopeMatches } = require('./door-flows');
+
 const REMOTE_PROVIDER = 'REMOTE_THROUGH_UAH';
+const DEFAULT_DOORBELL_REASON_CODE = 107;
 
 function normName(s) {
   return typeof s === 'string' ? s.trim().toLowerCase() : '';
@@ -60,9 +63,14 @@ class DeadboltController {
     this.broadcaster = deps.broadcaster || null;
     this.onAlert = deps.onAlert || (() => {});
     this.now = deps.now || (() => Date.now());
+    // Resolve the acting user's group so a trigger's scope can gate the action.
+    // Absent (older callers/tests) -> every action treats the user as
+    // unresolved, and scope:null (everyone) still fires, so behavior is
+    // unchanged until scoped triggers exist.
+    this.resolveGroup = typeof deps.resolveGroup === 'function' ? deps.resolveGroup : null;
 
     const casc = config.cascade_rules || {};
-    this.cascadeRules = Array.isArray(casc.rules) ? casc.rules : [];
+    this.cascadeRules = (Array.isArray(casc.rules) ? casc.rules : []).map((r) => this._normalizeUnlockRule(r));
     this.orchestratorActorName = normName(config.self_trigger_actor_name || 'Access Orchestrator');
 
     // Door->lock edges. Preferred input: config.edges (door_flows). Legacy
@@ -95,6 +103,7 @@ class DeadboltController {
     this._cascadeLastFired = new Map(); // trigger door (normalized) -> ts
     this._relockTimer = null;       // pending per-edge relock (at most one; last writer wins)
     this._relockEdge = null;        // the edge that armed the pending relock (for logs)
+    this._cascadeTimers = new Set(); // pending delayed cascade unlocks (cleared on destroy)
     this._destroyed = false;
     this.stats = {
       retracts: 0,
@@ -122,6 +131,11 @@ class DeadboltController {
     return {
       trigger_door: edge.trigger_door || null,
       trigger_door_id: edge.trigger_door_id || null,
+      // Which event and who: a missing type is 'entry' and a missing scope is
+      // everyone, so a legacy edge behaves exactly as before.
+      type: edge.type === 'doorbell' ? 'doorbell' : 'entry',
+      scope: edge.scope == null ? null : edge.scope,
+      doorbell: edge.doorbell || null,
       after_unlock: ['lock_default', 'stay_unlocked', 'relock_after'].includes(edge.after_unlock)
         ? edge.after_unlock : 'lock_default',
       relock_seconds: edge.relock_seconds == null ? null : edge.relock_seconds,
@@ -131,10 +145,29 @@ class DeadboltController {
     };
   }
 
+  // A cascade / scoped-unlock rule. A legacy rule ({trigger_door, unlock,
+  // debounce_seconds}) becomes an everyone entry rule with no delay, so the
+  // dedicated cascade controller behaves exactly as it did.
+  _normalizeUnlockRule(r) {
+    const rule = r || {};
+    return {
+      trigger_door: rule.trigger_door || null,
+      trigger_door_id: rule.trigger_door_id || null,
+      type: rule.type === 'doorbell' ? 'doorbell' : 'entry',
+      scope: rule.scope == null ? null : rule.scope,
+      doorbell: rule.doorbell || null,
+      unlock: Array.isArray(rule.unlock) ? rule.unlock : [],
+      debounce_seconds: rule.debounce_seconds == null ? 8 : rule.debounce_seconds,
+      delay_seconds: rule.delay_seconds == null ? 0 : rule.delay_seconds,
+    };
+  }
+
   /** Clear timers and driver listeners. MUST be called before dropping the instance. */
   destroy() {
     this._destroyed = true;
     this._cancelRelock('controller destroyed');
+    for (const t of this._cascadeTimers) clearTimeout(t);
+    this._cascadeTimers.clear();
     if (this.lockDriver && typeof this.lockDriver.removeListener === 'function') {
       this.lockDriver.removeListener('state-change', this._onDriverStateChange);
     }
@@ -146,6 +179,8 @@ class DeadboltController {
     if (!this.enabled || this._destroyed || !raw || typeof raw !== 'object') return;
     const grant = this._parseAccessGrant(raw);
     if (grant) return this._onAccessGrant(grant);
+    const bell = this._parseDoorbell(raw);
+    if (bell) return this._onDoorbell(bell);
     const loc = this._parseLocationUpdate(raw);
     if (loc) return this._onLocationUpdate(loc);
   }
@@ -176,7 +211,8 @@ class DeadboltController {
         doorName,
         doorId,
         direction,
-        actorName: actor.display_name || null,
+        actorId: actor.id || actor.user_id || null,
+        actorName: actor.display_name || actor.name || null,
         credentialProvider: auth.credential_provider || null,
       };
     }
@@ -184,6 +220,64 @@ class DeadboltController {
     // emits alongside access.logs.add for the SAME tap. Handling it too would
     // double-fire retract and carries no direction and a weaker actor field, so
     // we intentionally ignore it and act only on the confirmed access.logs.add.
+    if (type === 'access.logs.insights.add') return null;
+
+    // Top-level webhook shape (event_source api_webhook): a bare
+    // access.door.unlock with data.{location,actor,object}. Retract still needs
+    // the websocket location.update, but the unlock/cascade path works in
+    // webhook mode too now that the controller owns it.
+    if (type === 'access.door.unlock' && raw.data) {
+      const d = raw.data;
+      const actor = d.actor || {};
+      const obj = d.object || {};
+      const loc = d.location || {};
+      return {
+        result: obj.result,
+        doorName: loc.name || null,
+        doorId: loc.id || null,
+        direction: null,
+        actorId: actor.id || actor.user_id || null,
+        actorName: actor.name || actor.display_name || null,
+        credentialProvider: (obj.credential_provider || obj.authentication_type) || null,
+      };
+    }
+
+    // Alarm Manager envelope (event_source alarm_manager): {alarm:{name,triggers}}.
+    if (raw.alarm && this._alarmType(raw) === 'access.door.unlock') {
+      const a = raw.alarm;
+      let actorId = null; let actorName = null;
+      for (const t of (a.triggers || [])) {
+        if (!actorId) actorId = (t.actor && t.actor.id) || t.user_id || t.actor_id || null;
+        if (!actorName) actorName = (t.actor && (t.actor.name || t.actor.display_name)) || t.user_name || null;
+      }
+      if (!actorId) actorId = (a.actor && a.actor.id) || a.user_id || null;
+      if (!actorName) actorName = (a.actor && (a.actor.name || a.actor.display_name)) || a.user_name || null;
+      return {
+        result: null, // alarm envelope carries no clean result; scoped unlocks do not gate on it
+        doorName: a.name || null,
+        doorId: null,
+        direction: null,
+        actorId,
+        actorName,
+        credentialProvider: null,
+      };
+    }
+    return null;
+  }
+
+  // Infer the event type from Alarm Manager trigger keys (doorbell before door,
+  // since "doorbell.completed" contains "door"). Only a key that actually says
+  // UNLOCK counts as a grant: a denial / lockdown / held-open door alarm must
+  // NOT be treated as an unlock (that would fire the cascade on a denial, since
+  // the alarm envelope carries no result to gate on).
+  _alarmType(raw) {
+    for (const t of (raw.alarm && raw.alarm.triggers) || []) {
+      const key = (t.key || '').toLowerCase();
+      if (key.includes('doorbell') || key.includes('ring') || key.includes('intercom')) {
+        return (key.includes('complete') || key.includes('answer')) ? 'access.doorbell.completed' : 'access.doorbell.incoming';
+      }
+      if (key.includes('unlock')) return 'access.door.unlock';
+    }
     return null;
   }
 
@@ -198,6 +292,60 @@ class DeadboltController {
     const state = d.state || {};
     if (!state.lock) return null;
     return { doorName: d.name || d.full_name || null, doorId: d.unique_id || d.id || null, lock: state.lock };
+  }
+
+  // A doorbell answer, from either the top-level webhook shape or an
+  // access.logs.add wrapping access.doorbell.completed (websocket).
+  _parseDoorbell(raw) {
+    const type = raw.event || raw.type || '';
+    if (type === 'access.doorbell.completed') {
+      const data = raw.data || {};
+      const obj = data.object || {};
+      const loc = data.location || {};
+      const actor = data.actor || {};
+      const dev = data.device || {};
+      return {
+        reasonCode: obj.reason_code,
+        doorName: loc.name || null,
+        doorId: loc.id || null,
+        actorId: actor.id || null,
+        actorName: actor.name || actor.display_name || null,
+        deviceName: dev.name || dev.alias || null,
+      };
+    }
+    if (type === 'access.logs.add') {
+      const s = raw.data && raw.data._source;
+      if (!s) return null;
+      const ev = s.event || {};
+      if ((ev.type || '') !== 'access.doorbell.completed') return null;
+      let doorName = null; let doorId = null; let deviceName = null;
+      for (const t of s.target || []) {
+        if (t.type === 'door') { doorName = t.display_name || t.name || doorName; doorId = t.id || doorId; }
+        if (t.type === 'device') { deviceName = t.display_name || t.name || deviceName; }
+      }
+      const actor = s.actor || {};
+      return {
+        reasonCode: ev.reason_code,
+        doorName,
+        doorId,
+        actorId: actor.id || actor.user_id || null,
+        actorName: actor.display_name || actor.name || null,
+        deviceName,
+      };
+    }
+    if (raw.alarm && this._alarmType(raw) === 'access.doorbell.completed') {
+      const a = raw.alarm;
+      const trg = (a.triggers && a.triggers[0]) || {};
+      return {
+        reasonCode: (trg.reason_code != null ? trg.reason_code : DEFAULT_DOORBELL_REASON_CODE),
+        doorName: a.name || null,
+        doorId: null,
+        actorId: (trg.actor && trg.actor.id) || trg.user_id || null,
+        actorName: (trg.actor && (trg.actor.name || trg.actor.display_name)) || trg.user_name || null,
+        deviceName: (a.sources && a.sources[0] && a.sources[0].device) || null,
+      };
+    }
+    return null;
   }
 
   // ---- decisions ---------------------------------------------------------
@@ -221,7 +369,8 @@ class DeadboltController {
     return this._matchDoor(eventName, ruleName);
   }
 
-  /** The first edge matching the event door, or null. */
+  /** The first edge matching the event door, or null. Used by the door-state
+   *  path (lock-on-secured, mirror), which is per-door not per-user. */
   _edgeForEvent(doorName, doorId) {
     for (const edge of this.edges) {
       if (this._matchDoorSpec(doorName, doorId, edge.trigger_door, edge.trigger_door_id)) return edge;
@@ -229,9 +378,45 @@ class DeadboltController {
     return null;
   }
 
+  /**
+   * The first edge of a given type whose door matches, whose gate passes and
+   * whose scope admits the resolved group. `group` is a lazy getter so the
+   * resolver is only consulted when a scoped edge actually needs it.
+   */
+  _matchRetractEdge(type, doorName, doorId, gate, group) {
+    for (const edge of this.edges) {
+      if ((edge.type || 'entry') !== type) continue;
+      if (!this._matchDoorSpec(doorName, doorId, edge.trigger_door, edge.trigger_door_id)) continue;
+      if (!gate(edge)) continue;
+      if (!scopeMatches(edge.scope, group())) continue;
+      return edge;
+    }
+    return null;
+  }
+
   /** Stable per-edge key for door state tracking. */
   _edgeKey(edge) {
     return edge.trigger_door_id ? `id:${edge.trigger_door_id}` : `name:${normName(edge.trigger_door)}`;
+  }
+
+  // A lazy group resolver for one event: consults deps.resolveGroup at most
+  // once, and only when a scoped trigger asks. Unresolved -> null.
+  _groupGetter(ev) {
+    let group; let resolved = false;
+    return () => {
+      if (!resolved) {
+        group = this.resolveGroup
+          ? (this.resolveGroup({ actorId: ev.actorId || null, actorName: ev.actorName || null, deviceName: ev.deviceName || null }) || null)
+          : null;
+        resolved = true;
+      }
+      return group;
+    };
+  }
+
+  _who(ev, group) {
+    const name = ev.actorName || 'user';
+    return group ? `${name} (${group})` : name;
   }
 
   _onAccessGrant(g) {
@@ -242,21 +427,80 @@ class DeadboltController {
     // Exits are not credential-tracked; if a reader ever reports exit, do nothing.
     if (g.direction === 'exit') return;
 
+    const group = this._groupGetter(g);
+
     if (this.lockDriver) {
-      const edge = this._edgeForEvent(g.doorName, g.doorId);
-      // Per-edge result gate: this door's edge decides which grant results
-      // count (legacy default ACCESS carried onto the synthesized edge).
-      if (edge && g.result === edge.require_result) {
-        this._retract(`entry: ${g.actorName || 'user'} at ${g.doorName}`, edge);
+      // Per-edge result gate + scope: this door's entry edge decides which grant
+      // results count and which groups it serves (legacy edges are ACCESS +
+      // everyone, so behavior is unchanged).
+      const edge = this._matchRetractEdge('entry', g.doorName, g.doorId,
+        (e) => g.result === e.require_result, group);
+      if (edge) this._retract(`entry: ${this._who(g, group())} at ${g.doorName}`, edge, { actor: this._who(g, group()), location: g.doorName });
+    }
+    // any_group is a FALLBACK (the migrated default_action's else-if): it fires
+    // only when no group-specific unlock matched this group at this door.
+    const entrySpecificMatched = this._specificGroupMatchedGetter('entry', g, group,
+      () => g.result == null || g.result === this.requireResult);
+    this.cascadeRules.forEach((rule, idx) => {
+      if ((rule.type || 'entry') !== 'entry') return;
+      if (!this._matchDoorSpec(g.doorName, g.doorId, rule.trigger_door, rule.trigger_door_id)) return;
+      // A denied event must never fire an interior unlock, scoped or not.
+      if (g.result != null && g.result !== this.requireResult) return;
+      if (rule.scope && rule.scope.any_group && entrySpecificMatched()) return;
+      if (!scopeMatches(rule.scope, group())) return;
+      if (!this._debounceOk(rule, idx)) return;
+      this._fireCascade(rule, g, group());
+    });
+  }
+
+  // A lazy getter for "did a group-specific unlock rule of this type match the
+  // resolved group at this event's door" (so an any_group fallback rule is
+  // suppressed, matching the old default_action else-if semantics). Consults
+  // the resolver at most once, and only when an any_group rule needs it.
+  _specificGroupMatchedGetter(type, ev, group, gate) {
+    let val; let done = false;
+    return () => {
+      if (!done) {
+        const g0 = group();
+        val = !!g0 && this.cascadeRules.some((r) => (r.type || 'entry') === type
+          && r.scope && Array.isArray(r.scope.groups)
+          && this._matchDoorSpec(ev.doorName, ev.doorId, r.trigger_door, r.trigger_door_id)
+          && (!gate || gate(r))
+          && scopeMatches(r.scope, g0));
+        done = true;
       }
+      return val;
+    };
+  }
+
+  _onDoorbell(d) {
+    // A doorbell answer is admin-initiated; the reason code is the gate (no
+    // self-trigger/exit gating, mirroring the retired rules engine).
+    if (d.reasonCode == null) return;
+    const group = this._groupGetter(d);
+
+    if (this.lockDriver) {
+      const edge = this._matchRetractEdge('doorbell', d.doorName, d.doorId,
+        (e) => this._doorbellReasonOk(e, d.reasonCode), group);
+      if (edge) this._retract(`doorbell: ${this._who(d, group())} at ${d.doorName}`, edge, { actor: this._who(d, group()), location: d.doorName });
     }
-    if (g.result === this.requireResult) {
-      this.cascadeRules.forEach((rule, idx) => {
-        if (this._matchDoorSpec(g.doorName, g.doorId, rule.trigger_door, rule.trigger_door_id) && this._debounceOk(rule, idx)) {
-          this._cascade(rule, g);
-        }
-      });
-    }
+    const bellSpecificMatched = this._specificGroupMatchedGetter('doorbell', d, group,
+      (r) => this._doorbellReasonOk(r, d.reasonCode));
+    this.cascadeRules.forEach((rule, idx) => {
+      if ((rule.type || 'entry') !== 'doorbell') return;
+      if (!this._matchDoorSpec(d.doorName, d.doorId, rule.trigger_door, rule.trigger_door_id)) return;
+      if (!this._doorbellReasonOk(rule, d.reasonCode)) return;
+      if (rule.scope && rule.scope.any_group && bellSpecificMatched()) return;
+      if (!scopeMatches(rule.scope, group())) return;
+      if (!this._debounceOk(rule, idx)) return;
+      this._fireCascade(rule, d, group());
+    });
+  }
+
+  _doorbellReasonOk(spec, reasonCode) {
+    const want = (spec.doorbell && Number.isFinite(spec.doorbell.reason_code))
+      ? spec.doorbell.reason_code : DEFAULT_DOORBELL_REASON_CODE;
+    return reasonCode === want;
   }
 
   _onLocationUpdate(l) {
@@ -352,7 +596,7 @@ class DeadboltController {
 
   // ---- actions (fire-and-forget so ingestion never blocks) ---------------
 
-  _retract(reason, edge) {
+  _retract(reason, edge, ctx) {
     this._lastRetractAt = this.now(); // start the re-lock cooldown window
     if (edge) this._armAfterUnlock(edge, reason);
     Promise.resolve()
@@ -360,17 +604,17 @@ class DeadboltController {
       .then((r) => {
         if (r && r.success) {
           this.stats.retracts++;
-          this._record('retract', true, reason);
+          this._record('retract', true, reason, ctx);
         } else {
           this.stats.retracts_failed++;
-          this._record('retract', false, reason);
+          this._record('retract', false, reason, ctx);
           // A failed retract blocks entry: higher severity.
           this.onAlert({ type: 'deadbolt_retract_failed', reason, state: r && r.boltState });
         }
       })
       .catch((err) => {
         this.stats.retracts_failed++;
-        this._record('retract', false, `${reason} (${err.message})`);
+        this._record('retract', false, `${reason} (${err.message})`, ctx);
         this.onAlert({ type: 'deadbolt_retract_failed', reason, error: err.message });
       });
   }
@@ -396,7 +640,25 @@ class DeadboltController {
       });
   }
 
-  _cascade(rule, grant) {
+  // Fire a cascade rule, honoring its optional delay. The delay timer is
+  // tracked so destroy() can cancel a pending unlock (no leak, no double fire
+  // after a rules reload).
+  _fireCascade(rule, grant, group) {
+    const ctx = { actor: this._who(grant, group), location: grant.doorName };
+    const delayMs = (rule.delay_seconds || 0) * 1000;
+    if (delayMs > 0) {
+      const t = setTimeout(() => {
+        this._cascadeTimers.delete(t);
+        if (!this._destroyed) this._cascade(rule, grant, ctx);
+      }, delayMs);
+      if (typeof t.unref === 'function') t.unref();
+      this._cascadeTimers.add(t);
+    } else {
+      this._cascade(rule, grant, ctx);
+    }
+  }
+
+  _cascade(rule, grant, ctx) {
     const doors = Array.isArray(rule.unlock) ? rule.unlock : [];
     const client = this._getUnifi();
     for (const doorName of doors) {
@@ -407,28 +669,28 @@ class DeadboltController {
         .then((r) => {
           if (r && r.success) {
             this.stats.cascades++;
-            this._record('cascade', true, `${grant.doorName} -> ${doorName}`);
+            this._record('cascade', true, `${grant.doorName} -> ${doorName}`, ctx);
           } else {
             this.stats.cascades_failed++;
-            this._record('cascade', false, `${grant.doorName} -> ${doorName}`);
+            this._record('cascade', false, `${grant.doorName} -> ${doorName}`, ctx);
             this.onAlert({ type: 'cascade_failed', door: doorName, error: r && r.error });
           }
         })
         .catch((err) => {
           this.stats.cascades_failed++;
-          this._record('cascade', false, `${doorName} (${err.message})`);
+          this._record('cascade', false, `${doorName} (${err.message})`, ctx);
           this.onAlert({ type: 'cascade_failed', door: doorName, error: err.message });
         });
     }
   }
 
-  _record(action, success, detail) {
+  _record(action, success, detail, ctx) {
     this.stats.last_action = { action, success, detail, time: new Date().toISOString() };
     if (this.broadcaster) {
       this.broadcaster({
         type: `deadbolt.${action}`,
-        actor: 'Deadbolt Controller',
-        location: (this.edges[0] && this.edges[0].trigger_door) || '',
+        actor: (ctx && ctx.actor) || 'Deadbolt Controller',
+        location: (ctx && ctx.location) || (this.edges[0] && this.edges[0].trigger_door) || '',
         action: `${action}${success ? ' ok' : ' FAILED'}: ${detail}`,
         success,
       });
