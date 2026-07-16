@@ -559,6 +559,45 @@ body {
 .event-filters select, .event-filters input { font-size: 12px; padding: 5px 8px; }
 .event-filters input { min-width: 160px; }
 
+/* Door flow stepped builder: 1 Door, 2 When, 3 Do this. Chips and per-action
+   cards, one primary neon pop (the step numbers and Save), accent green links. */
+.df-step { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 8px; }
+.df-step-num { flex: none; width: 22px; height: 22px; border-radius: 999px;
+  background: var(--neon); color: var(--on-neon); font-size: 12px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; }
+.df-step-label { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.df-step-hint { font-size: 12px; color: var(--text-muted); }
+.df-doorpill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px;
+  border-radius: 999px; border: 1px solid var(--border); font-size: 13px; font-weight: 600;
+  color: var(--text-primary); }
+.df-trigger { position: relative; border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 16px; margin: 10px 0; background: var(--bg-primary); }
+.df-inline { width: auto; display: inline-block; padding: 6px 10px; font-size: 12px;
+  border-radius: 999px; }
+select.df-inline { padding-right: 24px; }
+.df-scope { background: var(--accent-dim); color: var(--accent); border-color: var(--accent);
+  font-weight: 600; }
+.df-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.df-action-card { border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px; background: var(--bg-card); }
+.df-action-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.df-action-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.df-action-spacer { flex: 1 1 auto; }
+.df-chiprow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px;
+  color: var(--text-muted); margin-top: 8px; }
+.df-divider { border: 0; border-top: 1px dashed var(--border); margin: 10px 0; }
+.df-addrow { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.df-add { flex: 1 1 160px; border: 1px dashed var(--border); border-radius: var(--radius);
+  background: transparent; color: var(--accent); font-size: 13px; font-weight: 600;
+  font-family: var(--font); padding: 12px; cursor: pointer; text-align: center; }
+.df-add:hover { border-color: var(--accent); background: var(--accent-dim); }
+.df-note { display: flex; align-items: flex-start; gap: 6px; font-size: 12px;
+  color: var(--text-muted); margin-top: 12px; }
+.df-unlock-chip { position: relative; user-select: none; }
+.df-unlock-chip:has(input:checked) { background: var(--accent); color: var(--on-accent);
+  border-color: var(--accent); }
+.df-unlock-chip:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* Event log container */
 .event-log {
   max-height: 600px;
@@ -1348,6 +1387,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <button class="tab" role="tab" data-page="events" aria-selected="false" tabindex="-1">Live Events</button>
   <button class="tab" role="tab" data-page="config" aria-selected="false" tabindex="-1">Automations</button>
   <button class="tab" role="tab" data-page="keypad" aria-selected="false" tabindex="-1">Keypad Users</button>
+  <button class="tab" role="tab" data-page="deadbolt" aria-selected="false" tabindex="-1">Deadbolt Devices</button>
   <button class="tab" role="tab" data-page="designer" aria-selected="false" tabindex="-1">Visual Designer</button>
   <button class="tab" role="tab" data-page="settings" aria-selected="false" tabindex="-1">Settings</button>
   <button class="tab" role="tab" data-page="tools" aria-selected="false" tabindex="-1">Test Tools</button>
@@ -1689,13 +1729,6 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <div class="config-body" id="configDoorFlows"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
 
-    <div class="config-section">
-      <div class="config-header">
-        Deadbolt Devices (Z-Wave)
-        <button class="btn btn-sm btn-secondary" onclick="loadSerialPorts()">Refresh Ports</button>
-      </div>
-      <div class="config-body" id="configZwave"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
-    </div>
   </div>
 
   <!-- KEYPAD USERS -->
@@ -1709,6 +1742,20 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     </div>
     <div class="config-section">
       <div class="config-body" id="kuPanel"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
+    </div>
+  </div>
+
+  <!-- DEADBOLT DEVICES -->
+  <div id="deadbolt" class="page">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+      <div>
+        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Deadbolt Devices (Z-Wave)</div>
+        <div style="font-size:12px;color:var(--text-muted)">Pair and manage the Z-Wave smart deadbolts this app controls. Door flows on the Automations tab decide when they retract.</div>
+      </div>
+      <button class="btn btn-sm btn-secondary" onclick="loadSerialPorts()">Refresh Ports</button>
+    </div>
+    <div class="config-section">
+      <div class="config-body" id="configZwave"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
   </div>
 
@@ -2050,6 +2097,7 @@ function activateTab(tabEl) {
   if (tabEl.dataset.page === 'settings') { loadSettings(); loadBackups(); }
   if (tabEl.dataset.page === 'designer' && window.openDesigner) window.openDesigner();
   if (tabEl.dataset.page === 'keypad') renderKeypadUsers();
+  if (tabEl.dataset.page === 'deadbolt') renderDeadboltDevices();
 }
 window.activateTab = activateTab;
 
@@ -3744,7 +3792,7 @@ async function renderKeypadUsers(force) {
     const pairingActive = !!(devices && devices.zwave && devices.zwave.pairing_active);
     const html = buildKeypadUsersPanel(agg, usersData?.users || [], pairingActive);
     el.innerHTML = html
-      || emptyStateHtml('No deadbolt with a keypad is paired yet. Pair one under Automations → Deadbolt Devices, then manage PINs here.', '🔢');
+      || emptyStateHtml('No deadbolt with a keypad is paired yet. Pair one on the Deadbolt Devices tab, then manage PINs here.', '🔢');
   } catch (e) {
     el.innerHTML = `<div style="font-size:12px;color:var(--text-muted)">Could not load keypad users: ${escapeHtml(e.message)}</div>`;
   }
@@ -4199,39 +4247,43 @@ function buildRetractEdgeRow(door, tIdx, edge, eIdx, locks) {
   const sfx = `${cssId(door)}_${tIdx}_${eIdx}`;
   const doorArg = escapeHtml(JSON.stringify(String(door)));
   const after = edge.after_unlock === 'relock_after' ? 'relock_after' : 'stay_unlocked';
-  const opt = (v, label) => `<option value="${v}"${after === v ? ' selected' : ''}>${label}</option>`;
   const relockSecs = edge.relock_seconds == null ? 30 : edge.relock_seconds;
   const ghost = lock && !lock.paired && !lock.bound
     ? ` <span class="badge warning" title="This lock is saved but not paired right now; the retract resumes when it is paired again.">not paired</span>`
     : '';
   const conflict = edge.hardware_conflict
-    ? `<div class="notice notice-warn" style="margin-top:6px">This lock's own hardware auto-relock is still on, so it re-locks itself. The app is turning it off; this clears once the lock confirms.</div>`
+    ? `<div class="notice notice-warn" style="margin-top:8px">This lock's own hardware auto-relock is still on, so it re-locks itself. The app is turning it off; this clears once the lock confirms.</div>`
     : '';
-  return `<div style="padding:8px 0;border-bottom:1px dashed var(--border)">
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px">
-      <span style="min-width:170px">Retract <strong>${escapeHtml(lockName)}</strong>${ghost}</span>
-      <span style="color:var(--text-muted)">after unlock</span>
-      <select id="dfAfter_${sfx}" style="font-size:12px;padding:5px" onchange="onAfterUnlockChange(${doorArg}, ${tIdx}, ${eIdx})" title="What the app does with this deadbolt after this door retracts it. Another door can treat the same deadbolt differently.">
-        ${opt('stay_unlocked', 'stay unlocked')}
-        ${opt('relock_after', 'relock after')}
-      </select>
-      <span id="dfRelockWrap_${sfx}" style="${after === 'relock_after' ? '' : 'display:none'}">
-        <input type="number" id="dfRelockSecs_${sfx}" value="${escapeHtml(relockSecs)}" min="5" max="3600" style="width:70px;font-size:12px;padding:5px"> seconds
-      </span>
+  const chip = (v, label) => `<button type="button" class="chip${after === v ? ' active' : ''}" data-df-after="${v}" onclick="setAfterUnlock(${doorArg}, ${tIdx}, ${eIdx}, '${v}')" title="What the app does with this deadbolt after it retracts. Another door can treat the same deadbolt differently.">${label}</button>`;
+  return `<div class="df-action-card" data-df-action="retract">
+    <div class="df-action-head">
+      <span aria-hidden="true">&#128274;</span>
+      <span class="df-action-title">Retract deadbolt</span>
+      <span class="df-doorpill">${escapeHtml(lockName)}${ghost}</span>
+      <span class="df-action-spacer"></span>
       <button class="btn btn-sm btn-secondary" onclick="removeRetractEdge(${doorArg}, ${tIdx}, ${eIdx})">Remove</button>
     </div>
     ${conflict}
-    <details style="margin-top:6px">
-      <summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">Advanced</summary>
-      <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:12px;margin-top:6px">
+    <div class="df-chiprow" id="dfAfterRow_${sfx}">
+      <span>after unlock</span>
+      ${chip('stay_unlocked', 'stay unlocked')}
+      ${chip('relock_after', 'relock after')}
+      <span id="dfRelockWrap_${sfx}" style="${after === 'relock_after' ? '' : 'display:none'}">
+        <input type="number" id="dfRelockSecs_${sfx}" value="${escapeHtml(relockSecs)}" min="5" max="3600" style="width:70px;font-size:12px;padding:5px"> seconds
+      </span>
+    </div>
+    <hr class="df-divider">
+    <details>
+      <summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">advanced</summary>
+      <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:12px;margin-top:8px">
         <label style="display:flex;align-items:center;gap:6px" title="Only entry events whose result matches trigger the retract. ACCESS is the normal granted-entry result.">
-          Entry result <input type="text" id="dfReq_${sfx}" value="${escapeHtml(edge.require_result || 'ACCESS')}" style="width:90px;font-size:12px;padding:5px">
+          require result <input type="text" id="dfReq_${sfx}" value="${escapeHtml(edge.require_result || 'ACCESS')}" style="width:110px;font-size:12px;padding:5px">
         </label>
         <label style="display:flex;align-items:center;gap:6px" title="Also retract when UniFi reports this door unlocked outside an entry (a schedule or a manual unlock), mirroring the door state onto the deadbolt.">
-          <input type="checkbox" id="dfMirror_${sfx}"${edge.mirror_unlock ? ' checked' : ''}> Mirror door unlocks
+          <input type="checkbox" id="dfMirror_${sfx}"${edge.mirror_unlock ? ' checked' : ''}> mirror door unlocks
         </label>
         <label style="display:flex;align-items:center;gap:6px" title="After a retract, ignore the door re-securing for this many seconds so a normal entry cannot immediately re-throw the bolt.">
-          Relock cooldown <input type="number" id="dfCooldown_${sfx}" value="${escapeHtml(edge.relock_cooldown_seconds == null ? 10 : edge.relock_cooldown_seconds)}" min="0" max="600" style="width:70px;font-size:12px;padding:5px"> s
+          relock cooldown <input type="number" id="dfCooldown_${sfx}" value="${escapeHtml(edge.relock_cooldown_seconds == null ? 10 : edge.relock_cooldown_seconds)}" min="0" max="600" style="width:70px;font-size:12px;padding:5px"> s
         </label>
       </div>
     </details>
@@ -4242,31 +4294,36 @@ function buildRetractEdgeRow(door, tIdx, edge, eIdx, locks) {
 // debounce and delay. Offered only when the site has 2+ doors. Pure builder.
 function buildUnlockAction(door, tIdx, unlock, doors) {
   const others = (doors || []).filter((d) => d.name !== door);
-  if (!others.length) return '';
+  if (!others.length || !unlock) return ''; // only shown once added as an action
   const cssD = cssId(door);
-  const sel = new Set((unlock && Array.isArray(unlock.doors)) ? unlock.doors : []);
-  const checks = others.map((d) =>
-    `<label style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:12px">
-      <input type="checkbox" class="df-unlock-door" data-df-door="${cssD}" data-df-trig="${tIdx}" value="${escapeHtml(d.name)}"${sel.has(d.name) ? ' checked' : ''}> ${escapeHtml(d.name)}
-    </label>`).join('');
-  const deb = unlock && unlock.debounce_seconds != null ? unlock.debounce_seconds : 8;
-  const delay = unlock && unlock.delay_seconds != null ? unlock.delay_seconds : 0;
-  return `<div style="margin-top:10px">
-    <div style="font-size:12px;font-weight:600;margin-bottom:2px">Unlock other doors</div>
-    <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">Momentarily unlocks these UniFi doors, a UniFi unlock only, never a lock command.</div>
-    <div>${checks}</div>
-    <div style="font-size:12px;margin-top:6px;display:flex;gap:16px;flex-wrap:wrap">
+  const doorArg = escapeHtml(JSON.stringify(String(door)));
+  const sel = new Set(Array.isArray(unlock.doors) ? unlock.doors : []);
+  const chips = others.map((d) =>
+    `<label class="chip df-unlock-chip"><input type="checkbox" class="df-unlock-door" data-df-door="${cssD}" data-df-trig="${tIdx}" value="${escapeHtml(d.name)}"${sel.has(d.name) ? ' checked' : ''} style="position:absolute;opacity:0;width:1px;height:1px"> ${escapeHtml(d.name)}</label>`).join('');
+  const deb = unlock.debounce_seconds != null ? unlock.debounce_seconds : 8;
+  const delay = unlock.delay_seconds != null ? unlock.delay_seconds : 0;
+  return `<div class="df-action-card" data-df-action="unlock">
+    <div class="df-action-head">
+      <span aria-hidden="true">&#9193;</span>
+      <span class="df-action-title">Unlock other doors</span>
+      <span class="df-action-spacer"></span>
+      <button class="btn btn-sm btn-secondary" onclick="removeUnlockAction(${doorArg}, ${tIdx})">Remove</button>
+    </div>
+    <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Momentarily unlocks these UniFi doors, a UniFi unlock only, never a lock command.</div>
+    <div class="df-chiprow">${chips}</div>
+    <div class="df-chiprow">
       <label style="display:inline-flex;align-items:center;gap:6px" title="Ignore repeat triggers for this many seconds so one person twice does not fire it twice.">
-        Debounce <input type="number" id="dfDebounce_${cssD}_${tIdx}" value="${escapeHtml(deb)}" min="0" max="600" style="width:70px;font-size:12px;padding:5px"> seconds
+        debounce <input type="number" id="dfDebounce_${cssD}_${tIdx}" value="${escapeHtml(deb)}" min="0" max="600" style="width:70px;font-size:12px;padding:5px"> seconds
       </label>
       <label style="display:inline-flex;align-items:center;gap:6px" title="Wait this many seconds before unlocking the other doors.">
-        Delay <input type="number" id="dfDelay_${cssD}_${tIdx}" value="${escapeHtml(delay)}" min="0" max="600" style="width:70px;font-size:12px;padding:5px"> seconds
+        delay <input type="number" id="dfDelay_${cssD}_${tIdx}" value="${escapeHtml(delay)}" min="0" max="600" style="width:70px;font-size:12px;padding:5px"> seconds
       </label>
     </div>
   </div>`;
 }
 
-// One trigger block: the "when" (scope + type) and its actions (retract + unlock).
+// One trigger block: step 2 "When" (type + scope) and step 3 "Do this" (the
+// action cards + an add-action chooser). Pure builder.
 function buildTriggerBlock(door, tIdx, trigger, data) {
   const doors = (data && data.doors) || [];
   const locks = (data && data.locks) || [];
@@ -4275,7 +4332,10 @@ function buildTriggerBlock(door, tIdx, trigger, data) {
   const type = trigger.type === 'doorbell' ? 'doorbell' : 'entry';
   const groups = _dfGroups();
   const sfx2 = `${cssD}_${tIdx}`;
-  const edges = (trigger.actions && Array.isArray(trigger.actions.retract)) ? trigger.actions.retract : [];
+  const actions = trigger.actions || {};
+  const edges = Array.isArray(actions.retract) ? actions.retract : [];
+  const hasUnlock = !!actions.unlock;
+  const others = doors.filter((d) => d.name !== door);
   const usableLocks = locks.filter((l) => l.paired || l.bound);
   const freeLocks = usableLocks.filter((l) => !edges.some((e) => e && e.lock_id === l.lock_id));
 
@@ -4288,51 +4348,69 @@ function buildTriggerBlock(door, tIdx, trigger, data) {
     opts += opt('*', 'any group');
     for (const g of groups) opts += opt('g:' + g, g);
     if (cur.slice(0, 2) === 'g:' && !groups.includes(cur.slice(2))) opts += opt(cur, cur.slice(2));
-    scopeControl = `<select id="dfScope_${sfx2}" class="df-scope" data-df-door="${cssD}" data-df-trig="${tIdx}" style="font-size:12px;padding:5px">${opts}</select>`;
+    scopeControl = `<select id="dfScope_${sfx2}" class="df-scope df-inline" data-df-door="${cssD}" data-df-trig="${tIdx}">${opts}</select>`;
   }
+  const typeChip = `<span class="chip active" style="cursor:default">${type === 'doorbell' ? 'doorbell' : 'tap in'}</span>`;
   const when = type === 'doorbell'
-    ? `<div style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;flex-wrap:wrap">When someone rings the doorbell${groups.length ? ` and ${scopeControl} answers` : ''}</div>`
-    : `<div style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;flex-wrap:wrap">When ${groups.length ? scopeControl : 'someone'} enters</div>`;
+    ? `<span class="df-step-hint">when someone rings the doorbell</span>${groups.length ? `<span class="df-step-hint">and</span>${scopeControl}<span class="df-step-hint">answers</span>` : ''}`
+    : `<span class="df-step-hint">when</span>${groups.length ? scopeControl : '<span class="df-step-hint">someone</span>'}<span class="df-step-hint">taps in</span>`;
 
-  const rows = edges.map((e, i) => buildRetractEdgeRow(door, tIdx, e, i, locks)).join('');
-  let addRow;
-  if (freeLocks.length) {
-    addRow = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
-      <select id="dfAddLock_${sfx2}" style="min-width:200px;font-size:12px;padding:6px">
-        ${freeLocks.map((l) => `<option value="${escapeHtml(l.lock_id)}">${escapeHtml(l.name || l.lock_id)}</option>`).join('')}
-      </select>
-      <button class="btn btn-sm btn-secondary" onclick="addRetractEdge(${doorArg}, ${tIdx})">Add deadbolt</button>
-    </div>`;
-  } else if (!usableLocks.length && !edges.length) {
-    addRow = `<div style="font-size:12px;color:var(--text-muted);margin-top:6px">No deadbolt is paired yet. Pair one under Deadbolt Devices below to retract it from this door.</div>`;
-  } else {
-    addRow = '';
+  const retractCards = edges.map((e, i) => buildRetractEdgeRow(door, tIdx, e, i, locks)).join('');
+  const unlockCard = buildUnlockAction(door, tIdx, actions.unlock, doors);
+
+  const canAddRetract = freeLocks.length > 0;
+  const canAddUnlock = others.length > 0 && !hasUnlock;
+  let addAction = '';
+  if (canAddRetract || canAddUnlock) {
+    const bits = [];
+    if (canAddRetract) {
+      bits.push(`<span style="display:inline-flex;gap:6px;align-items:center">
+        <select id="dfAddLock_${sfx2}" class="df-inline" style="min-width:160px">
+          ${freeLocks.map((l) => `<option value="${escapeHtml(l.lock_id)}">${escapeHtml(l.name || l.lock_id)}</option>`).join('')}
+        </select>
+        <button class="btn btn-sm btn-secondary" onclick="addRetractEdge(${doorArg}, ${tIdx})">retract this deadbolt</button>
+      </span>`);
+    }
+    if (canAddUnlock) {
+      bits.push(`<button class="btn btn-sm btn-secondary" onclick="addUnlockAction(${doorArg}, ${tIdx})">unlock other doors</button>`);
+    }
+    addAction = `<button type="button" class="df-add" onclick="toggleAddAction(${doorArg}, ${tIdx})">+ add action</button>
+      <div id="dfAddMenu_${sfx2}" class="df-action-card" style="display:none;margin-top:8px">
+        <div class="df-chiprow" style="margin-top:0">${bits.join('')}</div>
+      </div>`;
   }
-  const retract = `<div style="margin-top:8px">
-    <div style="font-size:12px;font-weight:600;margin-bottom:2px">Retract deadbolts</div>
-    <div style="font-size:12px;color:var(--text-muted);margin-bottom:2px">A retract sends a real Z-Wave unlock command to the bolt.</div>
-    ${rows}
-    ${addRow}
-  </div>`;
-  const unlock = buildUnlockAction(door, tIdx, trigger.actions && trigger.actions.unlock, doors);
+  // When no deadbolt is paired, say so (retract needs a paired bolt) even if an
+  // unlock-other-doors action is still available above.
+  const pairHint = (!usableLocks.length && !edges.length)
+    ? `<div class="df-note"><span aria-hidden="true">&#128274;</span><span>No deadbolt is paired yet. Pair one on the <a href="#" onclick="openDeadboltTab();return false;" style="color:var(--accent)">Deadbolt Devices tab</a> to retract it from this door.</span></div>`
+    : '';
 
   let doorbellAdvanced = '';
   if (type === 'doorbell') {
     const reason = (trigger.doorbell && Number.isFinite(trigger.doorbell.reason_code)) ? trigger.doorbell.reason_code : 107;
-    doorbellAdvanced = `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">Advanced</summary>
-      <div style="font-size:12px;margin-top:6px"><label style="display:inline-flex;align-items:center;gap:6px" title="The doorbell reason code that counts as answered. 107 is admin unlocked the door.">
-        Reason code <input type="number" id="dfReason_${sfx2}" value="${escapeHtml(reason)}" min="0" max="999" style="width:80px;font-size:12px;padding:5px">
+    doorbellAdvanced = `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">advanced</summary>
+      <div style="font-size:12px;margin-top:8px"><label style="display:inline-flex;align-items:center;gap:6px" title="The doorbell reason code that counts as answered. 107 is admin unlocked the door.">
+        reason code <input type="number" id="dfReason_${sfx2}" value="${escapeHtml(reason)}" min="0" max="999" style="width:80px;font-size:12px;padding:5px">
       </label></div>
     </details>`;
   }
 
-  return `<div class="df-trigger" data-df-door="${cssD}" data-df-trig="${tIdx}" data-df-type="${type}" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+  return `<div class="df-trigger" data-df-door="${cssD}" data-df-trig="${tIdx}" data-df-type="${type}">
+    <div class="df-step" style="margin-top:0">
+      <span class="df-step-num">2</span>
+      <span class="df-step-label">When</span>
+      ${typeChip}
       ${when}
+      <span class="df-action-spacer"></span>
       <button class="btn btn-sm btn-secondary" onclick="removeTrigger(${doorArg}, ${tIdx})" title="Remove this trigger">Remove trigger</button>
     </div>
-    ${retract}
-    ${unlock}
+    <div class="df-step">
+      <span class="df-step-num">3</span>
+      <span class="df-step-label">Do this</span>
+    </div>
+    <div class="df-actions">${retractCards}${unlockCard}</div>
+    ${addAction}
+    ${pairHint}
     ${doorbellAdvanced}
   </div>`;
 }
@@ -4361,23 +4439,29 @@ function buildDoorFlowCard(door, flow, data) {
 
   const blocks = triggers.map((t, i) => buildTriggerBlock(door, i, t, data)).join('');
   const gate = lockSet.size
-    ? `<div style="font-size:12px;color:var(--text-muted);margin-top:8px">Keypad PINs on ${lockSet.size > 1 ? 'these deadbolts' : 'this deadbolt'} follow UniFi access to <strong>${escapeHtml(door)}</strong>. <a href="#" onclick="openKeypadTab();return false;" style="color:var(--accent)">Manage keypad users</a></div>`
+    ? `<div class="df-note"><span aria-hidden="true">&#128273;</span><span>Keypad PINs on ${lockSet.size > 1 ? 'these deadbolts' : 'this deadbolt'} follow UniFi access to <strong>${escapeHtml(door)}</strong>. <a href="#" onclick="openKeypadTab();return false;" style="color:var(--accent)">Manage keypad users</a></span></div>`
     : '';
+  const hasEntry = triggers.some((t) => t.type !== 'doorbell');
   const hasDoorbell = triggers.some((t) => t.type === 'doorbell');
-  const addTriggerBtn = `<button class="btn btn-sm btn-secondary" style="margin-top:10px" onclick="addTrigger(${doorArg})">${hasDoorbell ? 'add another doorbell trigger' : 'add doorbell trigger'}</button>`;
+  const addBtns = [];
+  if (!hasDoorbell) addBtns.push(`<button type="button" class="df-add" onclick="addTrigger(${doorArg}, 'doorbell')">+ add doorbell trigger</button>`);
+  if (!hasEntry) addBtns.push(`<button type="button" class="df-add" onclick="addTrigger(${doorArg}, 'entry')">+ add tap in trigger</button>`);
+  const addTriggerRow = addBtns.length ? `<div class="df-addrow">${addBtns.join('')}</div>` : '';
 
-  return `<div class="rule-card" id="dfCard_${cssD}" style="margin-bottom:10px">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-      <div style="font-size:13px;font-weight:600">${escapeHtml(door)}${chip}${undiscovered}</div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <span data-dirty-label style="display:none;font-size:11px;color:var(--text-muted)">Unsaved changes</span>
-        <button class="btn btn-sm btn-primary" data-df-save onclick="saveDoorFlow(${doorArg})">Save</button>
-        <button class="btn btn-sm btn-secondary" onclick="removeDoorFlow(${doorArg})">Remove Flow</button>
-      </div>
+  return `<div class="rule-card" id="dfCard_${cssD}" style="margin-bottom:12px">
+    <div class="df-step" style="margin-top:0">
+      <span class="df-step-num">1</span>
+      <span class="df-step-label">Door</span>
+      <span class="df-doorpill"><span aria-hidden="true">&#128682;</span> ${escapeHtml(door)}</span>
+      ${chip}${undiscovered}
+      <span class="df-action-spacer"></span>
+      <span data-dirty-label style="display:none;font-size:11px;color:var(--text-muted)">Unsaved changes</span>
+      <button class="btn btn-sm btn-primary" data-df-save onclick="saveDoorFlow(${doorArg})">Save</button>
+      <button class="btn btn-sm btn-secondary" onclick="removeDoorFlow(${doorArg})">Remove Flow</button>
     </div>
     ${blocks}
     ${gate}
-    ${addTriggerBtn}
+    ${addTriggerRow}
   </div>`;
 }
 
@@ -4502,9 +4586,10 @@ function collectDoorFlowCard(door) {
     // retract edges
     (Array.isArray(trig.actions.retract) ? trig.actions.retract : []).forEach((edge, eIdx) => {
       const sfx = `${cssD}_${tIdx}_${eIdx}`;
-      const after = document.getElementById(`dfAfter_${sfx}`);
-      if (!after) return; // row not rendered
-      edge.after_unlock = after.value === 'relock_after' ? 'relock_after' : 'stay_unlocked';
+      const afterRow = document.getElementById(`dfAfterRow_${sfx}`);
+      if (!afterRow) return; // row not rendered
+      const activeChip = afterRow.querySelector('.chip.active[data-df-after]');
+      edge.after_unlock = (activeChip && activeChip.dataset.dfAfter === 'relock_after') ? 'relock_after' : 'stay_unlocked';
       const secs = parseInt(document.getElementById(`dfRelockSecs_${sfx}`)?.value, 10);
       if (Number.isFinite(secs)) edge.relock_seconds = secs;
       if (edge.after_unlock === 'relock_after' && !(Number.isFinite(edge.relock_seconds) && edge.relock_seconds > 0)) {
@@ -4518,14 +4603,16 @@ function collectDoorFlowCard(door) {
       if (Number.isFinite(cd)) edge.relock_cooldown_seconds = cd;
     });
     // unlock action (other doors)
+    // The unlock card renders only when the trigger already has an unlock
+    // action, so its checkboxes present means "keep this action". Preserve the
+    // object even with no doors picked; the server drops an empty unlock on
+    // save, and "Remove" is the explicit way to delete the action.
     const checks = document.querySelectorAll(`input.df-unlock-door[data-df-door="${cssD}"][data-df-trig="${tIdx}"]`);
     if (checks.length) {
       const doorsSel = Array.from(checks).filter((c) => c.checked).map((c) => c.value);
       const deb = parseInt(document.getElementById(`dfDebounce_${cssD}_${tIdx}`)?.value, 10);
       const delay = parseInt(document.getElementById(`dfDelay_${cssD}_${tIdx}`)?.value, 10);
-      trig.actions.unlock = doorsSel.length
-        ? { doors: doorsSel, debounce_seconds: Number.isFinite(deb) ? deb : 8, delay_seconds: Number.isFinite(delay) ? delay : 0 }
-        : null;
+      trig.actions.unlock = { doors: doorsSel, debounce_seconds: Number.isFinite(deb) ? deb : 8, delay_seconds: Number.isFinite(delay) ? delay : 0 };
     }
     // doorbell reason code
     if (trig.type === 'doorbell') {
@@ -4580,11 +4667,16 @@ function _triggersOf(flow) {
   return flow.triggers;
 }
 
-function addTrigger(door) {
+// Add a trigger of the given type. Both tap in (entry) and doorbell are first
+// class; the card offers whichever type is not present yet.
+function addTrigger(door, type) {
   const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
   if (!flow) return;
   collectDoorFlowCard(door);
-  _triggersOf(flow).push({ type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: null, retract: [] } });
+  const t = type === 'entry'
+    ? _newEntryTrigger()
+    : { type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: null, retract: [] } };
+  _triggersOf(flow).push(t);
   repaintDoorFlowCard(door);
 }
 
@@ -4627,13 +4719,44 @@ function removeRetractEdge(door, tIdx, eIdx) {
   repaintDoorFlowCard(door);
 }
 
-// Show/hide the relock-delay input to match the chosen after-unlock mode.
-// The change event bubbles to the card's dirty-save listener on its own.
-function onAfterUnlockChange(door, tIdx, eIdx) {
+// Set a retract edge's after-unlock mode from the chip toggle: mark the chosen
+// chip active, show/hide the relock-delay input, and mark the card dirty (a
+// button click does not fire the input/change events the dirty guard listens
+// for, so do it explicitly).
+function setAfterUnlock(door, tIdx, eIdx, val) {
   const sfx = `${cssId(door)}_${tIdx}_${eIdx}`;
-  const sel = document.getElementById(`dfAfter_${sfx}`);
+  const row = document.getElementById(`dfAfterRow_${sfx}`);
+  if (row) row.querySelectorAll('.chip[data-df-after]').forEach((c) => c.classList.toggle('active', c.dataset.dfAfter === val));
   const wrap = document.getElementById(`dfRelockWrap_${sfx}`);
-  if (sel && wrap) wrap.style.display = sel.value === 'relock_after' ? '' : 'none';
+  if (wrap) wrap.style.display = val === 'relock_after' ? '' : 'none';
+  markSectionDirty(`#dfCard_${cssId(door)}`, 'button[data-df-save]');
+}
+
+// Toggle a trigger's "+ add action" chooser panel.
+function toggleAddAction(door, tIdx) {
+  const m = document.getElementById(`dfAddMenu_${cssId(door)}_${tIdx}`);
+  if (m) m.style.display = m.style.display === 'none' ? '' : 'none';
+}
+
+// Add an "unlock other doors" action to a trigger (an empty selection to start).
+function addUnlockAction(door, tIdx) {
+  const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
+  const trig = _triggersOf(flow)[tIdx];
+  if (!trig) return;
+  collectDoorFlowCard(door);
+  if (!trig.actions) trig.actions = { unlock: null, retract: [] };
+  if (!trig.actions.unlock) trig.actions.unlock = { doors: [], debounce_seconds: 8, delay_seconds: 0 };
+  repaintDoorFlowCard(door);
+}
+
+// Remove the "unlock other doors" action from a trigger.
+function removeUnlockAction(door, tIdx) {
+  const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
+  const trig = _triggersOf(flow)[tIdx];
+  if (!trig || !trig.actions) return;
+  collectDoorFlowCard(door);
+  trig.actions.unlock = null;
+  repaintDoorFlowCard(door);
 }
 
 function _flowHasContent(flow) {
@@ -4693,6 +4816,13 @@ function openKeypadTab() {
   if (t) activateTab(t);
 }
 window.openKeypadTab = openKeypadTab;
+
+// Jump to the Deadbolt Devices tab (from a door card's "no deadbolt paired" hint).
+function openDeadboltTab() {
+  const t = document.querySelector('#tabBar [role="tab"][data-page="deadbolt"]');
+  if (t) activateTab(t);
+}
+window.openDeadboltTab = openDeadboltTab;
 
 async function loadSerialPorts() {
   const sel = document.getElementById('zwaveSerialPort');
@@ -5937,7 +6067,7 @@ function buildWizardFinishHtml(summary) {
     + '<ul>'
     + '<li>Fine-tune doors, triggers, and group names on the <strong>Automations</strong> tab.</li>'
     + '<li>Add a doorbell trigger on a door\'s card, plus backups and alerts under <strong>Settings</strong>.</li>'
-    + '<li>Pair a smart deadbolt from <strong>Configuration &gt; Z-Wave</strong> once the hardware is connected.</li>'
+    + '<li>Pair a smart deadbolt on the <strong>Deadbolt Devices</strong> tab once the hardware is connected.</li>'
     + '<li>Reopen this wizard any time from the <strong>Setup</strong> button in the top bar.</li>'
     + '</ul></div>'
     + '</div>';

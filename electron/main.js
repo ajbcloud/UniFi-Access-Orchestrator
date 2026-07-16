@@ -388,6 +388,11 @@ function createAppMenu() {
           accelerator: 'CmdOrCtrl+6',
           click: () => navigateTo('tools')
         },
+        {
+          label: 'Deadbolt Devices',
+          accelerator: 'CmdOrCtrl+7',
+          click: () => navigateTo('deadbolt')
+        },
         { type: 'separator' },
         { role: 'reload', label: 'Refresh Page' },
         { role: 'toggleDevTools', label: 'Developer Tools' },

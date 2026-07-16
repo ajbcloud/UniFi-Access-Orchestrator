@@ -57,8 +57,9 @@ function flow(overrides = {}) {
 test('a card carries the door name, its trigger, edges, Save, and Remove Flow', () => {
   const out = load()('Front Door', flow(), DATA);
   assert.match(out, /Front Door/);
-  assert.match(out, /When someone enters/, 'a no-groups site shows the plain entry trigger');
-  assert.match(out, /Retract <strong>Front Bolt<\/strong>/);
+  assert.match(out, /taps in/, 'a no-groups site shows the plain tap-in trigger');
+  assert.match(out, /Retract deadbolt/, 'the retract action is titled');
+  assert.match(out, /Front Bolt/, 'the retracted lock is named');
   assert.match(out, /data-df-save/, 'Save button carries the dirty-save hook');
   assert.match(out, /saveDoorFlow\(&quot;Front Door&quot;\)/);
   assert.match(out, /removeDoorFlow\(&quot;Front Door&quot;\)/);
@@ -67,7 +68,7 @@ test('a card carries the door name, its trigger, edges, Save, and Remove Flow', 
 
 test('an add-trigger control appends a doorbell trigger', () => {
   const out = load()('Front Door', flow(), DATA);
-  assert.match(out, /addTrigger\(&quot;Front Door&quot;\)/);
+  assert.match(out, /addTrigger\(&quot;Front Door&quot;, 'doorbell'\)/);
   assert.match(out, /doorbell trigger/i);
 });
 
@@ -88,14 +89,19 @@ test('every usable lock wired -> no add picker; none usable -> pair-first hint',
   const wired = load()('Front Door', both, DATA);
   assert.ok(!wired.includes('dfAddLock_'), 'nothing left to add');
   const noLocks = load()('Front Door', flow({ triggers: [entryTrigger([])] }), { doors: DATA.doors, locks: [] });
-  assert.match(noLocks, /Pair one under Deadbolt Devices/, 'empty state deep-links down to the device section');
+  assert.match(noLocks, /No deadbolt is paired yet/, 'empty state names the missing hardware');
+  assert.match(noLocks, /Deadbolt Devices tab/, 'the hint points at the device tab');
+  assert.match(noLocks, /openDeadboltTab\(\)/, 'the hint links to the Deadbolt Devices tab');
 });
 
-test('the unlock-other-doors action appears with 2+ doors and is absent on a single-door site', () => {
-  const out = load()('Front Door', flow(), DATA);
-  assert.match(out, /Unlock other doors/, 'multi-door site sees the unlock action');
-  const single = load()('Front Door', flow(), { doors: [DATA.doors[0]], locks: DATA.locks });
-  assert.ok(!/Unlock other doors/.test(single), 'single-door site sees no unlock action (progressive disclosure)');
+test('the unlock-other-doors action appears once added and is absent on a single-door site', () => {
+  const withUnlock = flow({ triggers: [{ type: 'entry', scope: null, actions: { unlock: { doors: [] }, retract: [] } }] });
+  const out = load()('Front Door', withUnlock, DATA);
+  assert.match(out, /Unlock other doors/, 'multi-door site sees the unlock action once added');
+  const single = load()('Front Door', withUnlock, { doors: [DATA.doors[0]], locks: DATA.locks });
+  assert.ok(!/Unlock other doors/.test(single), 'single-door site sees no unlock action (nowhere to unlock to)');
+  const notAdded = load()('Front Door', flow(), DATA);
+  assert.ok(!/Unlock other doors/.test(notAdded), 'the action is opt-in: not shown until added via + add action');
 });
 
 test('the inline gating note points at Keypad Users when a deadbolt retracts', () => {

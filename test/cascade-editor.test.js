@@ -2,9 +2,10 @@
 
 // Guards buildUnlockAction: the "unlock other doors" action of a trigger on a
 // door card. It momentarily unlocks OTHER UniFi doors (never a lock command),
-// so the checklist must exclude the door itself and the block must vanish when
-// there is nowhere to unlock to. It also carries a debounce and a delay.
-// Extracts the REAL function from public/index.html.
+// so the checklist must exclude the door itself. The action is opt-in: it only
+// renders once the trigger has an unlock object (added via "+ add action"), and
+// it vanishes when there is nowhere to unlock to. It also carries a debounce and
+// a delay. Extracts the REAL function from public/index.html.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -38,12 +39,17 @@ const DOORS = [
 
 // signature: buildUnlockAction(door, tIdx, unlock, doors)
 test('one known door -> no unlock action (nowhere to unlock to)', () => {
-  const out = load()('Front Door', 0, null, [DOORS[0]]);
+  const out = load()('Front Door', 0, { doors: [] }, [DOORS[0]]);
   assert.equal(out, '', 'a single-door site never sees the unlock action');
 });
 
-test('the checklist offers every OTHER door, never the trigger itself', () => {
+test('the unlock action is opt-in: no unlock object -> nothing rendered', () => {
   const out = load()('Front Door', 0, null, DOORS);
+  assert.equal(out, '', 'even with other doors, the action only appears once added via + add action');
+});
+
+test('the checklist offers every OTHER door, never the trigger itself', () => {
+  const out = load()('Front Door', 0, { doors: [] }, DOORS);
   assert.match(out, /value="Interior Door"/);
   assert.match(out, /value="Elevator"/, 'the elevator is just another door in the list');
   assert.ok(!out.includes('value="Front Door"'), 'a door cannot unlock itself');
@@ -57,15 +63,15 @@ test('an existing unlock action pre-checks its doors and shows its debounce + de
   assert.match(out, /value="5"/, 'saved delay shown');
 });
 
-test('no unlock action yet -> nothing checked, default 8s debounce and 0s delay', () => {
-  const out = load()('Front Door', 0, null, DOORS);
+test('a freshly added unlock action -> nothing checked, default 8s debounce and 0s delay', () => {
+  const out = load()('Front Door', 0, { doors: [] }, DOORS);
   assert.ok(!out.includes(' checked'), 'nothing pre-checked');
   assert.match(out, /value="8"/, 'default debounce');
   assert.match(out, /value="0"/, 'default delay');
 });
 
 test('copy states the safety contract: UniFi unlock only, never a lock command', () => {
-  const out = load()('Front Door', 0, null, DOORS);
+  const out = load()('Front Door', 0, { doors: [] }, DOORS);
   assert.match(out, /never a lock command/);
 });
 
@@ -77,7 +83,7 @@ test('checkboxes are keyed per door and trigger so distinct triggers do not coll
 
 test('door names are escaped in the checklist', () => {
   const doors = [{ name: 'Front Door', id: 'd1' }, { name: 'Evil <img src=x>', id: 'd2' }];
-  const out = load()('Front Door', 0, null, doors);
+  const out = load()('Front Door', 0, { doors: [] }, doors);
   assert.ok(!out.includes('<img src=x>'));
   assert.match(out, /Evil &lt;img src=x&gt;/);
 });

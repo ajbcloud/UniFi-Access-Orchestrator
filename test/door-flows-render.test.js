@@ -53,7 +53,7 @@ const DATA = {
 test('the section renders a card per flow and an add picker for free doors only', () => {
   const out = loadSection()(DATA);
   assert.match(out, /Front Door/, 'existing flow gets its card');
-  assert.match(out, /When someone enters/, 'the entry trigger renders');
+  assert.match(out, /taps in/, 'the tap-in trigger renders');
   assert.match(out, /id="dfAddDoor"/, 'add-flow picker present');
   assert.match(out, /value="Interior Door"/, 'unconfigured door offered');
   const picker = out.match(/<select id="dfAddDoor"[\s\S]*?<\/select>/)[0];
