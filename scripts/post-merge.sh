@@ -1,12 +1,6 @@
-#!/usr/bin/env bash
-#
-# Optional git post-merge hook: reinstall runtime dependencies after a pull.
-#
-# To use, symlink or copy this file into your local hooks directory:
-#   ln -s ../../scripts/post-merge.sh .git/hooks/post-merge
-#
+#!/bin/bash
 set -e
 
-echo "Post-merge setup: installing dependencies..."
-npm install --omit=dev
-echo "Post-merge setup complete."
+# Install dependencies. Skip the Electron binary download — the app runs
+# headless on Replit (node src/index.js) and never launches Electron.
+ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install --no-audit --no-fund
