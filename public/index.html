@@ -4284,7 +4284,7 @@ function buildTriggerBlock(door, tIdx, trigger, data) {
     const cur = _scopeToValue(trigger.scope);
     const opt = (v, label) => `<option value="${escapeHtml(v)}"${cur === v ? ' selected' : ''}>${escapeHtml(label)}</option>`;
     let opts = '';
-    if (type === 'entry') opts += opt('', 'everyone');
+    opts += opt('', type === 'doorbell' ? 'anyone who answers' : 'everyone');
     opts += opt('*', 'any group');
     for (const g of groups) opts += opt('g:' + g, g);
     if (cur.slice(0, 2) === 'g:' && !groups.includes(cur.slice(2))) opts += opt(cur, cur.slice(2));
@@ -4584,7 +4584,7 @@ function addTrigger(door) {
   const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
   if (!flow) return;
   collectDoorFlowCard(door);
-  _triggersOf(flow).push({ type: 'doorbell', scope: { any_group: true }, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: null, retract: [] } });
+  _triggersOf(flow).push({ type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: null, retract: [] } });
   repaintDoorFlowCard(door);
 }
 
