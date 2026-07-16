@@ -432,7 +432,7 @@ class DeadboltController {
       // everyone, so behavior is unchanged).
       const edge = this._matchRetractEdge('entry', g.doorName, g.doorId,
         (e) => g.result === e.require_result, group);
-      if (edge) this._retract(`entry: ${this._who(g, group())} at ${g.doorName}`, edge);
+      if (edge) this._retract(`entry: ${this._who(g, group())} at ${g.doorName}`, edge, { actor: this._who(g, group()), location: g.doorName });
     }
     this.cascadeRules.forEach((rule, idx) => {
       if ((rule.type || 'entry') !== 'entry') return;
@@ -457,7 +457,7 @@ class DeadboltController {
     if (this.lockDriver) {
       const edge = this._matchRetractEdge('doorbell', d.doorName, d.doorId,
         (e) => this._doorbellReasonOk(e, d.reasonCode), group);
-      if (edge) this._retract(`doorbell: ${this._who(d, group())} at ${d.doorName}`, edge);
+      if (edge) this._retract(`doorbell: ${this._who(d, group())} at ${d.doorName}`, edge, { actor: this._who(d, group()), location: d.doorName });
     }
     this.cascadeRules.forEach((rule, idx) => {
       if ((rule.type || 'entry') !== 'doorbell') return;
@@ -568,7 +568,7 @@ class DeadboltController {
 
   // ---- actions (fire-and-forget so ingestion never blocks) ---------------
 
-  _retract(reason, edge) {
+  _retract(reason, edge, ctx) {
     this._lastRetractAt = this.now(); // start the re-lock cooldown window
     if (edge) this._armAfterUnlock(edge, reason);
     Promise.resolve()
@@ -576,17 +576,17 @@ class DeadboltController {
       .then((r) => {
         if (r && r.success) {
           this.stats.retracts++;
-          this._record('retract', true, reason);
+          this._record('retract', true, reason, ctx);
         } else {
           this.stats.retracts_failed++;
-          this._record('retract', false, reason);
+          this._record('retract', false, reason, ctx);
           // A failed retract blocks entry: higher severity.
           this.onAlert({ type: 'deadbolt_retract_failed', reason, state: r && r.boltState });
         }
       })
       .catch((err) => {
         this.stats.retracts_failed++;
-        this._record('retract', false, `${reason} (${err.message})`);
+        this._record('retract', false, `${reason} (${err.message})`, ctx);
         this.onAlert({ type: 'deadbolt_retract_failed', reason, error: err.message });
       });
   }
@@ -616,20 +616,21 @@ class DeadboltController {
   // tracked so destroy() can cancel a pending unlock (no leak, no double fire
   // after a rules reload).
   _fireCascade(rule, grant, group) {
+    const ctx = { actor: this._who(grant, group), location: grant.doorName };
     const delayMs = (rule.delay_seconds || 0) * 1000;
     if (delayMs > 0) {
       const t = setTimeout(() => {
         this._cascadeTimers.delete(t);
-        if (!this._destroyed) this._cascade(rule, grant);
+        if (!this._destroyed) this._cascade(rule, grant, ctx);
       }, delayMs);
       if (typeof t.unref === 'function') t.unref();
       this._cascadeTimers.add(t);
     } else {
-      this._cascade(rule, grant);
+      this._cascade(rule, grant, ctx);
     }
   }
 
-  _cascade(rule, grant) {
+  _cascade(rule, grant, ctx) {
     const doors = Array.isArray(rule.unlock) ? rule.unlock : [];
     const client = this._getUnifi();
     for (const doorName of doors) {
@@ -640,28 +641,28 @@ class DeadboltController {
         .then((r) => {
           if (r && r.success) {
             this.stats.cascades++;
-            this._record('cascade', true, `${grant.doorName} -> ${doorName}`);
+            this._record('cascade', true, `${grant.doorName} -> ${doorName}`, ctx);
           } else {
             this.stats.cascades_failed++;
-            this._record('cascade', false, `${grant.doorName} -> ${doorName}`);
+            this._record('cascade', false, `${grant.doorName} -> ${doorName}`, ctx);
             this.onAlert({ type: 'cascade_failed', door: doorName, error: r && r.error });
           }
         })
         .catch((err) => {
           this.stats.cascades_failed++;
-          this._record('cascade', false, `${doorName} (${err.message})`);
+          this._record('cascade', false, `${doorName} (${err.message})`, ctx);
           this.onAlert({ type: 'cascade_failed', door: doorName, error: err.message });
         });
     }
   }
 
-  _record(action, success, detail) {
+  _record(action, success, detail, ctx) {
     this.stats.last_action = { action, success, detail, time: new Date().toISOString() };
     if (this.broadcaster) {
       this.broadcaster({
         type: `deadbolt.${action}`,
-        actor: 'Deadbolt Controller',
-        location: (this.edges[0] && this.edges[0].trigger_door) || '',
+        actor: (ctx && ctx.actor) || 'Deadbolt Controller',
+        location: (ctx && ctx.location) || (this.edges[0] && this.edges[0].trigger_door) || '',
         action: `${action}${success ? ' ok' : ' FAILED'}: ${detail}`,
         success,
       });

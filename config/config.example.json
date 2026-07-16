@@ -37,20 +37,7 @@
     "manual_overrides": {}
   },
   "doors": {},
-  "unlock_rules": {
-    "rules": [],
-    "default_action": {
-      "unlock": []
-    }
-  },
-  "doorbell_rules": {
-    "rules": [],
-    "trigger_reason_code": 107,
-    "viewer_to_group": {},
-    "default_action": {
-      "unlock": []
-    }
-  },
+  "door_flows": {},
   "auto_lock": {
     "shared_token": "",
     "buttons": []

@@ -12,7 +12,8 @@ Built for multi-tenant commercial buildings where different tenants need differe
 - [Prerequisites](#prerequisites)
 - [Option A: Windows Desktop App](#option-a-windows-desktop-app)
 - [Option B: Linux / Raspberry Pi](#option-b-linux--raspberry-pi)
-- [Configuring Unlock Rules](#configuring-unlock-rules)
+- [Configuring Doors (the door flow)](#configuring-doors-the-door-flow)
+- [Upgrading from an earlier version](#upgrading-from-an-earlier-version)
 - [Visual Designer](#visual-designer)
 - [Setting Up Alarm Manager Webhooks](#setting-up-alarm-manager-webhooks)
 - [Testing Your Setup](#testing-your-setup)
@@ -105,9 +106,9 @@ The setup wizard appears automatically the first time you open the app.
 1. Click **Save & Connect**
 2. The dashboard will load, showing your doors, users, and event stats
 
-### Step 6: Configure Your Rules
+### Step 6: Configure Your Doors
 
-See [Configuring Unlock Rules](#configuring-unlock-rules) below.
+See [Configuring Doors (the door flow)](#configuring-doors-the-door-flow) below.
 
 ### Step 7: Choose How Events Arrive
 
@@ -277,9 +278,9 @@ http://YOUR_DEVICE_IP:3000
 
 You should see the orchestrator dashboard with your doors and user counts.
 
-### Step 9: Configure Your Rules
+### Step 9: Configure Your Doors
 
-See [Configuring Unlock Rules](#configuring-unlock-rules) below. You can do this from the dashboard in your browser or by editing the config file directly.
+See [Configuring Doors (the door flow)](#configuring-doors-the-door-flow) below. You can do this from the dashboard in your browser or by editing the config file directly.
 
 ### Step 10: Choose How Events Arrive
 
@@ -298,9 +299,9 @@ The default event source is a **WebSocket** to the controller, which needs no co
 
 ---
 
-## Configuring Unlock Rules
+## Configuring Doors (the door flow)
 
-After the orchestrator is running and connected to your controller, you need to tell it what to do when events happen.
+Configuration starts at the door and stays there. You pick a door, choose who and what triggers it, then add actions. There is one editor for all of it: the **Door Flows** section on the Automations tab. A one door, one deadbolt site sees a single short card; a full building sees the full builder. Same mental model at every size.
 
 ### Step 1: Discover Your Doors
 
@@ -330,48 +331,41 @@ In your config file, map each UniFi group name to a short logical name:
 
 The left side must match the group name exactly as it appears in the UniFi Access portal.
 
-### Step 3: Define NFC/Tap Rules
+### Step 3: Set Up a Door
 
-Set which door is the trigger, and what happens for each group:
+Under **Door Flows**, pick a door and add it. Each door card reads as a sentence in three steps:
+
+1. **Door.** The card identity: the door name plus a small chip summarizing what it drives ("1 deadbolt", "3 doors").
+2. **When.** "When [everyone | any group | a named group] enters." The group selector appears only when your site has mapped groups, so a simple site never sees it. Use **add doorbell trigger** to add a second block that fires when someone rings the doorbell.
+3. **Do this.** Add actions inside the trigger:
+   - **Retract deadbolt:** pick a paired lock, then choose after unlock: **stay unlocked** (the app leaves it open until something locks it) or **relock after** N seconds. Require result, mirror door unlocks, and the relock cooldown live under Advanced. Different doors can drive the same deadbolt differently.
+   - **Unlock other doors:** check the doors to momentarily unlock (a UniFi unlock, never a lock command), with a debounce and an optional delay. This action appears only when there is another door to unlock.
+
+When a door retracts a deadbolt, the card shows an inline note: keypad PINs on that deadbolt follow UniFi access to this door. That gating is a derived consequence of attaching the deadbolt to the door, so there is nothing extra to configure.
+
+Behind the scenes this is one persisted shape, `door_flows`, keyed by door name. Each door holds `triggers`, each trigger has a `type` (entry or doorbell), a `scope`, and `actions`. You will rarely hand edit it, but a compact example looks like this:
 
 ```json
-"unlock_rules": {
-  "trigger_location": "Front Door",
-  "group_actions": {
-    "office": { "unlock": ["Suite 100"] },
-    "suite_200": { "unlock": ["Elevator"] },
-    "management": { "unlock": ["Suite 100", "Suite 200", "Elevator"] }
-  },
-  "default_action": { "unlock": [] }
+"door_flows": {
+  "Front Door": {
+    "door_id": "abc123",
+    "triggers": [
+      {
+        "type": "entry",
+        "scope": { "groups": ["office"] },
+        "actions": {
+          "unlock": { "doors": ["Suite 100"], "debounce_seconds": 8, "delay_seconds": 0 },
+          "retract": [ { "lock_id": "front_deadbolt", "after_unlock": "stay_unlocked" } ]
+        }
+      }
+    ]
+  }
 }
 ```
 
-This means: when someone in the "office" group badges in at Front Door, also unlock Suite 100. Management gets everything. Unknown groups get nothing.
+`scope` is `null` for everyone (including an unresolved user), `{ "any_group": true }` for any resolved group, or `{ "groups": ["office"] }` for named groups. A doorbell trigger adds `"doorbell": { "reason_code": 107, "viewer_to_group": { "Office Viewer": "office" } }`; the viewer map is a fallback used when the orchestrator cannot identify who answered by their user account.
 
-### Step 4: Define Doorbell Rules
-
-Set what happens when a visitor is buzzed in:
-
-```json
-"doorbell_rules": {
-  "trigger_location": "Front Door",
-  "trigger_reason_code": 107,
-  "group_actions": {
-    "office": { "unlock": ["Suite 100"] },
-    "suite_200": { "unlock": ["Elevator"] },
-    "management": { "unlock": ["Suite 100", "Suite 200", "Elevator"] }
-  },
-  "viewer_to_group": {
-    "Office Viewer": "office",
-    "Suite 200 Viewer": "suite_200"
-  },
-  "default_action": { "unlock": ["Elevator"] }
-}
-```
-
-The `viewer_to_group` section is a fallback. If the orchestrator can't identify who answered the doorbell by their user account, it checks which Intercom Viewer device was involved and maps that to a group.
-
-### Step 5: Reload
+### Step 4: Reload
 
 After editing config, apply the changes:
 
@@ -381,21 +375,29 @@ After editing config, apply the changes:
 
 ---
 
+## Upgrading from an earlier version
+
+The door flow is now the one place configuration lives, so the earlier separate keys fold into it automatically on first load. You do not need to do anything:
+
+- `unlock_rules` (group access rules) and `doorbell_rules` (visitor rules) migrate into door triggers: the group becomes the trigger scope, and a doorbell becomes a second trigger type on the same door. A `default_action` becomes an "any resolved group" trigger, so a user in an unmapped group still gets those unlocks while a user with no resolvable group still gets nothing.
+- `deadbolt_rules` and `cascade_rules` migrate into each door's retract and unlock actions, exactly as before.
+- Per edge after unlock now offers two deterministic choices, **stay unlocked** and **relock after** N seconds. The old "lock default" mode depended on the lock's own hardware timer, which the app now turns off so it owns relock in software. Any old edge converts to stay unlocked, or to relock after (using the lock's known timer or 30 seconds) if that lock's hardware auto-relock was on.
+- The migration is one way and idempotent. A backup of the pre-upgrade config is written to the `backups` folder before the first rewrite. For one release, `GET /api/config` still projects the old `unlock_rules`, `doorbell_rules`, `deadbolt_rules`, and `cascade_rules` shapes so any external reader keeps working; the file on disk carries `door_flows` only.
+
 ## Visual Designer
 
-If you prefer to see your automation as a diagram instead of a list of forms, open the **Visual Designer** tab. It draws every rule as a node graph and stays in sync with the Configuration tab both ways: anything you build in the designer fills in the matching manual fields, and anything you change on the Configuration tab redraws here. Both surfaces edit the same `config.json`, so there is only one source of truth.
+If you prefer to see your automation as a diagram instead of a list of cards, open the **Visual Designer** tab. It draws every door flow as a node graph. The designer is a read-only map: there is one editing surface, the door's card under Door Flows on the Automations tab, so the two never compete.
 
 **What the graph shows**
 
 - **Trigger doors** (left) feed into **user/visitor groups** (middle), which unlock **target doors** (right).
 - The **Smart Deadbolt** node appears when the Z-Wave add-on is set up, wired to its retract trigger.
-- Edge colors map to rule types: blue for access (NFC / PIN / face / mobile), purple for visitor (doorbell / buzz-in), teal for the deadbolt cascade, and orange for the deadbolt retract.
+- Edge colors map to trigger types: blue for entry (NFC / PIN / face / mobile), purple for doorbell (buzz-in), teal for unlocking other doors, and orange for the deadbolt retract.
 
-**Building rules**
+**Reading the map**
 
-- **Draw a connection:** drag from a node's right-hand dot onto another node. Trigger door to group starts an access rule, group to door adds an unlocked door, trigger door to another door creates a deadbolt cascade, and trigger door to the deadbolt sets the retract trigger.
-- **Add from the panel:** use the buttons on the right to add an access, visitor, or cascade rule, or to set the deadbolt trigger.
-- **Edit or delete:** click any node to list the rules that touch it, or click an edge to open that rule. Change the group, trigger door, delay, or unlocked doors and click **Save**. Every save applies immediately, exactly like the manual forms.
+- Click any node to list the flows that touch it, or click an edge to see its details.
+- Every detail panel deep-links to the door's card so you can make the change in the one place that owns it.
 
 Use the on-canvas controls to zoom, **Fit** the whole graph to the view, or **Arrange** to auto-lay-out the nodes. Node positions you drag are remembered on that machine.
 
@@ -494,11 +496,11 @@ The dashboard has seven tabs:
 
 **Live Events** - Real-time scrolling feed of every event. Each row shows the timestamp, event type (color-coded), who triggered it, which door, what the orchestrator did, and whether it succeeded. Events stream in automatically via Server-Sent Events.
 
-**Automations** - Everything starts at the door. Door mappings, user groups, NFC tap rules, doorbell visitor rules, then **Door Flows** (pick a door and choose what an entry there controls: deadbolts to retract, each with its own after-unlock behavior, and other doors to cascade-unlock) and **Deadbolt Devices** (pair, test, health check, unpair). Buttons to rediscover doors and reload the service.
+**Automations** - Everything starts at the door. Door mappings, user groups, then **Door Flows** (pick a door, choose who and what triggers it, then say what happens: retract a deadbolt with its own after-unlock behavior, unlock other doors, or both; a doorbell is a second trigger on the same door) and **Deadbolt Devices** (hardware only: pair, test, health check, unpair). Buttons to rediscover doors and reload the service.
 
 **Keypad Users** - One PIN per person, written to every deadbolt the user's UniFi door access allows and kept in sync with their UniFi Access PIN. A lock triggered by several doors admits a user who is allowed on ANY of them.
 
-**Visual Designer** - The same rules as a node graph you can build and edit by drawing connections. Access and visitor rules are editable here; deadbolt retract and cascade wiring shows read-only with a deep-link to Door Flows. See [Visual Designer](#visual-designer).
+**Visual Designer** - The door flows as a read-only node graph. Click a node or edge to see its details and deep-link to the door's card, the one place edits happen. See [Visual Designer](#visual-designer).
 
 **Settings** - Server port and host, controller connection and API token, auto-sync interval, log level, and backup/restore.
 

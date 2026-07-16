@@ -31,16 +31,14 @@ This is a Node.js/Express service that integrates with Ubiquiti UniFi Access to 
 
 - **Dashboard** — Stats overview (doors, users, events, unlocks)
 - **Live Events** — Real-time SSE event feed
-- **Configuration** — Rule builder UI with:
+- **Automations**: the door flow is the one configuration surface:
   - Door Mappings (auto-discovered from controller)
   - User Groups (with logical name mapping)
-  - Access Rules (NFC/PIN/Face/Mobile) — natural language rule cards with add/edit/delete
-  - Visitor Rules (Doorbell/Buzz-in) — can link to access rules or use custom doors, plus viewer device mappings
-  - Event Source configuration
-  - Smart Deadbolt (Z-Wave): serial-port selection, in-app S2 pairing/unpairing, retract trigger, and interior cascade rules
-- **Visual Designer**: the same rules as a node graph (SVG edges + DOM nodes, pan/zoom, drag-to-wire); bidirectional with the Configuration tab through the shared `config.json` and the same `/api/config` save helpers, implemented inline with no build step or dependencies
+  - Door Flows: one card per door. Each card holds triggers (entry or doorbell), each with a scope (everyone, any group, or named groups) and actions (retract a deadbolt with a per edge after-unlock behavior, unlock other doors with debounce and delay). The group scope selector appears only when the site has groups.
+  - Deadbolt Devices (Z-Wave): hardware only. Serial-port selection, in-app S2 pairing/unpairing, test, health. After-unlock behavior lives on the door card, not here.
+- **Visual Designer**: the door flows as a read-only node graph (SVG edges + DOM nodes, pan/zoom); every detail panel deep-links to the door card, the single editing surface. Implemented inline with no build step or dependencies
 - **Settings**: Server port and host, controller connection and API token, auto-sync interval, logging level, backup/restore
-- **Test Tools**: Test Configured Rules (simulate access/visitor rules with one click), door unlock testing, custom event simulation, connectivity test, raw event payload viewer
+- **Test Tools**: door unlock testing, custom event simulation, connectivity test, raw event payload viewer
 
 ## Configuration
 
@@ -51,22 +49,24 @@ The app reads from `config/config.json` at startup. Key settings:
 - `unifi.token`: UniFi Access API token
 - `unifi.port`: Default `12445`
 
-### Rule Format (array-based, per-rule trigger doors)
+### Automation Format (the door flow)
 
-Both `unlock_rules` and `doorbell_rules` use an array-based `rules` format where each rule specifies its own trigger door. This supports multiple rules per group with different trigger locations:
+`door_flows` is the sole persisted automation shape, keyed by door name. Each door holds `triggers`; each trigger has a `type` (`entry` or `doorbell`), a `scope` (`null` for everyone, `{ any_group: true }` for any resolved group, or `{ groups: [...] }`), and `actions` (an `unlock` of other doors with `debounce_seconds` + `delay_seconds`, and a `retract` list of per edge deadbolt commands each with its own `after_unlock`):
 
 ```json
-"unlock_rules": {
-  "rules": [
-    { "group": "GroupA", "trigger": "Front Door", "unlock": ["Lobby", "Elevator"] },
-    { "group": "GroupA", "trigger": "Side Door", "unlock": ["Stairwell"] },
-    { "group": "GroupB", "trigger": "Front Door", "unlock": ["Suite 200"] }
-  ],
-  "default_action": { "unlock": [] }
+"door_flows": {
+  "Front Door": {
+    "door_id": "abc123",
+    "triggers": [
+      { "type": "entry", "scope": { "groups": ["GroupA"] },
+        "actions": { "unlock": { "doors": ["Lobby", "Elevator"], "debounce_seconds": 8, "delay_seconds": 0 },
+                     "retract": [ { "lock_id": "front_deadbolt", "after_unlock": "stay_unlocked" } ] } }
+    ]
+  }
 }
 ```
 
-Backward compatibility: the rules engine and frontend both handle the legacy format (`trigger_location` + `group_actions` object) by normalizing to the array format on read.
+Backward compatibility: on load, `migrateToTriggers` folds the earlier `unlock_rules`, `doorbell_rules`, `deadbolt_rules`, and `cascade_rules` (including the legacy `trigger_location` + `group_actions` shape) into `door_flows`, then deletes them from disk. `GET /api/config` projects those old shapes read-only for one transition release.
 
 ## Workflow
 
