@@ -3859,7 +3859,7 @@ async function saveKeypadUser() {
       (written.length + blocked.length) === results.length ? 'success' : 'error');
     for (const row of results) {
       if (row.error) toast(`${row.lock_id}: ${row.error}`, 'error');
-      else if (row.blocked) toast(`${row.lock_id}: ${row.reason}${row.revoked ? ' — existing code removed' : ''}`, 'info');
+      else if (row.blocked) toast(`${row.lock_id}: ${row.reason}${row.revoked ? ', existing code removed' : row.revoke_pending ? ', code removal pending' : ''}`, 'info');
     }
     if (r.unifi) {
       if (r.unifi.success && r.unifi.skipped) toast('UniFi already had this PIN; nothing to update there.', 'info');
