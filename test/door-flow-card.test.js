@@ -150,7 +150,7 @@ test('both actions in use: the chooser marks each done, and retract + unlock sti
   }] });
   const out = load()('Front Door', maxed, DATA);
   assert.match(out, /\+ add action/, 'the control stays present');
-  assert.match(out, /Add another/, 'unlock actions stack: another one is always addable');
+  assert.match(out, /addUnlockAction\(/, 'unlock actions still stack: + add action offers Unlock other doors > Add again');
   assert.match(out, /every paired deadbolt is already retracting/, 'retract is shown as exhausted');
   // multiple actions genuinely coexist in one trigger
   assert.match(out, /Retract deadbolt/);

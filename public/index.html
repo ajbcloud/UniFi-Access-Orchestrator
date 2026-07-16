@@ -4488,8 +4488,11 @@ function buildTriggerBlock(door, tIdx, trigger, data, hasSameTypeSiblings) {
   // the "+ add action" button until the user opens it (no default action).
   const choiceRow = (inner) => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px">${inner}</div>`;
   const muted = (html) => `<span style="color:var(--text-muted)">${html}</span>`;
+  // Unlock is a peer of Retract in the chooser: a plain "Add" each time. Adding
+  // another door-unlock action is just "+ add action" -> Add again (no separate
+  // "Add another" affordance); each added action still keeps its own delay.
   const unlockRow = canAddUnlock
-    ? choiceRow(`<span style="font-weight:600">Unlock other doors</span>${hasUnlock ? `<span style="color:var(--text-muted)">each action has its own delay</span>` : ''}<button class="btn btn-sm btn-secondary" onclick="addUnlockAction(${doorArg}, ${tIdx})">${hasUnlock ? 'Add another' : 'Add'}</button>`)
+    ? choiceRow(`<span style="font-weight:600">Unlock other doors</span><button class="btn btn-sm btn-secondary" onclick="addUnlockAction(${doorArg}, ${tIdx})">Add</button>`)
     : choiceRow(`<span style="font-weight:600">Unlock other doors</span><button class="btn btn-sm btn-secondary" disabled>Add</button>${muted('no other doors are set up in UniFi yet')}`);
   const retractRow = canAddRetract
     ? choiceRow(`<span style="font-weight:600">Retract a deadbolt</span>
