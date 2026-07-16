@@ -521,6 +521,7 @@ For the full first-time checklist (install, pairing, bench tests, automation, an
 Notes:
 - The app generates and stores Z-Wave security keys in its config file on first pairing. Back up the config, and never delete `devices.zwave.security_keys` after pairing, or the lock will need to be excluded and re-paired.
 - If pairing fails with a "joined WITHOUT S2 security" message, the PIN was likely mistyped or the signal was weak: run Unpair, move the stick close to the lock, and pair again.
+- Keypad PIN gating follows whether a user's UniFi access includes the lock's gating door, but it does not follow UniFi access time schedules. A synced deadbolt PIN works 24/7, so a user whose UniFi access is time restricted still has a working deadbolt PIN outside those hours. This is a known limitation.
 
 ---
 

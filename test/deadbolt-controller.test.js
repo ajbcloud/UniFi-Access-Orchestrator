@@ -10,10 +10,10 @@ const { LockState } = require('../src/drivers/lock-driver');
 // ---- fixtures (shapes grounded in the captured research) ------------------
 
 function entryGrant(door, opts = {}) {
-  const { actor = 'Raphael', provider = 'NFC', result = 'ACCESS', direction } = opts;
+  const { actor = 'Raphael', provider = 'NFC', result = 'ACCESS', direction, doorId = 'door-1' } = opts;
   const target = [];
   if (direction) target.push({ type: 'device_config', id: 'door_entry_method', display_name: direction });
-  target.push({ type: 'door', id: 'door-1', display_name: door });
+  target.push({ type: 'door', id: doorId, display_name: door });
   return {
     event: 'access.logs.add',
     data: {
@@ -102,6 +102,32 @@ test('an event at a different door does nothing', async () => {
   await flush();
   assert.equal(lock.calls.length, 0);
   assert.equal(unifi.calls.length, 0);
+});
+
+test('matches the trigger door by id even when the door was renamed', async () => {
+  // The rule stored id door-1 with the old display name; the door is now
+  // "Front Door" in UniFi. Name match would miss; the id keeps it working.
+  const { ctl, lock } = makeController({
+    deadbolt_rules: { trigger_door: 'Old Name', trigger_door_id: 'door-1' },
+    cascade_rules: { rules: [] },
+  });
+  await lock.init();
+  ctl.observe(entryGrant('Front Door', { doorId: 'door-1' }));
+  await flush();
+  assert.ok(lock.calls.some((c) => c.action === 'unlock'), 'the id match retracts the deadbolt after a rename');
+});
+
+test('falls back to the name match when the rule carries no door id', async () => {
+  // No trigger_door_id on the rule, and the event id differs; the name still
+  // matches, so behavior is unchanged from before id keying.
+  const { ctl, lock } = makeController({
+    deadbolt_rules: { trigger_door: 'Front Door' },
+    cascade_rules: { rules: [] },
+  });
+  await lock.init();
+  ctl.observe(entryGrant('Front Door', { doorId: 'some-other-id' }));
+  await flush();
+  assert.ok(lock.calls.some((c) => c.action === 'unlock'), 'name match still fires without an id');
 });
 
 test('self-triggered events are ignored (orchestrator actor and remote unlock)', async () => {

@@ -14,6 +14,7 @@ const {
   combinedLengthRule,
   planUserSave,
   planNewLockProvision,
+  planReconciliation,
 } = require('../src/keypad-users');
 
 const CAP = { supported: true, slots: 30, min_length: 4, max_length: 8 };
@@ -62,12 +63,12 @@ test('aggregateKeypadUsers: per-lock status and pin_length only (no digits)', ()
   assert.equal(alice.pin_length, 4);
   assert.ok(!JSON.stringify(users).includes('9999'), 'digits never appear');
   assert.deepEqual(alice.locks, [
-    { lock_id: 'front', slot: 1, status: 'differs' },  // holds old 1111
-    { lock_id: 'side', slot: 1, status: 'ok' },
+    { lock_id: 'front', slot: 1, status: 'differs', code_present: true, revoke_pending: false },  // holds old 1111
+    { lock_id: 'side', slot: 1, status: 'ok', code_present: true, revoke_pending: false },
   ]);
   assert.deepEqual(bob.locks, [
-    { lock_id: 'front', slot: 2, status: 'ok' },       // pre-confirmed-field entry reads ok
-    { lock_id: 'side', slot: null, status: 'missing' },
+    { lock_id: 'front', slot: 2, status: 'ok', code_present: true, revoke_pending: false },       // pre-confirmed-field entry reads ok
+    { lock_id: 'side', slot: null, status: 'missing', code_present: false, revoke_pending: false },
   ]);
   assert.equal(alice.in_unifi, true);
 });
@@ -78,6 +79,78 @@ test('aggregateKeypadUsers: confirmed null/false reads pending', () => {
   };
   const users = aggregateKeypadUsers(cfg, [{ lock_id: 'a', label: 'A' }]);
   assert.equal(users[0].locks[0].status, 'pending');
+});
+
+// ---- planReconciliation ---------------------------------------------------
+
+test('planReconciliation: lists only held slots with a confirmed denial', () => {
+  const cfg = {
+    front: { user_codes: { 1: { user_id: 'u1', name: 'A', pin_code: '1111' } } },
+    side: { user_codes: { 2: { user_id: 'u2', name: 'B', pin_code: '2222' } } },
+  };
+  const relevant = [{ lock_id: 'front', gating_door: 'Door A' }, { lock_id: 'side', gating_door: 'Door B' }];
+  const verdicts = new Map([
+    ['u1|front', { verdict: 'denied', door: 'Door A' }],
+    ['u2|side', { verdict: 'allowed', door: 'Door B' }],
+  ]);
+  const plan = planReconciliation(cfg, relevant, verdicts);
+  assert.equal(plan.length, 1, 'only the denied held code is planned');
+  assert.deepEqual(plan[0], { user_id: 'u1', lock_id: 'front', slot: 1, reason: 'no UniFi access to "Door A"' });
+});
+
+test('planReconciliation: a denied user with no held slot yields nothing', () => {
+  const cfg = { front: { user_codes: {} } };
+  const relevant = [{ lock_id: 'front', gating_door: 'Door A' }];
+  const verdicts = new Map([['u1|front', { verdict: 'denied', door: 'Door A' }]]);
+  assert.deepEqual(planReconciliation(cfg, relevant, verdicts), [], 'no entry, no revoke');
+});
+
+test('planReconciliation: unknown and allowed are never revoked (fail open)', () => {
+  const cfg = {
+    a: { user_codes: { 1: { user_id: 'u1', name: 'A', pin_code: '1111' } } },
+    b: { user_codes: { 1: { user_id: 'u2', name: 'B', pin_code: '2222' } } },
+  };
+  const relevant = [{ lock_id: 'a' }, { lock_id: 'b' }];
+  const verdicts = new Map([
+    ['u1|a', { verdict: 'unknown' }],
+    ['u2|b', { verdict: 'allowed' }],
+  ]);
+  assert.deepEqual(planReconciliation(cfg, relevant, verdicts), [],
+    'uncertainty and allowance never wipe a code');
+});
+
+test('planReconciliation: accepts a bare verdict string', () => {
+  const cfg = { a: { user_codes: { 4: { user_id: 'u1', name: 'A', pin_code: '1111' } } } };
+  const plan = planReconciliation(cfg, [{ lock_id: 'a', gating_door: 'Door A' }], new Map([['u1|a', 'denied']]));
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].slot, 4);
+});
+
+test('aggregateKeypadUsers: code_present reflects a held slot', () => {
+  const cfg = {
+    a: { user_codes: { 1: { user_id: 'u1', name: 'A', pin_code: '1111', updated_at: '2026-01-01T00:00:00Z', confirmed: true } } },
+    b: { user_codes: {} },
+  };
+  const relevant = [{ lock_id: 'a', label: 'A' }, { lock_id: 'b', label: 'B' }];
+  const u1 = aggregateKeypadUsers(cfg, relevant).find((u) => u.user_id === 'u1');
+  const byLock = Object.fromEntries(u1.locks.map((l) => [l.lock_id, l]));
+  assert.equal(byLock.a.code_present, true, 'a held slot means a code is on the lock');
+  assert.equal(byLock.b.code_present, false, 'no held slot means no code');
+});
+
+test('aggregateKeypadUsers: revoke_pending reflects a pending_clears marker', () => {
+  const cfg = {
+    a: {
+      user_codes: {},
+      pending_clears: { 3: { user_id: 'u1', requested_at: '2026-01-01T00:00:00Z', reason: 'no UniFi access' } },
+    },
+  };
+  const u1 = aggregateKeypadUsers(cfg, [{ lock_id: 'a', label: 'A' }]).find((u) => u.user_id === 'u1');
+  // The user still surfaces via the marker even though the code entry is gone.
+  const lock = u1 ? u1.locks[0] : null;
+  assert.ok(lock, 'the user with a pending clear is still listed');
+  assert.equal(lock.revoke_pending, true, 'the pending clear marker is surfaced');
+  assert.equal(lock.code_present, false, 'the managed entry was already removed');
 });
 
 test('aggregateKeypadUsers: verdicts surface blocked (denied) and unknown eligibility', () => {

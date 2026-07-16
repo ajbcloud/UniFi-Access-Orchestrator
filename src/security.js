@@ -125,6 +125,7 @@ function validateConfigUpdates(updates) {
       for (const [i, r] of cr.rules.entries()) {
         if (!isPlainObject(r)) return { ok: false, error: `cascade_rules.rules[${i}] must be an object` };
         if (typeof r.trigger_door !== 'string' || r.trigger_door.length === 0) return { ok: false, error: `cascade_rules.rules[${i}].trigger_door must be a non-empty string` };
+        if (r.trigger_door_id !== undefined && typeof r.trigger_door_id !== 'string') return { ok: false, error: `cascade_rules.rules[${i}].trigger_door_id must be a string` };
         if (!Array.isArray(r.unlock)) return { ok: false, error: `cascade_rules.rules[${i}].unlock must be an array of door names` };
         if (r.debounce_seconds !== undefined && (typeof r.debounce_seconds !== 'number' || r.debounce_seconds < 0)) {
           return { ok: false, error: `cascade_rules.rules[${i}].debounce_seconds must be a non-negative number` };
@@ -143,6 +144,7 @@ function validateConfigUpdates(updates) {
     const checkEntry = (e, label) => {
       if (e.lock_id !== undefined && typeof e.lock_id !== 'string') return `${label}lock_id must be a string`;
       if (e.trigger_door !== undefined && typeof e.trigger_door !== 'string') return `${label}trigger_door must be a string`;
+      if (e.trigger_door_id !== undefined && typeof e.trigger_door_id !== 'string') return `${label}trigger_door_id must be a string`;
       if (e.relock_cooldown_seconds !== undefined && (typeof e.relock_cooldown_seconds !== 'number' || e.relock_cooldown_seconds < 0)) {
         return `${label}relock_cooldown_seconds must be a non-negative number`;
       }

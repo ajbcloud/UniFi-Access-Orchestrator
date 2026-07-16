@@ -212,3 +212,16 @@ test('watchdog: consecutive failures surface as Not responding in the title', ()
   assert.match(src, /Not responding/);
   assert.match(src, /healthFailCount >= 2/, 'after 2+ consecutive failures');
 });
+
+test('native View menu reconciles with the six tabs', () => {
+  // Every top-level destination is reachable from the menu, with matching
+  // labels and sequential accelerators.
+  assert.match(electronMain, /label: 'Visual Designer',\s*accelerator: 'CmdOrCtrl\+4',\s*click: \(\) => navigateTo\('designer'\)/,
+    'Visual Designer is in the menu at Cmd+4');
+  assert.match(electronMain, /label: 'Settings',\s*accelerator: 'CmdOrCtrl\+5',\s*click: \(\) => navigateTo\('settings'\)/,
+    'Settings is in the menu at Cmd+5');
+  assert.match(electronMain, /label: 'Test Tools',\s*accelerator: 'CmdOrCtrl\+6'/,
+    'Test Tools moved to Cmd+6 to make room');
+  assert.match(electronMain, /label: 'Automations',\s*accelerator: 'CmdOrCtrl\+3'/,
+    'the Configuration entry is renamed Automations');
+});

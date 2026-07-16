@@ -35,6 +35,7 @@ function parseAccessPolicies(users, doorGroups) {
   const groupToDoors = doorGroups instanceof Map ? doorGroups : new Map(Object.entries(doorGroups || {}));
   const allowedDoorsByUser = new Map();
   const completeByUser = new Map();
+  let groupsReferenced = false; // any user grants access through a door_group
   for (const user of users || []) {
     if (!user || !user.id) continue;
     const doors = new Set();
@@ -48,6 +49,7 @@ function parseAccessPolicies(users, doorGroups) {
           if (res.id) doors.add(String(res.id));
           else complete = false;
         } else if (res.type === 'door_group') {
+          groupsReferenced = true;
           const members = groupToDoors.get(String(res.id));
           if (members) for (const d of members) doors.add(String(d));
           else complete = false; // group we could not expand -> fail open
@@ -61,7 +63,7 @@ function parseAccessPolicies(users, doorGroups) {
     allowedDoorsByUser.set(String(user.id), doors);
     completeByUser.set(String(user.id), complete);
   }
-  return { allowedDoorsByUser, completeByUser };
+  return { allowedDoorsByUser, completeByUser, groupsReferenced };
 }
 
 /**
@@ -78,28 +80,43 @@ function buildAccess(opts) {
   const doorsByName = o.doorsByName instanceof Map
     ? o.doorsByName
     : new Map(Object.entries(o.doorsByName || {}));
+  const doorsById = o.doorsById instanceof Map
+    ? o.doorsById
+    : new Map(Object.entries(o.doorsById || {}));
   return {
     available: !!o.available,
     doorsByName,
+    doorsById, // door id -> name; used to confirm a rule's trigger_door_id still exists
     allowedDoorsByUser: o.allowedDoorsByUser instanceof Map ? o.allowedDoorsByUser : new Map(),
     completeByUser: o.completeByUser instanceof Map ? o.completeByUser : new Map(),
   };
 }
 
 /**
- * Verdict for one user against one door name.
+ * Verdict for one user against one gating door. The door is given either as a
+ * bare name (back-compat) or as a { id, name } spec. A stored door id is
+ * preferred and survives a rename, with the name kept as a fallback and for
+ * display, so a door rename in UniFi no longer silently un-gates a lock.
  * @returns {'allowed'|'denied'|'ungated'|'unknown'}
  *   ungated: the lock has no gating door -> today's "all users" behavior.
  *   unknown: cannot decide safely -> callers fail OPEN (never revoke).
  */
-function doorAccessVerdict(access, userId, doorName) {
-  if (!doorName) return 'ungated';
+function doorAccessVerdict(access, userId, door) {
+  const spec = (door && typeof door === 'object') ? door : { id: null, name: door || null };
+  const name = spec.name || null;
+  const id = spec.id != null ? String(spec.id) : null;
+  if (!id && !name) return 'ungated';
   if (!access || !access.available) return 'unknown';
-  const doorId = access.doorsByName.get(doorName);
-  if (!doorId) return 'unknown'; // door not discovered / renamed in UniFi
+  let doorId = null;
+  if (id && access.doorsById && access.doorsById.has(id)) doorId = id; // confirmed id wins
+  if (!doorId && name) {
+    const byName = access.doorsByName.get(name);
+    if (byName) doorId = String(byName); // fall back to the name lookup
+  }
+  if (!doorId) return 'unknown'; // id not confirmed and name not discovered / renamed
   if (access.completeByUser.get(String(userId)) === false) return 'unknown';
   const allowed = access.allowedDoorsByUser.get(String(userId));
-  return allowed && allowed.has(String(doorId)) ? 'allowed' : 'denied';
+  return allowed && allowed.has(doorId) ? 'allowed' : 'denied';
 }
 
 /**
@@ -113,8 +130,10 @@ function doorAccessVerdict(access, userId, doorName) {
 function classifyLocksForUser(userId, lockList, deadboltRulesCfg, access) {
   return (lockList || []).map((l) => {
     const rule = deadboltRules.rulesForLock(deadboltRulesCfg, l.lock_id);
-    const door = (rule && rule.trigger_door) || null;
-    return { lock_id: l.lock_id, verdict: doorAccessVerdict(access, userId, door), door };
+    const name = (rule && rule.trigger_door) || null;
+    const id = (rule && rule.trigger_door_id) || null;
+    // Prefer the stored door id (rename-proof), keep the name for display.
+    return { lock_id: l.lock_id, verdict: doorAccessVerdict(access, userId, { id, name }), door: name };
   });
 }
 

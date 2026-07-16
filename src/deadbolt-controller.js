@@ -47,6 +47,7 @@ class DeadboltController {
     const casc = config.cascade_rules || {};
     this.deadbolt = db;
     this.triggerDoor = db.trigger_door || null;
+    this.triggerDoorId = db.trigger_door_id || null; // rename-proof match, name kept for display
     this.requireResult = db.require_result || 'ACCESS';
     this.mirrorUnlock = !!db.mirror_unlock; // retract on unsecured transition too (off by default)
     this.relockCooldownMs = (db.relock_cooldown_seconds == null ? 10 : db.relock_cooldown_seconds) * 1000;
@@ -90,9 +91,13 @@ class DeadboltController {
       const actor = s.actor || {};
       const auth = s.authentication || {};
       let doorName = null;
+      let doorId = null;
       let direction = null;
       for (const t of s.target || []) {
-        if (t.type === 'door') doorName = t.display_name || t.name || doorName;
+        if (t.type === 'door') {
+          doorName = t.display_name || t.name || doorName;
+          doorId = t.id || doorId;
+        }
         if (t.type === 'device_config' && t.id === 'door_entry_method') {
           direction = normName(t.display_name);
         }
@@ -100,6 +105,7 @@ class DeadboltController {
       return {
         result: ev.result,
         doorName,
+        doorId,
         direction,
         actorName: actor.display_name || null,
         credentialProvider: auth.credential_provider || null,
@@ -122,7 +128,7 @@ class DeadboltController {
     if ((d.location_type || '') !== 'door') return null;
     const state = d.state || {};
     if (!state.lock) return null;
-    return { doorName: d.name || d.full_name || null, lock: state.lock };
+    return { doorName: d.name || d.full_name || null, doorId: d.unique_id || d.id || null, lock: state.lock };
   }
 
   // ---- decisions ---------------------------------------------------------
@@ -138,6 +144,14 @@ class DeadboltController {
     return normName(eventName) === normName(configName);
   }
 
+  // Prefer a door id match (survives a UniFi rename) when both the event and
+  // the rule carry an id; otherwise fall back to the name match, so behavior is
+  // unchanged until ids are backfilled onto the rules.
+  _matchDoorSpec(eventName, eventId, ruleName, ruleId) {
+    if (ruleId && eventId) return String(ruleId) === String(eventId);
+    return this._matchDoor(eventName, ruleName);
+  }
+
   _onAccessGrant(g) {
     if (g.result !== this.requireResult) return;
     if (this._isSelfTriggered(g)) {
@@ -147,18 +161,18 @@ class DeadboltController {
     // Exits are not credential-tracked; if a reader ever reports exit, do nothing.
     if (g.direction === 'exit') return;
 
-    if (this.lockDriver && this._matchDoor(g.doorName, this.triggerDoor)) {
+    if (this.lockDriver && this._matchDoorSpec(g.doorName, g.doorId, this.triggerDoor, this.triggerDoorId)) {
       this._retract(`entry: ${g.actorName || 'user'} at ${g.doorName}`);
     }
     this.cascadeRules.forEach((rule, idx) => {
-      if (this._matchDoor(g.doorName, rule.trigger_door) && this._debounceOk(rule, idx)) {
+      if (this._matchDoorSpec(g.doorName, g.doorId, rule.trigger_door, rule.trigger_door_id) && this._debounceOk(rule, idx)) {
         this._cascade(rule, g);
       }
     });
   }
 
   _onLocationUpdate(l) {
-    if (!this.lockDriver || !this._matchDoor(l.doorName, this.triggerDoor)) return;
+    if (!this.lockDriver || !this._matchDoorSpec(l.doorName, l.doorId, this.triggerDoor, this.triggerDoorId)) return;
     const prev = this._lastLockState;
     this._lastLockState = l.lock;
     // Only act on an OBSERVED transition. A null prior state means this is the

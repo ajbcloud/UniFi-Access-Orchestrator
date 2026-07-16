@@ -50,6 +50,17 @@ class UniFiClient {
     this.accessPolicySyncedAt = null;
     this.accessPolicyError = null;
     this._lastAccessSyncSummary = null;
+    // Fired after each access-policy sync so the app can reconcile keypad codes
+    // against a changed door-access model. The `changed` flag is content based
+    // (see _accessPolicyHash) so a callback only signals a real access change,
+    // not the 15-second config-sync tick that also refreshes this cache.
+    this.onAccessPoliciesChanged = null;
+    this._lastAccessHash = null;
+    // Distinct signal for a failed /door_groups read (vs a healthy sync). When
+    // set and any user grants access through a group, those users cannot be
+    // gated and fail open, so the UI surfaces it instead of a silent debug log.
+    this.doorGroupsError = null;
+    this.accessPolicyGroupsReferenced = false;
 
     // WebSocket
     this.ws = null;
@@ -489,7 +500,9 @@ class UniFiClient {
         }
         map.set(String(g.id), doors);
       }
+      this.doorGroupsError = null; // a successful read (even zero groups) clears the flag
     } catch (err) {
+      this.doorGroupsError = err.message;
       logger.debug(`Door-group fetch failed (${err.message}); door_group access resources will be treated as unexpandable`);
     }
     return map;
@@ -500,7 +513,8 @@ class UniFiClient {
     try {
       const doorGroups = await this.fetchDoorGroups();
       const users = await this.requestAllPages('/users?expand[]=access_policy');
-      const { allowedDoorsByUser, completeByUser } = accessGating.parseAccessPolicies(users, doorGroups);
+      const { allowedDoorsByUser, completeByUser, groupsReferenced } = accessGating.parseAccessPolicies(users, doorGroups);
+      this.accessPolicyGroupsReferenced = !!groupsReferenced;
 
       // Atomic swap on success.
       this.userDoorAccess = allowedDoorsByUser;
@@ -516,11 +530,39 @@ class UniFiClient {
       const changed = summary !== this._lastAccessSyncSummary;
       this._lastAccessSyncSummary = summary;
       logger[changed ? 'info' : 'debug'](summary);
+
+      // Signal a reconcile only when a user's allowed-door set or completeness
+      // actually shifted, so the frequent config-sync refresh does not schedule
+      // a reconcile on every tick.
+      const hash = this._accessPolicyHash();
+      const contentChanged = hash !== this._lastAccessHash;
+      this._lastAccessHash = hash;
+      if (typeof this.onAccessPoliciesChanged === 'function') {
+        try {
+          this.onAccessPoliciesChanged({ reason: 'access_policies_synced', changed: contentChanged });
+        } catch (e) {
+          logger.debug(`onAccessPoliciesChanged handler failed: ${e.message}`);
+        }
+      }
     } catch (err) {
       // Keep the prior cache; never flip anyone to denied on a transient error.
       this.accessPolicyError = err.message;
       logger.warn(`Access policy sync failed (${err.message}); keypad gating uses the last good data${this.accessPolicyAvailable ? '' : ' (none yet: gating is not enforced)'}`);
     }
+  }
+
+  // Content fingerprint of the access model: each user's sorted allowed-door
+  // set plus completeness. Used to decide whether a sync actually changed
+  // anything worth reconciling.
+  _accessPolicyHash() {
+    const parts = [];
+    const entries = [...this.userDoorAccess.entries()]
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    for (const [uid, set] of entries) {
+      const doors = [...set].sort().join(',');
+      parts.push(`${uid}=${doors}:${this.userAccessComplete.get(uid) ? 1 : 0}`);
+    }
+    return parts.join('|');
   }
 
   // Status snapshot for diagnostics/health.
@@ -533,6 +575,8 @@ class UniFiClient {
       users: this.userDoorAccess.size,
       incomplete_users: incomplete,
       error: this.accessPolicyError,
+      door_groups_error: this.doorGroupsError,
+      groups_referenced: this.accessPolicyGroupsReferenced,
     };
   }
 

@@ -46,7 +46,7 @@
   --border-light: #B8BAB4;
   --text-primary: #0C2414;
   --text-secondary: #35473C;
-  --text-muted: #566459;
+  --text-muted: #414B45;
 
   /* accent = the readable, text-safe green ("dark highlight" on concrete) */
   --accent: #15522A;
@@ -67,6 +67,7 @@
 
   --yellow: #7E5410;
   --yellow-dim: rgba(126,84,16,0.16);
+  --on-warning: #FFFFFF;
 
   --red: #CF3A2A;
   --red-hover: #B22E20;
@@ -86,8 +87,8 @@
   --btn2-bg: #BCBDB7;
   --btn2-fg: #0C2414;
   --btn2-hover: #ADAFA9;
-  --eyebrow: #566459;
-  --mono-muted: #566459;
+  --eyebrow: #414B45;
+  --mono-muted: #414B45;
 
   --overlay: rgba(12,36,20,0.5);
   --shadow: rgba(20,30,25,0.22);
@@ -251,7 +252,7 @@
   --border-light: #AEB0AA;
   --text-primary: #0C2414;
   --text-secondary: #35473C;
-  --text-muted: #566459;
+  --text-muted: #414B45;
   --accent: #15522A;
   --accent-hover: #0E3D1F;
   --accent-dim: rgba(21,82,42,0.14);
@@ -266,6 +267,7 @@
   --on-success: #FFFFFF;
   --yellow: #7E5410;
   --yellow-dim: rgba(126,84,16,0.16);
+  --on-warning: #FFFFFF;
   --red: #CF3A2A;
   --red-hover: #B22E20;
   --red-dim: rgba(207,58,42,0.14);
@@ -276,8 +278,8 @@
   --btn2-bg: #A6A8A2;
   --btn2-fg: #0C2414;
   --btn2-hover: #999B95;
-  --eyebrow: #566459;
-  --mono-muted: #566459;
+  --eyebrow: #414B45;
+  --mono-muted: #414B45;
   --card-accent: #1B5E33;
   --shadow: rgba(20,30,25,0.22);
   color: var(--text-primary);
@@ -298,7 +300,7 @@
     --border-light: #AEB0AA;
     --text-primary: #0C2414;
     --text-secondary: #35473C;
-    --text-muted: #566459;
+    --text-muted: #414B45;
     --accent: #15522A;
     --accent-hover: #0E3D1F;
     --accent-dim: rgba(21,82,42,0.14);
@@ -313,6 +315,7 @@
     --on-success: #FFFFFF;
     --yellow: #7E5410;
     --yellow-dim: rgba(126,84,16,0.16);
+    --on-warning: #FFFFFF;
     --red: #CF3A2A;
     --red-hover: #B22E20;
     --red-dim: rgba(207,58,42,0.14);
@@ -323,8 +326,8 @@
     --btn2-bg: #A6A8A2;
     --btn2-fg: #0C2414;
     --btn2-hover: #999B95;
-    --eyebrow: #566459;
-    --mono-muted: #566459;
+    --eyebrow: #414B45;
+    --mono-muted: #414B45;
     --card-accent: #1B5E33;
     --shadow: rgba(20,30,25,0.22);
     color: var(--text-primary);
@@ -381,6 +384,7 @@ body {
 .status-pill.online { background: var(--green-dim); color: var(--green); }
 .status-pill.offline { background: var(--red-dim); color: var(--red); }
 .status-pill.reconnecting { background: var(--yellow-dim); color: var(--yellow); }
+.status-pill.connecting { background: var(--sage-dim); color: var(--sage); }
 
 /* The status pill lives on the banner; keep its text bright enough to read on
    the dark-green (light mode) or near-black (dark mode) banner background. */
@@ -388,6 +392,7 @@ body {
 .header .status-pill.online { color: #7FD69A; }
 .header .status-pill.offline { color: #FF8F7C; }
 .header .status-pill.reconnecting { color: #F0C24A; }
+.header .status-pill.connecting { color: #B7CDBE; }
 
 .status-dot {
   width: 6px; height: 6px;
@@ -416,6 +421,13 @@ body {
   border-bottom: 2px solid transparent;
   transition: all 0.15s;
   user-select: none;
+  /* the tabs are real buttons now (keyboard operable); strip the UA chrome */
+  background: none;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  font-family: inherit;
+  line-height: normal;
 }
 
 .tab:hover { color: var(--banner-fg); }
@@ -435,10 +447,15 @@ body {
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--card-accent);
   border-radius: var(--radius);
   padding: 20px;
 }
+
+/* The left stripe now encodes state, not decoration. Apply a modifier only
+   where a card reflects a live condition (for example the deadbolt card). */
+.card-state-ok { border-left: 3px solid var(--green); }
+.card-state-degraded { border-left: 3px solid var(--yellow); }
+.card-state-fault { border-left: 3px solid var(--red); }
 
 .card-title {
   font-size: 11px;
@@ -517,10 +534,30 @@ body {
   font-weight: 600;
 }
 
-.badge.success { background: var(--green-dim); color: var(--green); }
-.badge.warning { background: var(--yellow-dim); color: var(--yellow); }
-.badge.error { background: var(--red-dim); color: var(--red); }
-.badge.info { background: var(--blue-dim); color: var(--accent); }
+/* Status chips are solid fills with on-color text so they clear 4.5:1 on the
+   grey concrete cards, where the raw status colors fail as text. */
+.badge.success { background: var(--green); color: var(--on-success); }
+.badge.warning { background: var(--yellow); color: var(--on-warning); }
+.badge.error { background: var(--red); color: var(--on-danger); }
+.badge.info { background: var(--accent); color: var(--on-accent); }
+.badge.neon { background: var(--neon); color: var(--on-neon); }
+
+/* Full-width notice block for panel-level warnings (for example the keypad
+   gating banner). Solid fill, readable text, meaning carried by color. */
+.notice { display: block; padding: 8px 10px; border-radius: var(--radius);
+  font-size: 12px; font-weight: 500; line-height: 1.4; margin-bottom: 8px; }
+.notice-warn { background: var(--yellow); color: var(--on-warning); }
+.notice-danger { background: var(--red); color: var(--on-danger); }
+
+/* Live Events filter controls */
+.event-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.filter-chips { display: inline-flex; gap: 4px; }
+.chip { font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: transparent; color: var(--text-secondary); cursor: pointer; }
+.chip:hover { border-color: var(--border-light); }
+.chip.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.event-filters select, .event-filters input { font-size: 12px; padding: 5px 8px; }
+.event-filters input { min-width: 160px; }
 
 /* Event log container */
 .event-log {
@@ -558,7 +595,13 @@ select, input[type="text"], input[type="number"] {
   transition: border-color 0.15s;
 }
 
-select:focus, input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px var(--neon-glow); }
+/* Focus rings by zone: content-zone controls (inside grey cards) use the
+   readable dark-green accent; chrome-zone controls (banner, tabs) use neon.
+   Every interactive element gets a visible ring for keyboard users. */
+select:focus-visible, input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: none; }
+.header :focus-visible, .tabs [role="tab"]:focus-visible { outline: 2px solid var(--neon); outline-offset: -2px; }
 
 select { cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%236a7d72'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
 
@@ -580,17 +623,27 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .btn-primary:hover { background: var(--neon-strong); box-shadow: 0 2px 14px var(--neon-glow); }
 .btn-secondary { background: var(--btn2-bg); color: var(--btn2-fg); border-color: var(--border); }
 .btn-secondary:hover { background: var(--btn2-hover); }
+.btn-ghost { background: transparent; color: var(--accent); border-color: var(--border); }
+.btn-ghost:hover { background: var(--accent-dim); }
 .btn-danger { background: var(--red); color: var(--on-danger); }
 .btn-danger:hover { background: var(--red-hover); }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* Distinct loading vs empty states, so a stalled fetch does not look like an
+   empty result. */
+.loading { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 13px; padding: 16px; }
+.loading-spinner { width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: var(--accent); animation: uao-spin 0.7s linear infinite; }
+@keyframes uao-spin { to { transform: rotate(360deg); } }
+.empty-state { text-align: center; padding: 32px 20px; color: var(--text-muted); font-size: 13px; }
+.empty-state .empty-icon { font-size: 26px; opacity: 0.5; margin-bottom: 8px; }
+
 /* Config section */
 .config-section {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--card-accent);
   border-radius: var(--radius);
   margin-bottom: 16px;
 }
@@ -701,11 +754,12 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   right: 16px;
   display: flex;
   gap: 6px;
-  opacity: 0;
+  opacity: 0.55; /* discoverable at rest, full on hover or keyboard focus */
   transition: opacity 0.15s;
 }
 
-.rule-card:hover .rule-actions { opacity: 1; }
+.rule-card:hover .rule-actions,
+.rule-card:focus-within .rule-actions { opacity: 1; }
 
 .rule-actions button {
   background: var(--bg-hover);
@@ -1245,8 +1299,6 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .fd-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
 .fd-check.on { color: var(--text-primary); }
 .fd-form-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-.btn.btn-danger { background: var(--red-dim); color: var(--red); border-color: transparent; }
-.btn.btn-danger:hover { background: var(--red); color: #fff; }
 .fd-rulechip {
   display: flex; align-items: center; gap: 8px; width: 100%;
   background: var(--bg-input); border: 1px solid var(--border);
@@ -1279,25 +1331,25 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 <div class="header">
   <div class="header-left">
     <div class="logo"><span>UniFi Access</span> Orchestrator</div>
-    <div id="statusPill" class="status-pill offline" title="UniFi controller link (not the Z-Wave lock)">
-      <div class="status-dot"></div>
-      <span>Connecting...</span>
+    <div id="statusPill" class="status-pill connecting" title="UniFi controller link (not the Z-Wave lock)">
+      <div class="status-dot" aria-hidden="true"></div>
+      <span>Connecting</span>
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:12px">
     <div style="font-size:12px;color:var(--banner-fg-dim)" id="uptimeDisplay"></div>
-    <button class="btn btn-sm btn-secondary" id="themeToggle" onclick="toggleTheme()" title="Switch color theme" aria-label="Switch color theme">&#127769; Theme</button>
+    <button class="btn btn-sm btn-secondary" id="themeToggle" onclick="toggleTheme()" title="Switch color theme" aria-label="Switch color theme">&#127769; Dark</button>
     <button class="btn btn-sm btn-secondary" id="headerSetupBtn" onclick="showSetupWizard()" title="Controller connection and setup">&#9881; Setup</button>
   </div>
 </div>
 
-<div class="tabs" id="tabBar">
-  <div class="tab active" data-page="dashboard">Dashboard</div>
-  <div class="tab" data-page="events">Live Events</div>
-  <div class="tab" data-page="config">Configuration</div>
-  <div class="tab" data-page="designer">Visual Designer</div>
-  <div class="tab" data-page="settings">Settings</div>
-  <div class="tab" data-page="tools">Test Tools</div>
+<div class="tabs" id="tabBar" role="tablist" aria-label="Main sections">
+  <button class="tab active" role="tab" data-page="dashboard" aria-selected="true" tabindex="0">Dashboard</button>
+  <button class="tab" role="tab" data-page="events" aria-selected="false" tabindex="-1">Live Events</button>
+  <button class="tab" role="tab" data-page="config" aria-selected="false" tabindex="-1">Automations</button>
+  <button class="tab" role="tab" data-page="designer" aria-selected="false" tabindex="-1">Visual Designer</button>
+  <button class="tab" role="tab" data-page="settings" aria-selected="false" tabindex="-1">Settings</button>
+  <button class="tab" role="tab" data-page="tools" aria-selected="false" tabindex="-1">Test Tools</button>
 </div>
 
 <div class="main">
@@ -1307,7 +1359,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <div id="setup" class="page" style="display:none">
     <div class="wizard-shell">
       <div class="wizard-head">
-        <div class="wizard-emoji">&#x1F513;</div>
+        <div class="wizard-emoji" aria-hidden="true">&#x1F513;</div>
         <h1 id="wizardTitle">Welcome to UniFi Access Orchestrator</h1>
         <p id="wizardSubtitle">Let's find your controller and set up your first automation.</p>
       </div>
@@ -1317,7 +1369,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <!-- STEP: welcome -->
       <section class="wizard-step" data-step="welcome">
         <div class="card">
-          <div class="card-title">What this wizard does</div>
+          <div class="card-title" role="heading" aria-level="2">What this wizard does</div>
           <div style="font-size:13px;color:var(--text-secondary);line-height:1.6">
             In a few short steps we'll connect to your UniFi Access controller,
             confirm it can see your doors and users, and help you create your
@@ -1339,7 +1391,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
            runDiscovery / selectController / testConnection work unchanged) -->
       <section class="wizard-step" data-step="connect">
         <div class="card" id="setupStep1">
-          <div class="card-title">Find your controller
+          <div class="card-title" role="heading" aria-level="2">Step 1 of 3: find your controller
             <span class="tip" tabindex="0" data-tip="We scan your local subnets for devices answering on the UniFi Access API port. If yours is on another VLAN, type its IP below.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
@@ -1347,7 +1399,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
           </div>
 
           <div id="discoveryStatus" style="margin-bottom:16px">
-            <button class="btn btn-primary" onclick="runDiscovery()" id="discoverBtn">
+            <button class="btn btn-secondary" onclick="runDiscovery()" id="discoverBtn">
               Scan Network
             </button>
           </div>
@@ -1363,7 +1415,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         </div>
 
         <div class="card" style="margin-top:16px" id="setupStep2">
-          <div class="card-title">API token
+          <div class="card-title" role="heading" aria-level="2">Step 2 of 3: API token
             <span class="tip" tabindex="0" data-tip="The token authorizes this app to read doors and users and to trigger unlocks. Treat it like a password; it is stored locally and never shown again after saving.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
@@ -1372,12 +1424,12 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
           </div>
 
           <div class="form-group" style="margin-bottom:0">
-            <input type="text" id="setupToken" placeholder="Paste your API token here">
+            <input type="password" id="setupToken" placeholder="Paste your API token here" autocomplete="off">
           </div>
         </div>
 
         <div class="card" style="margin-top:16px">
-          <div class="card-title">Test the connection</div>
+          <div class="card-title" role="heading" aria-level="2">Step 3 of 3: test the connection</div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             We'll save these details and check that the controller responds and
             can see your doors and users. Once it succeeds you can continue.
@@ -1402,7 +1454,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
           </div>
 
           <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
-            <button class="btn btn-primary" onclick="testConnection()" id="setupTestBtn">Test Connection</button>
+            <button class="btn btn-secondary" onclick="testConnection()" id="setupTestBtn">Test Connection</button>
           </div>
 
           <div id="setupStatus" style="margin-top:16px;font-size:13px"></div>
@@ -1412,7 +1464,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <!-- STEP: sync -->
       <section class="wizard-step" data-step="sync">
         <div class="card">
-          <div class="card-title">Confirm doors and users
+          <div class="card-title" role="heading" aria-level="2">Confirm doors and users
             <span class="tip" tabindex="0" data-tip="The orchestrator pulls the door list and the user directory from the controller. Rules reference these by name, so it helps to confirm they came through.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
@@ -1420,19 +1472,19 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
             users are missing, run a sync; new users appear once they badge in or
             after the next scheduled sync.
           </div>
-          <div id="wizSyncStats"><div style="color:var(--text-muted)">Loading...</div></div>
+          <div id="wizSyncStats"><div style="color:var(--text-muted)"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div></div>
         </div>
       </section>
 
       <!-- STEP: groups -->
       <section class="wizard-step" data-step="groups">
         <div class="card">
-          <div class="card-title">Name your groups
+          <div class="card-title" role="heading" aria-level="2">Name your groups
             <span class="tip" tabindex="0" data-tip="UniFi group names are often technical. Map them to friendly labels (like Staff or Delivery) that your rules will use. Leave a row blank to keep the UniFi name.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             Give your UniFi groups friendly names to use in rules. This is
-            optional; you can always change it later in the Configuration tab.
+            optional; you can always change it later in the Automations tab.
           </div>
           <div id="wizGroupMappings"><div style="color:var(--text-muted)">Loading groups...</div></div>
         </div>
@@ -1441,14 +1493,14 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <!-- STEP: rule -->
       <section class="wizard-step" data-step="rule">
         <div class="card">
-          <div class="card-title">Create your first rule
+          <div class="card-title" role="heading" aria-level="2">Create your first rule
             <span class="tip" tabindex="0" data-tip="An access rule says: when someone in a group badges at a chosen door, unlock one or more doors. This is the core of the orchestrator.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             Rules are what make the orchestrator act. A simple first rule might
             be: when <em>Staff</em> badge at the <em>Front Door</em>, also unlock
             the <em>Inner Door</em>. You can build rules in the full editor on the
-            Configuration tab, then come back here to finish.
+            Automations tab, then come back here to finish.
           </div>
           <div id="wizRuleSummary"><div style="color:var(--text-muted)">Loading rules...</div></div>
         </div>
@@ -1457,14 +1509,14 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <!-- STEP: events -->
       <section class="wizard-step" data-step="events">
         <div class="card">
-          <div class="card-title">How events reach the app
+          <div class="card-title" role="heading" aria-level="2">How events reach the app
             <span class="tip" tabindex="0" data-tip="This is how the controller tells the app that someone badged in. Most installs should use Alarm Manager, which the app configures on the controller for you.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             Pick how the orchestrator learns about access events. If you're not
             sure, leave the recommended option selected.
           </div>
-          <div id="wizEventChoice"><div style="color:var(--text-muted)">Loading...</div></div>
+          <div id="wizEventChoice"><div style="color:var(--text-muted)"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div></div>
         </div>
       </section>
 
@@ -1491,7 +1543,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         <button class="btn btn-sm btn-secondary" onclick="hideDocs()">Back to Dashboard</button>
       </div>
       <div class="card">
-        <div id="docsContent" style="font-size:14px;line-height:1.8;color:var(--text-secondary)">Loading...</div>
+        <div id="docsContent" style="font-size:14px;line-height:1.8;color:var(--text-secondary)"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
       </div>
     </div>
   </div>
@@ -1500,26 +1552,26 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <div id="dashboard" class="page active">
     <div class="grid grid-4" style="margin-bottom:16px">
       <div class="card">
-        <div class="stat-icon blue">&#x1F6AA;</div>
-        <div class="card-title">Doors Discovered</div>
+        <div class="stat-icon blue" aria-hidden="true">&#x1F6AA;</div>
+        <div class="card-title" role="heading" aria-level="2">Doors Discovered</div>
         <div class="card-value" id="statDoors">-</div>
         <div class="card-sub" id="statDoorsOnline"></div>
       </div>
       <div class="card">
-        <div class="stat-icon green">&#x1F465;</div>
-        <div class="card-title">Users Mapped</div>
+        <div class="stat-icon green" aria-hidden="true">&#x1F465;</div>
+        <div class="card-title" role="heading" aria-level="2">Users Mapped</div>
         <div class="card-value" id="statUsers">-</div>
         <div class="card-sub" id="statUsersGroups"></div>
       </div>
       <div class="card">
-        <div class="stat-icon yellow">&#x26A1;</div>
-        <div class="card-title">Events Received</div>
+        <div class="stat-icon yellow" aria-hidden="true">&#x26A1;</div>
+        <div class="card-title" role="heading" aria-level="2">Events Received</div>
         <div class="card-value" id="statEvents">-</div>
         <div class="card-sub" id="statEventsProcessed"></div>
       </div>
       <div class="card">
-        <div class="stat-icon green">&#x1F513;</div>
-        <div class="card-title">Unlocks Triggered</div>
+        <div class="stat-icon green" aria-hidden="true">&#x1F513;</div>
+        <div class="card-title" role="heading" aria-level="2">Unlocks Triggered</div>
         <div class="card-value" id="statUnlocks">-</div>
         <div class="card-sub" id="statUnlocksFailed"></div>
       </div>
@@ -1527,22 +1579,22 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 
     <div class="grid grid-2">
       <div class="card">
-        <div class="card-title">Last Event</div>
+        <div class="card-title" role="heading" aria-level="2">Last Event</div>
         <div id="lastEvent" style="font-size:13px;color:var(--text-secondary)">No events yet</div>
       </div>
       <div class="card">
-        <div class="card-title">Last Unlock</div>
+        <div class="card-title" role="heading" aria-level="2">Last Unlock</div>
         <div id="lastUnlock" style="font-size:13px;color:var(--text-secondary)">No unlocks yet</div>
       </div>
     </div>
 
     <div class="card" style="margin-top:16px">
-      <div class="card-title" style="display:flex;align-items:center;gap:8px">System Info <span id="infoVersion" style="font-size:11px;font-weight:500;color:var(--text-muted);background:var(--bg-secondary);padding:2px 8px;border-radius:4px">-</span></div>
+      <div class="card-title" role="heading" aria-level="2" style="display:flex;align-items:center;gap:8px">System Info <span id="infoVersion" style="font-size:11px;font-weight:500;color:var(--text-muted);background:var(--bg-secondary);padding:2px 8px;border-radius:4px">-</span></div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px">
         <div><span style="color:var(--text-muted)">Event Source:</span> <span id="infoEventSource">-</span> <span id="infoWsStatus"></span></div>
         <div><span style="color:var(--text-muted)">Memory:</span> <span id="infoMemory">-</span></div>
         <div><span style="color:var(--text-muted)">Uptime:</span> <span id="infoUptime">-</span></div>
-        <div><span style="color:var(--text-muted)">Access Gateway:</span> <span id="infoHost">-</span> <span id="infoConnState"></span></div>
+        <div><span style="color:var(--text-muted)">UniFi controller:</span> <span id="infoHost">-</span> <span id="infoConnState"></span></div>
         <div id="infoLastEvent" style="display:none"><span style="color:var(--text-muted)">Last Event:</span> <span id="infoLastEventAge">-</span></div>
         <div id="infoLastRule" style="display:none;grid-column:1 / -1"><span style="color:var(--text-muted)">Last Rule Triggered:</span> <span id="infoLastRuleText">-</span></div>
         <div id="infoWsFilter" style="display:none"><span style="color:var(--text-muted)">WS Events:</span> <span id="infoWsFilterStats">-</span></div>
@@ -1550,7 +1602,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     </div>
 
     <div class="card" id="deadboltCard" style="margin-top:16px;display:none">
-      <div class="card-title" style="display:flex;align-items:center;gap:8px">Smart Deadbolt <span id="deadboltState" class="badge">-</span></div>
+      <div class="card-title" role="heading" aria-level="2" style="display:flex;align-items:center;gap:8px">Smart Deadbolt <span id="deadboltState" class="badge">-</span></div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px">
         <div><span style="color:var(--text-muted)">Lock:</span> <span id="deadboltModel">-</span></div>
         <div><span style="color:var(--text-muted)">Security:</span> <span id="deadboltSecurity">-</span></div>
@@ -1567,11 +1619,21 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <!-- LIVE EVENTS -->
   <div id="events" class="page">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <div style="font-size:15px;font-weight:600">Live Event Feed</div>
+      <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Live Event Feed</div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-sm btn-secondary" onclick="toggleAutoscroll()" id="autoscrollBtn">Autoscroll: ON</button>
         <button class="btn btn-sm btn-secondary" onclick="clearEvents()">Clear</button>
       </div>
+    </div>
+    <div class="event-filters" id="eventFilters">
+      <div class="filter-chips" role="group" aria-label="Filter events by outcome">
+        <button class="chip" data-kind="all" aria-pressed="false" onclick="setEventFilterKind('all')">All</button>
+        <button class="chip" data-kind="actioned" aria-pressed="false" onclick="setEventFilterKind('actioned')">Actioned</button>
+        <button class="chip" data-kind="skipped" aria-pressed="false" onclick="setEventFilterKind('skipped')">Skipped</button>
+        <button class="chip" data-kind="failed" aria-pressed="false" onclick="setEventFilterKind('failed')">Failed</button>
+      </div>
+      <select id="eventDoorFilter" aria-label="Filter events by door" onchange="setEventFilterDoor(this.value)"><option value="">All doors</option></select>
+      <input id="eventSearch" type="text" placeholder="Search events" aria-label="Search events" oninput="setEventFilterText(this.value)">
     </div>
     <div class="card" style="padding:0">
       <div class="event-log" id="eventLog">
@@ -1597,11 +1659,11 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <!-- CONFIGURATION -->
   <div id="config" class="page">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <div style="font-size:15px;font-weight:600">Configuration</div>
+      <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Automations</div>
       <div style="display:flex;gap:8px;align-items:center">
         <span id="autoSyncPill" class="badge info" title="Background config sync status" style="font-size:11px">Auto-sync: …</span>
-        <button class="btn btn-sm btn-secondary" onclick="loadConfig()">Refresh</button>
-        <button class="btn btn-sm btn-primary" onclick="reloadService()">Reload Service</button>
+        <button class="btn btn-sm btn-secondary" onclick="loadConfig()">Refresh automations</button>
+        <button class="btn btn-sm btn-secondary" onclick="reloadService()">Reload service</button>
       </div>
     </div>
 
@@ -1610,41 +1672,37 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         Door Mappings
         <button class="btn btn-sm btn-secondary" onclick="syncDoors()">Rediscover Doors</button>
       </div>
-      <div class="config-body" id="configDoors">Loading...</div>
+      <div class="config-body" id="configDoors"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
 
     <div class="config-section">
       <div class="config-header">User Groups</div>
-      <div class="config-body" id="configUsers">Loading...</div>
+      <div class="config-body" id="configUsers"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
 
     <div class="config-section">
       <div class="config-header">
         Access Rules (NFC / PIN / Face / Mobile)
-        <button class="btn btn-sm btn-primary" onclick="showNfcRuleForm()">Add Rule</button>
+        <button class="btn btn-sm btn-ghost" onclick="showNfcRuleForm()">Add Rule</button>
       </div>
-      <div class="config-body" id="configNfcRules">Loading...</div>
+      <div class="config-body" id="configNfcRules"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
 
     <div class="config-section">
       <div class="config-header">
         Visitor Rules (Doorbell / Buzz-in)
-        <button class="btn btn-sm btn-primary" onclick="showDoorbellRuleForm()">Add Rule</button>
+        <button class="btn btn-sm btn-ghost" onclick="showDoorbellRuleForm()">Add Rule</button>
       </div>
-      <div class="config-body" id="configDoorbellRules">Loading...</div>
+      <div class="config-body" id="configDoorbellRules"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
 
-    <div class="config-section">
-      <div class="config-header">Event Source</div>
-      <div class="config-body" id="configEventSource">Loading...</div>
-    </div>
 
     <div class="config-section">
       <div class="config-header">
         Smart Deadbolt (Z-Wave)
         <button class="btn btn-sm btn-secondary" onclick="loadSerialPorts()">Refresh Ports</button>
       </div>
-      <div class="config-body" id="configZwave">Loading...</div>
+      <div class="config-body" id="configZwave"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
   </div>
 
@@ -1652,10 +1710,10 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <div id="designer" class="page">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div>
-        <div style="font-size:15px;font-weight:600">Visual Designer</div>
-        <div style="font-size:12px;color:var(--text-muted)">Build cascading door rules and the deadbolt add-on visually. Changes here fill in the Configuration tab, and vice versa.</div>
+        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Visual Designer</div>
+        <div style="font-size:12px;color:var(--text-muted)">Build cascading door rules and the deadbolt add-on visually. Changes here fill in the Automations tab, and vice versa.</div>
       </div>
-      <button class="btn btn-sm btn-secondary" onclick="if(window.openDesigner)window.openDesigner()">Refresh</button>
+      <button class="btn btn-sm btn-secondary" onclick="if(window.openDesigner)window.openDesigner()">Refresh designer</button>
     </div>
     <div class="fd-wrap">
       <div class="fd-canvas" id="fdCanvas">
@@ -1679,15 +1737,16 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <!-- SETTINGS -->
     <div id="settings" class="page">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div style="font-size:15px;font-weight:600">Settings</div>
-        <div style="display:flex;gap:8px">
-          <button class="btn btn-sm btn-secondary" onclick="loadSettings()">Refresh</button>
+        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Settings</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span data-dirty-label style="display:none;font-size:12px;color:var(--text-muted)">Unsaved changes</span>
+          <button class="btn btn-sm btn-secondary" onclick="loadSettings()">Refresh settings</button>
           <button class="btn btn-sm btn-primary" id="saveSettingsBtn" onclick="saveSettings()">Save</button>
         </div>
       </div>
 
       <div class="card">
-        <div class="card-title">Server</div>
+        <div class="card-title" role="heading" aria-level="2">Server</div>
         <div class="form-group">
           <label class="form-label">App Port</label>
           <input type="number" id="settingServerPort" placeholder="3000">
@@ -1699,7 +1758,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       </div>
 
       <div class="card" style="margin-top:16px">
-        <div class="card-title">UniFi Controller</div>
+        <div class="card-title" role="heading" aria-level="2">UniFi controller</div>
         <div class="form-group">
           <label class="form-label">Controller Host / IP</label>
           <input type="text" id="settingUnifiHost" placeholder="192.168.1.1">
@@ -1710,15 +1769,20 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         </div>
         <div class="form-group">
           <label class="form-label">API Token (masked)</label>
-          <input type="text" id="settingUnifiToken" placeholder="********" autocomplete="new-password">
+          <input type="password" id="settingUnifiToken" placeholder="********" autocomplete="new-password">
           <div style="font-size:12px;color:var(--text-muted);margin-top:8px">For security, the token is masked. Re-enter to change.</div>
         </div>
       </div>
 
       <div class="card" style="margin-top:16px">
-        <div class="card-title">Auto-Sync</div>
+        <div class="card-title" role="heading" aria-level="2">Event source</div>
+        <div id="settingsEventSource"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-title" role="heading" aria-level="2">Auto-Sync</div>
         <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
-          Periodic background job that detects local config edits and upstream UniFi controller changes (doors, users, group membership) and reloads in place. Read-only — never writes to <code>config.json</code> or the controller.
+          Periodic background job that detects local config edits and upstream UniFi controller changes (doors, users, group membership) and reloads in place. Read-only, never writes to <code>config.json</code> or the controller.
         </div>
         <div class="form-group">
           <label class="form-label">
@@ -1728,12 +1792,12 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         <div class="form-group">
           <label class="form-label">Interval (seconds)</label>
           <input type="number" id="settingAutoSyncInterval" min="5" max="600" placeholder="15">
-          <div style="font-size:12px;color:var(--text-muted);margin-top:4px">Allowed range: 5 – 600 seconds. Default 15.</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:4px">Allowed range: 5 to 600 seconds. Default 15.</div>
         </div>
       </div>
 
       <div class="card" style="margin-top:16px">
-        <div class="card-title">Logging</div>
+        <div class="card-title" role="heading" aria-level="2">Logging</div>
         <div class="form-group">
           <label class="form-label">Log Level</label>
           <select id="settingLogLevel">
@@ -1746,13 +1810,13 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       </div>
 
       <div class="card" style="margin-top:16px">
-        <div class="card-title">Backup &amp; Restore</div>
+        <div class="card-title" role="heading" aria-level="2">Backup &amp; Restore</div>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
           Your configuration is automatically backed up every time you save changes. You can also create manual backups, download them, or restore from a previous backup.
         </p>
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
-          <button class="btn btn-primary" onclick="createManualBackup()">Create Backup Now</button>
-          <button class="btn btn-secondary" onclick="loadBackups()">Refresh</button>
+          <button class="btn btn-secondary" onclick="createManualBackup()">Create Backup Now</button>
+          <button class="btn btn-secondary" onclick="loadBackups()">Refresh backups</button>
         </div>
         <div id="backupInfo" style="font-size:12px;color:var(--text-muted);margin-bottom:12px"></div>
         <div id="backupsList"></div>
@@ -1764,7 +1828,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <div style="font-size:15px;font-weight:600;margin-bottom:16px">Test Tools</div>
 
     <div class="card">
-      <div class="card-title">Test Configured Rules</div>
+      <div class="card-title" role="heading" aria-level="2">Test Configured Rules</div>
       <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Pick a real user and door, run a preflight check, and simulate the rule end-to-end through the same path a real badge tap takes. By default no controller unlock is sent — flip <strong>Execute real unlock</strong> to verify the door physically opens.</p>
 
       <details class="help-blurb">
@@ -1784,13 +1848,13 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 
     <div class="grid grid-2" style="margin-top:16px">
       <div class="card">
-        <div class="card-title">Test Door Unlock</div>
+        <div class="card-title" role="heading" aria-level="2">Test Door Unlock</div>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Click a door to send a remote unlock command via the API.</p>
         <div class="door-grid" id="doorGrid">Loading doors...</div>
       </div>
 
       <div class="card">
-        <div class="card-title">Custom Event Simulation</div>
+        <div class="card-title" role="heading" aria-level="2">Custom Event Simulation</div>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Manually build and send a synthetic event through the rules engine.</p>
 
         <div class="form-group">
@@ -1839,31 +1903,31 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     </div>
 
     <div class="card" style="margin-top:16px">
-      <div class="card-title">Quick Actions</div>
+      <div class="card-title" role="heading" aria-level="2">Quick Actions</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-secondary" onclick="forceSync()">Force User Sync</button>
-        <button class="btn btn-secondary" onclick="reloadService()">Reload Config</button>
+        <button class="btn btn-secondary" onclick="reloadService()">Reload service</button>
         <button class="btn btn-secondary" onclick="fetchHealth()">Refresh Health</button>
       </div>
     </div>
 
     <div class="card" style="margin-top:16px">
-      <div class="card-title">Connectivity Test</div>
+      <div class="card-title" role="heading" aria-level="2">Connectivity Test</div>
       <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
-        Test the connection to your Access Gateway without leaving the app.
+        Test the connection to your UniFi controller without leaving the app.
       </div>
-      <button class="btn btn-primary" onclick="runConnectivityTest()" id="connTestBtn">Test Connection</button>
+      <button class="btn btn-secondary" onclick="runConnectivityTest()" id="connTestBtn">Test Connection</button>
       <div id="connTestResults" style="margin-top:16px"></div>
     </div>
 
     <div class="card" style="margin-top:16px">
-      <div class="card-title" style="cursor:pointer;display:flex;align-items:center;gap:8px" onclick="toggleRawPayloads()">
-        Recent Raw Events <span id="rawPayloadToggle" style="font-size:10px;color:var(--text-muted)">&#9654;</span>
+      <div class="card-title" role="heading" aria-level="2" style="cursor:pointer;display:flex;align-items:center;gap:8px" onclick="toggleRawPayloads()">
+        Diagnostics: recent raw events <span id="rawPayloadToggle" style="font-size:10px;color:var(--text-muted)">&#9654;</span>
       </div>
       <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
-        Inspect the raw JSON payloads received from UniFi (webhook or WebSocket). Useful for verifying event format and troubleshooting field mapping.
+        Advanced. Inspect the raw JSON payloads received from UniFi (webhook or WebSocket), for verifying event format and troubleshooting field mapping. Collapsed by default.
       </div>
-      <button class="btn btn-secondary" onclick="loadRawPayloads()">Refresh Payloads</button>
+      <button class="btn btn-secondary" onclick="loadRawPayloads()">Refresh payloads</button>
       <div id="rawPayloadsContainer" style="display:none;margin-top:12px">
         <div id="rawPayloadsList" style="font-family:var(--mono);font-size:12px;max-height:500px;overflow-y:auto"></div>
       </div>
@@ -1904,6 +1968,9 @@ let groupsData = null;
 let autoscroll = true;
 let eventSource = null;
 let eventsReceived = false;
+let eventBuffer = [];      // raw events, newest first, capped, so a filter change re-renders without waiting
+let eventFilters = null;   // { kind, door, text }, session-persisted
+const expandedSkips = new Set(); // collapsed skipped-run keys the user opened
 
 // ============================================================
 // Theme (light = Chrome background, dark = Haunted Forest)
@@ -1950,22 +2017,47 @@ applyThemeButton();
 // ============================================================
 // Tab navigation
 // ============================================================
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById(tab.dataset.page).classList.add('active');
-    // Load settings when user opens the Settings tab
-    if (tab.dataset.page === 'settings') {
-      loadSettings();
-      loadBackups();
-    }
-    // (Re)draw the visual designer when its tab is opened
-    if (tab.dataset.page === 'designer' && window.openDesigner) {
-      window.openDesigner();
-    }
-  });
+// Pure: the tab index to move focus to for a given key, or null to ignore.
+function nextTabIndex(key, current, count) {
+  switch (key) {
+    case 'ArrowRight': return (current + 1) % count;
+    case 'ArrowLeft': return (current - 1 + count) % count;
+    case 'Home': return 0;
+    case 'End': return count - 1;
+    default: return null;
+  }
+}
+
+// Activate a tab: shared by mouse, keyboard, and the native menu. Manages the
+// active class, aria-selected, and roving tabindex so keyboard users always
+// have exactly one tab in the focus order.
+function activateTab(tabEl) {
+  if (!tabEl) return;
+  const tabs = Array.from(document.querySelectorAll('#tabBar [role="tab"]'));
+  tabs.forEach((t) => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); t.tabIndex = -1; });
+  document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
+  tabEl.classList.add('active');
+  tabEl.setAttribute('aria-selected', 'true');
+  tabEl.tabIndex = 0;
+  const page = document.getElementById(tabEl.dataset.page);
+  if (page) page.classList.add('active');
+  if (tabEl.dataset.page === 'settings') { loadSettings(); loadBackups(); }
+  if (tabEl.dataset.page === 'designer' && window.openDesigner) window.openDesigner();
+}
+window.activateTab = activateTab;
+
+function handleTabKeydown(e) {
+  const tabs = Array.from(document.querySelectorAll('#tabBar [role="tab"]'));
+  const idx = nextTabIndex(e.key, tabs.indexOf(e.currentTarget), tabs.length);
+  if (idx === null) return;
+  e.preventDefault();
+  tabs[idx].focus();
+  activateTab(tabs[idx]);
+}
+
+document.querySelectorAll('#tabBar [role="tab"]').forEach((tab) => {
+  tab.addEventListener('click', () => activateTab(tab));
+  tab.addEventListener('keydown', handleTabKeydown);
 });
 
 // ============================================================
@@ -1989,26 +2081,53 @@ function toast(message, type = 'info') {
 // keep the scope's own listener, and the button is re-queried on every event
 // so a freshly rendered button is found. Programmatic edits that fire no
 // input/change event (adding or removing a row) call markSectionDirty.
+// One save model everywhere: the Save button stays visible but is disabled
+// until the section is edited, and an adjacent "Unsaved changes" label appears
+// while dirty. A hidden button that silently materialized was easy to miss;
+// this makes the unsaved state explicit and consistent.
 function armDirtySave(scopeSelector, buttonSelector) {
   const scope = document.querySelector(scopeSelector);
   if (!scope) return;
-  const btn = scope.querySelector(buttonSelector);
-  if (btn) btn.style.display = 'none';
+  const setClean = () => {
+    const b = scope.querySelector(buttonSelector);
+    if (b) b.disabled = true;
+    const lbl = scope.querySelector('[data-dirty-label]');
+    if (lbl) lbl.style.display = 'none';
+  };
+  const setDirty = () => {
+    const b = scope.querySelector(buttonSelector);
+    if (b) b.disabled = false;
+    const lbl = scope.querySelector('[data-dirty-label]');
+    if (lbl) lbl.style.display = '';
+  };
+  setClean();
   if (scope._dirtyArmed) return;
   scope._dirtyArmed = true;
-  const show = () => {
-    const b = scope.querySelector(buttonSelector);
-    if (b) b.style.display = '';
-  };
-  scope.addEventListener('input', show);
-  scope.addEventListener('change', show);
+  scope.addEventListener('input', setDirty);
+  scope.addEventListener('change', setDirty);
 }
 
 function markSectionDirty(scopeSelector, buttonSelector) {
   const scope = document.querySelector(scopeSelector);
-  const b = scope && scope.querySelector(buttonSelector);
-  if (b) b.style.display = '';
+  if (!scope) return;
+  const b = scope.querySelector(buttonSelector);
+  if (b) b.disabled = false;
+  const lbl = scope.querySelector('[data-dirty-label]');
+  if (lbl) lbl.style.display = '';
 }
+
+// Distinct loading and empty markup, so "still fetching" never looks like
+// "nothing configured". Pure builders plus thin DOM setters.
+function loadingHtml(label) {
+  return '<div class="loading"><span class="loading-spinner" aria-hidden="true"></span>' + escapeHtml(label || 'Loading') + '</div>';
+}
+function emptyStateHtml(msg, icon) {
+  return '<div class="empty-state">'
+    + (icon ? '<div class="empty-icon" aria-hidden="true">' + icon + '</div>' : '')
+    + escapeHtml(msg) + '</div>';
+}
+function setLoading(el, label) { if (el) el.innerHTML = loadingHtml(label); }
+function renderEmpty(el, msg, icon) { if (el) el.innerHTML = emptyStateHtml(msg, icon); }
 
 // ============================================================
 // API helpers
@@ -2354,15 +2473,29 @@ function describeLockBolt(ls) {
 // Renders the Smart Deadbolt card from /health. Hidden unless the add-on is
 // enabled. Controller-derived strings (last-action detail carries event actor
 // names) are escaped; internal enums/config go in via textContent.
+// Map a semantic state to a card left-stripe modifier class. Pure.
+function cardStateClass(kind) {
+  return kind ? 'card-state-' + kind : '';
+}
+
+// Apply (or clear) the state stripe on a card element. DOM mutator.
+function setCardState(el, kind) {
+  if (!el || !el.classList) return;
+  el.classList.remove('card-state-ok', 'card-state-degraded', 'card-state-fault');
+  if (kind) el.classList.add('card-state-' + kind);
+}
+
 function renderDeadbolt(h) {
   const card = document.getElementById('deadboltCard');
   if (!card) return;
   const db = h && h.deadbolt;
-  if (!db || !db.enabled) { card.style.display = 'none'; return; }
+  if (!db || !db.enabled) { card.style.display = 'none'; setCardState(card, null); return; }
   card.style.display = '';
 
   const lock = db.lock || {};
   const bolt = describeLockBolt(lock);
+  // The stripe now carries state: fault when jammed, degraded when open, ok when locked.
+  setCardState(card, bolt === 'jammed' ? 'fault' : bolt === 'unlocked' ? 'degraded' : bolt === 'locked' ? 'ok' : null);
   const stateEl = document.getElementById('deadboltState');
   stateEl.className = 'badge ' + (bolt === 'locked' ? 'success' : bolt === 'unlocked' ? 'warning' : bolt === 'jammed' ? 'error' : 'info');
   stateEl.textContent = bolt;
@@ -2436,7 +2569,7 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     if (data.type === 'connected') return;
     addEventRow(data);
-    // Auto-refresh Configuration tab data when the background sync job
+    // Auto-refresh Automations tab data when the background sync job
     // reloads or detects controller drift, so the user sees fresh
     // door/user/group/rule data without clicking Refresh.
     if (data.type === 'system.auto_reload') {
@@ -2450,46 +2583,180 @@ function connectSSE() {
   };
 }
 
-function addEventRow(evt) {
-  const tbody = document.getElementById('eventTableBody');
-  if (!eventsReceived) {
-    tbody.innerHTML = '';
-    eventsReceived = true;
-  }
+// ---- event narration and filtering (pure, testable) ----------------------
 
-  const tr = document.createElement('tr');
+// Plain-language sentence for one event: who, where, and what happened. Falls
+// back gracefully when the actor or location is unknown so a non-technical
+// viewer can still read the feed.
+function narrateEvent(evt) {
+  const e = evt || {};
+  const who = (e.actor && String(e.actor).trim()) ? String(e.actor).trim() : null;
+  const where = (e.location && String(e.location).trim()) ? String(e.location).trim() : null;
+  const type = String(e.type || '');
+  let subject; let verb;
+  if (type.includes('doorbell')) { subject = who || 'A visitor'; verb = 'rang the doorbell'; }
+  else if (type.includes('unlock') || type.includes('door')) { subject = who || 'Someone'; verb = 'badged in'; }
+  else if (type.includes('system')) { subject = 'The orchestrator'; verb = 'ran a background task'; }
+  else if (type.includes('deadbolt')) { subject = who || 'The deadbolt controller'; verb = 'acted on the deadbolt'; }
+  else { subject = who || 'Someone'; verb = 'triggered an event'; }
+  const place = where ? (' at ' + where) : '';
+  const did = (e.action && String(e.action).trim()) ? (', ' + String(e.action).trim()) : '';
+  const tail = e.success === false ? '. It failed.' : '.';
+  return subject + ' ' + verb + place + did + tail;
+}
+
+// Outcome bucket for one event, lifting the old inline noise regex.
+function classifyEventRow(evt) {
+  const e = evt || {};
+  if (e.success === false) return 'failed';
+  const a = String(e.action || '');
+  return /Skipped|No action|No group|No rules|not an admin/.test(a) ? 'skipped' : 'actioned';
+}
+
+function skippedGroupLabel(n) {
+  return n + ' skipped event' + (n === 1 ? '' : 's') + ', show';
+}
+
+function loadEventFilters() {
+  try { const s = sessionStorage.getItem('uao-event-filters'); if (s) return JSON.parse(s); } catch (e) { /* ignore */ }
+  return { kind: 'actioned', door: '', text: '' };
+}
+function saveEventFilters(f) {
+  try { sessionStorage.setItem('uao-event-filters', JSON.stringify(f)); } catch (e) { /* ignore */ }
+}
+
+// Does an event pass the active filters? Pure over (evt, filters).
+function eventMatchesFilters(evt, f) {
+  f = f || {};
+  const kind = classifyEventRow(evt);
+  if (f.kind && f.kind !== 'all' && kind !== f.kind) return false;
+  if (f.door && String((evt && evt.location) || '') !== f.door) return false;
+  if (f.text) {
+    const hay = (narrateEvent(evt) + ' ' + ((evt && evt.type) || '') + ' ' + ((evt && evt.actor) || '')).toLowerCase();
+    if (!hay.includes(String(f.text).toLowerCase())) return false;
+  }
+  return true;
+}
+
+// ---- event feed rendering (DOM) -------------------------------------------
+
+function eventRowHtml(evt) {
   const _d = new Date(evt.timestamp);
   const time = _d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + _d.toLocaleTimeString();
-  const typeBadge = evt.type?.includes('doorbell') ? 'info'
-    : evt.type?.includes('unlock') ? 'success'
-    : evt.type?.includes('system') ? 'warning' : 'info';
-
-  const isWarning = evt.action?.includes('Skipped') || evt.action?.includes('No action') || evt.action?.includes('No group') || evt.action?.includes('No rules') || evt.action?.includes('not an admin');
-  const statusBadge = evt.success === false ? 'error'
-    : isWarning ? 'warning'
-    : 'success';
-
-  const statusText = evt.success === false ? 'Failed'
-    : isWarning ? 'Skipped'
-    : 'OK';
-
-  tr.innerHTML = `
+  const kind = classifyEventRow(evt);
+  const typeBadge = (evt.type || '').includes('doorbell') ? 'info'
+    : (evt.type || '').includes('unlock') ? 'success'
+    : (evt.type || '').includes('system') ? 'warning' : 'info';
+  const statusBadge = kind === 'failed' ? 'error' : kind === 'skipped' ? 'warning' : 'success';
+  const statusText = kind === 'failed' ? 'Failed' : kind === 'skipped' ? 'Skipped' : 'OK';
+  const rawType = escapeHtml((evt.type || '').replace('access.', '').replace('test.', 'test:'));
+  const fullType = escapeHtml(evt.type || '');
+  const dim = kind === 'skipped' ? ' style="opacity:0.6"' : '';
+  return `<tr data-kind="${kind}"${dim}>
     <td class="time">${time}</td>
-    <td><span class="badge ${typeBadge}">${escapeHtml((evt.type || '').replace('access.', '').replace('test.', 'test:'))}</span></td>
+    <td><span class="badge ${typeBadge}" title="${fullType}">${rawType}</span></td>
     <td style="color:var(--text-primary)">${escapeHtml(evt.actor || '-')}</td>
     <td>${escapeHtml(evt.location || '-')}</td>
-    <td>${escapeHtml(evt.action || '-')}</td>
+    <td title="${fullType}">${escapeHtml(narrateEvent(evt))}</td>
     <td><span class="badge ${statusBadge}">${statusText}</span></td>
-  `;
+  </tr>`;
+}
 
-  tbody.insertBefore(tr, tbody.firstChild);
+function skipKey(run) { return 'skip:' + ((run[0] && run[0].timestamp) || run.length); }
 
-  // Limit to 200 rows
-  while (tbody.children.length > 200) tbody.removeChild(tbody.lastChild);
+function skippedGroupRowHtml(run) {
+  const key = skipKey(run);
+  return `<tr class="skip-group" data-kind="skipped"><td colspan="6" style="text-align:center;padding:6px">`
+    + `<button class="btn btn-sm btn-ghost" onclick="toggleSkipGroup('${key}')">${escapeHtml(skippedGroupLabel(run.length))}</button></td></tr>`;
+}
 
-  if (autoscroll) {
-    document.getElementById('eventLog').scrollTop = 0;
+function toggleSkipGroup(key) {
+  if (expandedSkips.has(key)) expandedSkips.delete(key); else expandedSkips.add(key);
+  renderEventFeed();
+}
+
+function renderEventFeed() {
+  const tbody = document.getElementById('eventTableBody');
+  if (!tbody) return;
+  const f = eventFilters || (eventFilters = loadEventFilters());
+  const rows = eventBuffer.filter((e) => eventMatchesFilters(e, f));
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6">'
+      + (eventBuffer.length ? emptyStateHtml('No events match the current filters.')
+        : '<div class="empty-state">Waiting for events</div>')
+      + '</td></tr>';
+    return;
   }
+  let html = '';
+  let i = 0;
+  while (i < rows.length) {
+    // Collapse a run of consecutive skipped rows into one expandable line,
+    // unless the user is explicitly filtering for skipped events.
+    if (classifyEventRow(rows[i]) === 'skipped' && f.kind !== 'skipped') {
+      let j = i;
+      while (j < rows.length && classifyEventRow(rows[j]) === 'skipped') j++;
+      const run = rows.slice(i, j);
+      if (run.length > 1 && !expandedSkips.has(skipKey(run))) {
+        html += skippedGroupRowHtml(run);
+      } else {
+        html += run.map(eventRowHtml).join('');
+      }
+      i = j;
+    } else {
+      html += eventRowHtml(rows[i]);
+      i++;
+    }
+  }
+  tbody.innerHTML = html;
+  if (autoscroll) { const log = document.getElementById('eventLog'); if (log) log.scrollTop = 0; }
+}
+
+function populateEventDoorFilter() {
+  const sel = document.getElementById('eventDoorFilter');
+  if (!sel) return;
+  const doors = [...new Set(eventBuffer.map((e) => (e && e.location) || '').filter(Boolean))].sort();
+  const current = (eventFilters && eventFilters.door) || '';
+  sel.innerHTML = '<option value="">All doors</option>'
+    + doors.map((d) => `<option value="${escapeHtml(d)}"${d === current ? ' selected' : ''}>${escapeHtml(d)}</option>`).join('');
+}
+
+function syncEventFilterControls() {
+  const f = eventFilters || (eventFilters = loadEventFilters());
+  document.querySelectorAll('#eventFilters .chip').forEach((c) => {
+    c.classList.toggle('active', c.dataset.kind === f.kind);
+    c.setAttribute('aria-pressed', c.dataset.kind === f.kind ? 'true' : 'false');
+  });
+  const search = document.getElementById('eventSearch');
+  if (search && search.value !== f.text) search.value = f.text || '';
+  populateEventDoorFilter();
+}
+
+function setEventFilterKind(kind) {
+  eventFilters = eventFilters || loadEventFilters();
+  eventFilters.kind = kind;
+  saveEventFilters(eventFilters);
+  syncEventFilterControls();
+  renderEventFeed();
+}
+function setEventFilterDoor(door) {
+  eventFilters = eventFilters || loadEventFilters();
+  eventFilters.door = door;
+  saveEventFilters(eventFilters);
+  renderEventFeed();
+}
+function setEventFilterText(text) {
+  eventFilters = eventFilters || loadEventFilters();
+  eventFilters.text = text;
+  saveEventFilters(eventFilters);
+  renderEventFeed();
+}
+
+function addEventRow(evt) {
+  eventsReceived = true;
+  eventBuffer.unshift(evt);
+  while (eventBuffer.length > 200) eventBuffer.pop();
+  syncEventFilterControls();
+  renderEventFeed();
 }
 
 function toggleAutoscroll() {
@@ -2498,9 +2765,10 @@ function toggleAutoscroll() {
 }
 
 function clearEvents() {
-  document.getElementById('eventTableBody').innerHTML =
-    '<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-muted)">Waiting for events...</td></tr>';
+  eventBuffer = [];
   eventsReceived = false;
+  expandedSkips.clear();
+  renderEventFeed();
 }
 
 // ============================================================
@@ -2536,6 +2804,55 @@ async function loadConfig() {
 // ============================================================
 // Settings page
 // ============================================================
+// Single source of truth for the connection config shape, shared by Settings
+// save, the wizard, and the connection test, so these are written from one
+// place instead of three. The PUT deep-merges, so omitting a field preserves
+// the stored value: a blank host or token is never written (that would clobber
+// a working value), and the wizard omits server.host (it has no field for it)
+// rather than forcing 0.0.0.0 over a host set in Settings.
+function buildConnectionConfigBody(f) {
+  f = f || {};
+  const body = { server: {}, unifi: {} };
+  if (f.serverPort) body.server.port = parseInt(f.serverPort, 10) || 3000;
+  if (f.serverHost) body.server.host = f.serverHost;
+  if (f.port) body.unifi.port = parseInt(f.port, 10) || 12445;
+  if (f.host) body.unifi.host = f.host;
+  if (f.token) body.unifi.token = f.token;
+  return body;
+}
+async function persistConnectionSettings(fields) {
+  await api('PUT', '/api/config', buildConnectionConfigBody(fields));
+}
+
+// Pure builder for the Event Source editor. This wiring lives in Settings now,
+// so there is exactly one editable home for it.
+function buildEventSourceEditor(es) {
+  es = es || {};
+  const esMode = es.mode || 'websocket'; // websocket is the default when unset
+  const recon = (es.websocket && es.websocket.reconnect_interval_seconds) || 5;
+  return `
+    <div style="margin-bottom:12px">
+      <label class="form-label">Event source mode</label>
+      <select id="eventSourceMode" style="font-size:12px;padding:6px" onchange="toggleEventSourceFields()">
+        <option value="websocket" ${esMode === 'websocket' ? 'selected' : ''}>WebSocket (real-time notifications)</option>
+        <option value="alarm_manager" ${esMode === 'alarm_manager' ? 'selected' : ''}>Alarm Manager (internal event capture)</option>
+        <option value="api_webhook" ${esMode === 'api_webhook' ? 'selected' : ''}>API Webhook (external POST to /webhook)</option>
+      </select>
+    </div>
+    <div id="webhookFields" style="display:${esMode === 'api_webhook' ? 'block' : 'none'};margin-bottom:12px">
+      <div style="padding:12px;background:var(--bg-input);border-radius:var(--radius);border:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--text-secondary)">
+        Send POST requests with JSON body to: <strong style="color:var(--text-primary)">http://your-server:3000/webhook</strong>
+        <div style="margin-top:8px">Optional: add header X-Orchestrator-Signature: sha256=&lt;HMAC&gt; for authentication</div>
+      </div>
+    </div>
+    <div id="websocketFields" style="display:${esMode === 'websocket' ? 'block' : 'none'};margin-bottom:12px">
+      <label class="form-label">Reconnect interval (seconds)</label>
+      <input type="number" id="wsReconnectInterval" value="${recon}" min="1" max="60" style="font-size:12px;padding:6px" placeholder="5">
+    </div>
+    <button class="btn btn-secondary" onclick="saveEventSource()" style="margin-top:12px">Save event source</button>
+  `;
+}
+
 async function loadSettings() {
   try {
     const cfg = await api('GET', '/api/config');
@@ -2549,6 +2866,12 @@ async function loadSettings() {
     const as = cfg.auto_sync || {};
     document.getElementById('settingAutoSyncEnabled').checked = as.enabled !== false;
     document.getElementById('settingAutoSyncInterval').value = as.interval_seconds || 15;
+    // Event source now lives here (one editable home for the wiring).
+    const esEl = document.getElementById('settingsEventSource');
+    if (esEl) {
+      esEl.innerHTML = buildEventSourceEditor(cfg.event_source || {});
+      armDirtySave('#settingsEventSource', 'button[onclick^="saveEventSource"]');
+    }
     // Values were just repopulated programmatically (fires no events), so the
     // Save button hides until the user actually edits something.
     armDirtySave('#settings', '#saveSettingsBtn');
@@ -2561,27 +2884,32 @@ async function saveSettings() {
   const btn = document.getElementById('saveSettingsBtn');
   btn.disabled = true;
   try {
-    const server = { port: parseInt(document.getElementById('settingServerPort').value) || 3000, host: document.getElementById('settingServerHost').value || '0.0.0.0' };
-    const unifi = { host: document.getElementById('settingUnifiHost').value || '', port: parseInt(document.getElementById('settingUnifiPort').value) || 12445 };
-    const tokenVal = document.getElementById('settingUnifiToken').value.trim();
-    if (tokenVal !== '') unifi.token = tokenVal; // only send token when user provided one
-    const logging = { level: document.getElementById('settingLogLevel').value || 'info' };
+    // Connection keys (server + unifi) go through the shared builder so the
+    // wizard and Settings write the same shape. Blank host/token are omitted.
+    const body = buildConnectionConfigBody({
+      serverPort: document.getElementById('settingServerPort').value,
+      serverHost: document.getElementById('settingServerHost').value || '0.0.0.0',
+      host: document.getElementById('settingUnifiHost').value.trim(),
+      port: document.getElementById('settingUnifiPort').value,
+      token: document.getElementById('settingUnifiToken').value.trim(),
+    });
+    body.logging = { level: document.getElementById('settingLogLevel').value || 'info' };
     const intervalRaw = parseInt(document.getElementById('settingAutoSyncInterval').value, 10) || 15;
-    const interval = Math.min(600, Math.max(5, intervalRaw));
-    const auto_sync = {
+    body.auto_sync = {
       enabled: document.getElementById('settingAutoSyncEnabled').checked,
-      interval_seconds: interval
+      interval_seconds: Math.min(600, Math.max(5, intervalRaw)),
     };
 
-    await api('PUT', '/api/config', { server, unifi, logging, auto_sync });
+    await api('PUT', '/api/config', body);
     toast('Settings saved. Reloading service...', 'success');
     await api('POST', '/reload');
-    // Refresh local state
+    // Refresh local state. loadSettings re-arms the section, so the Save button
+    // returns to its disabled (clean) state on success.
     await loadConfig();
     await loadSettings();
   } catch (e) {
     toast('Failed to save settings: ' + e.message, 'error');
-  } finally {
+    // Save failed, so the section is still dirty: leave Save available to retry.
     btn.disabled = false;
   }
 }
@@ -2757,7 +3085,7 @@ function renderConfig() {
 
   if (accessRules.length === 0) {
     nfcHtml += `<div class="rule-empty">
-      <div class="rule-empty-icon">&#x1F513;</div>
+      <div class="rule-empty-icon" aria-hidden="true">&#x1F513;</div>
       <div>No access rules configured yet.</div>
       <div style="margin-top:4px">Click <strong>Add Rule</strong> to define what happens when a group badges in at a door.</div>
     </div>`;
@@ -2794,7 +3122,7 @@ function renderConfig() {
 
   if (visitorRules.length === 0) {
     dbHtml += `<div class="rule-empty">
-      <div class="rule-empty-icon">&#x1F6CE;</div>
+      <div class="rule-empty-icon" aria-hidden="true">&#x1F6CE;</div>
       <div>No visitor rules configured yet.</div>
       <div style="margin-top:4px">Click <strong>Add Rule</strong> to define visitor door access, or set up Access Rules above first to auto-populate.</div>
     </div>`;
@@ -2858,37 +3186,11 @@ function renderConfig() {
 
   document.getElementById('configDoorbellRules').innerHTML = dbHtml;
 
-  // Event Source Config
-  const es = configData?.event_source || {};
-  const esMode = es.mode || 'websocket'; // websocket is the default when unset
-  const eventSourceHtml = `
-    <div style="margin-bottom:12px">
-      <label class="form-label">Event Source Mode</label>
-      <select id="eventSourceMode" style="font-size:12px;padding:6px" onchange="toggleEventSourceFields()">
-        <option value="websocket" ${esMode === 'websocket' ? 'selected' : ''}>WebSocket (real-time notifications)</option>
-        <option value="alarm_manager" ${esMode === 'alarm_manager' ? 'selected' : ''}>Alarm Manager (internal event capture)</option>
-        <option value="api_webhook" ${esMode === 'api_webhook' ? 'selected' : ''}>API Webhook (external POST to /webhook)</option>
-      </select>
-    </div>
-    <div id="webhookFields" style="display:${esMode === 'api_webhook' ? 'block' : 'none'};margin-bottom:12px">
-      <div style="padding:12px;background:var(--bg-input);border-radius:var(--radius);border:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--text-secondary)">
-        Send POST requests with JSON body to: <strong style="color:var(--text-primary)">http://your-server:3000/webhook</strong>
-        <div style="margin-top:8px">Optional: Add header X-Orchestrator-Signature: sha256=&lt;HMAC&gt; for authentication</div>
-      </div>
-    </div>
-    <div id="websocketFields" style="display:${esMode === 'websocket' ? 'block' : 'none'};margin-bottom:12px">
-      <label class="form-label">Reconnect Interval (seconds)</label>
-      <input type="number" id="wsReconnectInterval" value="${es.websocket?.reconnect_interval_seconds || 5}" min="1" max="60" style="font-size:12px;padding:6px" placeholder="5">
-    </div>
-    <button class="btn btn-primary" onclick="saveEventSource()" style="margin-top:12px">Save Event Source</button>
-  `;
-  document.getElementById('configEventSource').innerHTML = eventSourceHtml;
-
   // Save buttons hide until their section actually changes (and hide again
-  // when a successful save re-renders the section through loadConfig).
+  // when a successful save re-renders the section through loadConfig). Event
+  // source moved to Settings, so it is armed there, not here.
   armDirtySave('#configGroupMappings', 'button[onclick^="saveGroupMappings"]');
   armDirtySave('#viewerMappingsSection', 'button[onclick^="saveViewerMappings"]');
-  armDirtySave('#configEventSource', 'button[onclick^="saveEventSource"]');
 }
 
 // Smart Deadbolt (Z-Wave) setup: pick the stick's serial/COM port and enable
@@ -2941,7 +3243,7 @@ function renderZwaveSetup() {
         <div style="font-size:13px;font-weight:600">Deadbolt</div>
         <button class="btn btn-sm btn-secondary" onclick="downloadDiagnostics()" title="One file with the app log, Z-Wave log, pairing history, and redacted config">Download Diagnostics</button>
       </div>
-      <div id="zwaveDeadboltStatusLine" style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Loading...</div>
+      <div id="zwaveDeadboltStatusLine" style="font-size:12px;color:var(--text-muted);margin-bottom:8px"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap" id="zwaveDeadboltButtons"></div>
       <div id="zwaveAddDeadbolt" style="margin-top:10px"></div>
       <div id="zwavePairPanel" style="margin-top:10px"></div>
@@ -3400,6 +3702,56 @@ async function applyAutoRelock(lockId) {
   } catch (e) { toast(`Auto-relock apply failed: ${e.message}`, 'error'); }
 }
 
+// Honest wording for a blocked lock, driven by the server's per-lock flags
+// rather than by inferring removal from slot presence. code_present means a
+// managed code is still on the lock (the denial has not been reconciled yet);
+// revoke_pending means a clear was attempted but the lock did not confirm, so
+// the physical code may still be live until the retry lands.
+function keypadBlockedLabel(s) {
+  if (s.code_present) return 'blocked, code still on lock';
+  if (s.revoke_pending) return 'blocked, removal pending';
+  return 'blocked, code removed';
+}
+
+// Per-lock status badge for one user. Pure and testable: takes the resolved
+// lock name and gating door name rather than closing over the panel lookups.
+// Every caller-derived string is escaped.
+function keypadLockBadge(s, lockName, doorName) {
+  const nm = escapeHtml(lockName);
+  if (s.status === 'blocked') {
+    const doorLabel = doorName ? `"${escapeHtml(doorName)}"` : "this lock's door";
+    const note = keypadBlockedLabel(s);
+    return `<span class="badge error" title="This user's UniFi access does not include ${doorLabel}, so they get no new code here">${nm}: ${note}</span>`;
+  }
+  if (s.status === 'ok') return `<span class="badge success" title="This lock holds the user's current PIN">${nm}</span>`;
+  if (s.status === 'pending') return `<span class="badge info" title="The PIN was queued to this lock; wake it at the keypad to finish the write">${nm}: pending</span>`;
+  if (s.status === 'differs') return `<span class="badge warning" title="This lock still holds an older, different PIN; save the PIN again to unify">${nm}: old PIN</span>`;
+  // 'missing' (or unknown eligibility): show a soft note
+  const unk = s.eligibility === 'unknown' ? ' (access not yet known)' : '';
+  return `<span class="badge warning" title="This lock has no code for the user; save the PIN again to add it${unk}">${nm}: missing</span>`;
+}
+
+// Warning banner for the keypad panel when gating cannot be fully trusted.
+// Pure and testable. Order matters: an unsynced model is the broadest problem,
+// then a specific door-groups read failure (the reason group users fail open),
+// then the generic incomplete-users note. Returns '' when there is nothing to
+// warn about or no lock is gated.
+function accessGatingBanner(ag, gatedCount) {
+  const a = ag || {};
+  if (!gatedCount) return '';
+  const box = (msg) => `<div class="notice notice-warn">${msg}</div>`;
+  if (!a.available) {
+    return box(`Access policies not synced yet${a.error ? ` (${escapeHtml(a.error)})` : ''}: gating can't be enforced, so no codes are blocked or removed. Codes still write to every lock until access data loads.`);
+  }
+  if (a.door_groups_error && a.groups_referenced) {
+    return box("Group access could not be read, so users who rely on group based access are not gated right now. Everyone else is gated normally.");
+  }
+  if (a.incomplete_users) {
+    return box(`${a.incomplete_users} user(s) have UniFi access policies this app can't fully read; those users are never blocked (they fail open). Everyone else is gated normally.`);
+  }
+  return '';
+}
+
 // Pure builder for the GLOBAL Keypad users panel. One PIN per user: the code
 // is written to every paired lock and always kept in sync with the user's
 // UniFi PIN. `agg` is the server's /api/deadbolt/keypad-users report (digits
@@ -3425,20 +3777,7 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
     const l = locks.find((x) => x.lock_id === id);
     return (l && l.gating_door) || null;
   };
-  const statusBadge = (s) => {
-    const nm = escapeHtml(lockName(s.lock_id));
-    if (s.status === 'blocked') {
-      const door = doorOf(s.lock_id);
-      const doorLabel = door ? `"${escapeHtml(door)}"` : "this lock's door";
-      return `<span class="badge error" title="This user's UniFi access does not include ${doorLabel}, so they get no code here${s.slot != null ? ' (an existing code was removed)' : ''}">${nm}: blocked</span>`;
-    }
-    if (s.status === 'ok') return `<span class="badge success" title="This lock holds the user's current PIN">${nm}</span>`;
-    if (s.status === 'pending') return `<span class="badge info" title="The PIN was queued to this lock; wake it at the keypad to finish the write">${nm}: pending</span>`;
-    if (s.status === 'differs') return `<span class="badge warning" title="This lock still holds an older, different PIN; save the PIN again to unify">${nm}: old PIN</span>`;
-    // 'missing' (or unknown eligibility): show a soft note
-    const unk = s.eligibility === 'unknown' ? ' (access not yet known)' : '';
-    return `<span class="badge warning" title="This lock has no code for the user; save the PIN again to add it${unk}">${nm}: missing</span>`;
-  };
+  const statusBadge = (s) => keypadLockBadge(s, lockName(s.lock_id), doorOf(s.lock_id));
   const rows = (Array.isArray(a.users) ? a.users : []).map((u) => {
     const badges = (u.in_unifi ? ` <span class="badge success" title="The same PIN is set on this user's UniFi Access account">UniFi</span>` : ` <span class="badge warning" title="UniFi may hold a different PIN for this user; save the PIN again to sync">UniFi not synced</span>`)
       + (u.user_missing ? ` <span class="badge warning" title="This user is no longer in the UniFi sync; the code still opens the deadbolts until removed">user missing</span>` : '');
@@ -3470,17 +3809,12 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
   // Which locks gate on a door vs. reach everyone (no door associated).
   const gated = usable.filter((l) => l.gating_door);
   const gatingLine = gated.length
-    ? `Access-gated: ${gated.map((l) => `${escapeHtml(l.name || l.lock_id)} → ${escapeHtml(l.gating_door)}`).join(', ')}. A user only gets a code on a lock whose UniFi door their access allows.`
+    ? `Access-gated: ${gated.map((l) => `${escapeHtml(l.name || l.lock_id)} → ${escapeHtml(l.gating_door)}`).join(', ')}. A user only gets a code on a lock whose UniFi door their access allows. Note that a deadbolt PIN works 24/7 and does not follow UniFi access schedules.`
     : '';
-  // Warn when gating cannot be trusted: access policies not synced, or some
-  // users have unresolved policies (they are treated as ungated, never blocked).
-  const ag = a.access_gating || {};
-  let banner = '';
-  if (gated.length && !ag.available) {
-    banner = `<div class="badge warning" style="display:block;margin-bottom:6px;padding:6px 8px">Access policies not synced yet${ag.error ? ` (${escapeHtml(ag.error)})` : ''}: gating can't be enforced, so no codes are blocked or removed. Codes still write to every lock until access data loads.</div>`;
-  } else if (gated.length && ag.incomplete_users) {
-    banner = `<div class="badge warning" style="display:block;margin-bottom:6px;padding:6px 8px">${ag.incomplete_users} user(s) have UniFi access policies this app can't fully read; those users are never blocked (they fail open). Everyone else is gated normally.</div>`;
-  }
+  // Warn when gating cannot be trusted: access policies not synced, a
+  // door-groups read failed, or some users have unresolved policies (all
+  // treated as ungated, never blocked).
+  const banner = accessGatingBanner(a.access_gating, gated.length);
   return `<div style="font-size:12px">`
     + `<div style="font-weight:600;margin-bottom:2px">Keypad users</div>`
     + `<div style="color:var(--text-muted);margin-bottom:6px">One PIN per user. Saving writes the code to every paired lock the user may access (${usable.map((l) => escapeHtml(l.name || l.lock_id)).join(', ')}) and updates the user's UniFi Access PIN to match. ${escapeHtml(lenRule)}.${gatingLine ? ' ' + gatingLine : ''}</div>`
@@ -3525,7 +3859,7 @@ async function saveKeypadUser() {
       (written.length + blocked.length) === results.length ? 'success' : 'error');
     for (const row of results) {
       if (row.error) toast(`${row.lock_id}: ${row.error}`, 'error');
-      else if (row.blocked) toast(`${row.lock_id}: ${row.reason}${row.revoked ? ' — existing code removed' : ''}`, 'info');
+      else if (row.blocked) toast(`${row.lock_id}: ${row.reason}${row.revoked ? ', existing code removed' : row.revoke_pending ? ', code removal pending' : ''}`, 'info');
     }
     if (r.unifi) {
       if (r.unifi.success && r.unifi.skipped) toast('UniFi already had this PIN; nothing to update there.', 'info');
@@ -4148,7 +4482,7 @@ async function saveGroupMappings(scopeSelector) {
     const configured = doorsData?.configured || {};
     const doors = { ...configured, ...discovered };
     await api('PUT', '/api/config', { resolver, doors });
-    toast('Group mappings saved!', 'success');
+    toast('Group mappings saved', 'success');
     await loadConfig();
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
@@ -4318,7 +4652,7 @@ async function saveNfcRuleFromForm() {
 
     await _saveAccessRules(rules);
     _editingNfcIndex = null;
-    toast(`Access rule for "${group}" saved!`, 'success');
+    toast(`Access rule for "${group}" saved`, 'success');
     await loadConfig();
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
@@ -4462,7 +4796,7 @@ async function saveDoorbellRuleFromForm() {
 
     await _saveVisitorRules(rules);
     _editingDbIndex = null;
-    toast(`Visitor rule for "${group}" saved!`, 'success');
+    toast(`Visitor rule for "${group}" saved`, 'success');
     await loadConfig();
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
@@ -4511,7 +4845,7 @@ async function saveViewerMappings() {
       default_action: configData?.doorbell_rules?.default_action || { unlock: [] }
     };
     await api('PUT', '/api/config', { doorbell_rules, doors: _getDoorsCfg() });
-    toast('Viewer mappings saved!', 'success');
+    toast('Viewer mappings saved', 'success');
     await loadConfig();
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
@@ -4529,8 +4863,8 @@ async function saveEventSource() {
     }
 
     await api('PUT', '/api/config', { event_source });
-    toast('Event source saved!', 'success');
-    await loadConfig();
+    toast('Event source saved', 'success');
+    await loadSettings();
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
   }
@@ -4551,7 +4885,7 @@ function renderTestRules() {
 
   if (!hasRules) {
     container.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:12px 0">
-      No rules configured yet. Go to the <strong>Configuration</strong> tab to create access or visitor rules, then come back here to test them.
+      No rules configured yet. Go to the <strong>Automations</strong> tab to create access or visitor rules, then come back here to test them.
     </div>`;
     return;
   }
@@ -4577,7 +4911,7 @@ function renderTestRules() {
             ${userOptions}
           </select>
           <button class="btn btn-sm btn-secondary" onclick="runPreflight('access', ${idx})" id="testAccessPfBtn-${idx}">Preflight</button>
-          <button class="btn btn-sm btn-primary" onclick="simulateRule('access', ${idx})" id="testAccessBtn-${idx}">Simulate</button>
+          <button class="btn btn-sm btn-secondary" onclick="simulateRule('access', ${idx})" id="testAccessBtn-${idx}">Simulate</button>
         </div>
         <div class="test-rule-controls">
           <label class="real-unlock-toggle" title="WARNING: actually issues PUT /doors/:id/unlock to your controller">
@@ -4627,7 +4961,7 @@ function renderTestRules() {
             ${actorOptions}
           </select>
           <button class="btn btn-sm btn-secondary" onclick="runPreflight('visitor', ${idx})" id="testVisitorPfBtn-${idx}">Preflight</button>
-          <button class="btn btn-sm btn-primary" onclick="simulateRule('visitor', ${idx})" id="testVisitorBtn-${idx}">Simulate</button>
+          <button class="btn btn-sm btn-secondary" onclick="simulateRule('visitor', ${idx})" id="testVisitorBtn-${idx}">Simulate</button>
         </div>
         <div class="test-rule-controls">
           <label class="real-unlock-toggle" title="WARNING: actually issues PUT /doors/:id/unlock to your controller">
@@ -5011,7 +5345,7 @@ async function runConnectivityTest() {
 
     const allOk = steps.every(s => s.status === 'ok');
     if (allOk && steps.length > 2) {
-      html += '<div style="margin-top:12px;font-size:13px;color:var(--green);font-weight:600">All checks passed. Your Access Gateway is connected and responding.</div>';
+      html += '<div style="margin-top:12px;font-size:13px;color:var(--green);font-weight:600">All checks passed. Your UniFi controller is connected and responding.</div>';
     }
 
     resultsEl.innerHTML = html;
@@ -5038,7 +5372,7 @@ function toggleRawPayloads() {
 
 async function loadRawPayloads() {
   const list = document.getElementById('rawPayloadsList');
-  list.innerHTML = '<div style="color:var(--text-muted)">Loading...</div>';
+  list.innerHTML = '<div style="color:var(--text-muted)"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>';
   try {
     const result = await api('GET', '/api/debug/payloads');
     const payloads = result.payloads || [];
@@ -5125,10 +5459,7 @@ async function showDocs() {
 
 function hideDocs() {
   document.getElementById('docs').style.display = 'none';
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.getElementById('dashboard').classList.add('active');
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab')[0].classList.add('active');
+  activateTab(document.querySelector('#tabBar [role="tab"]'));
 }
 
 function renderMarkdown(md) {
@@ -5290,7 +5621,7 @@ function buildWizardFinishHtml(summary) {
     + '<div style="font-size:22px;font-weight:700;color:var(--accent)">' + escapeHtml(String(value)) + '</div>'
     + '<div style="font-size:12px;color:var(--text-secondary)">' + escapeHtml(String(label)) + '</div></div>';
   const nudge = rules === 0
-    ? '<div class="help-blurb" style="margin-top:16px;margin-bottom:0;text-align:left">No rules yet. The orchestrator will connect and sync, but it will not automate anything until you add at least one rule on the Configuration tab.</div>'
+    ? '<div class="help-blurb" style="margin-top:16px;margin-bottom:0;text-align:left">No rules yet. The orchestrator will connect and sync, but it will not automate anything until you add at least one rule on the Automations tab.</div>'
     : '';
   return '<div class="card" style="text-align:center">'
     + '<div style="font-size:40px;margin-bottom:8px">&#127881;</div>'
@@ -5303,8 +5634,8 @@ function buildWizardFinishHtml(summary) {
     + '<div class="help-blurb" style="text-align:left;margin-top:16px;margin-bottom:0">'
     + '<strong>What you can do next:</strong>'
     + '<ul>'
-    + '<li>Fine-tune rules, doors, and group names on the <strong>Configuration</strong> tab.</li>'
-    + '<li>Add visitor and doorbell rules, backups, and alerts under <strong>Configuration</strong> and <strong>Settings</strong>.</li>'
+    + '<li>Fine-tune rules, doors, and group names on the <strong>Automations</strong> tab.</li>'
+    + '<li>Add visitor and doorbell rules, backups, and alerts under <strong>Automations</strong> and <strong>Settings</strong>.</li>'
     + '<li>Pair a smart deadbolt from <strong>Configuration &gt; Z-Wave</strong> once the hardware is connected.</li>'
     + '<li>Reopen this wizard any time from the <strong>Setup</strong> button in the top bar.</li>'
     + '</ul></div>'
@@ -5407,12 +5738,7 @@ function hideSetupWizard(skipPersist) {
   const setup = document.getElementById('setup');
   if (setup) { setup.style.display = 'none'; setup.classList.remove('active'); }
   document.getElementById('tabBar').style.display = 'flex';
-  document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
-  const dashboard = document.getElementById('dashboard');
-  if (dashboard) dashboard.classList.add('active');
-  document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
-  const firstTab = document.querySelectorAll('.tab')[0];
-  if (firstTab) firstTab.classList.add('active');
+  activateTab(document.querySelector('#tabBar [role="tab"]'));
 }
 
 function skipSetup() {
@@ -5574,15 +5900,10 @@ async function persistConnection() {
   const port = portEl ? portEl.value.trim() : '';
   const token = tokenEl ? tokenEl.value.trim() : '';
   const serverPort = spEl ? spEl.value.trim() : '';
-  const body = {
-    server: { port: parseInt(serverPort, 10) || 3000, host: '0.0.0.0' },
-    unifi: { port: parseInt(port, 10) || 12445, verify_ssl: false, user_sync_interval_minutes: 5 }
-  };
-  // Omit a blank host so a stored, working host is never overwritten with '',
-  // which would trigger a full reload against an empty controller address.
-  if (host) body.unifi.host = host;
-  if (token) body.unifi.token = token; // never overwrite a stored token with blank
-  await api('PUT', '/api/config', body);
+  // Shared builder. serverHost is intentionally omitted (the wizard has no
+  // field for it), so the deep-merge preserves a host set in Settings instead
+  // of forcing 0.0.0.0 over it.
+  await persistConnectionSettings({ host, port, token, serverPort });
 }
 
 async function renderWizardSync() {
@@ -5646,7 +5967,7 @@ function renderWizardRuleStep() {
     + Number(count) + '</strong> access rule' + (count === 1 ? '' : 's') + '.</div></div>'
     + '<button class="btn btn-primary" onclick="wizardGoToConfig(\'rule\')">'
     + (count === 0 ? 'Create your first rule' : 'Manage rules') + '</button>'
-    + '<div style="font-size:12px;color:var(--text-muted);margin-top:10px">Rules open in the full editor on the Configuration tab. You can continue the wizard without adding one.</div>';
+    + '<div style="font-size:12px;color:var(--text-muted);margin-top:10px">Rules open in the full editor on the Automations tab. You can continue the wizard without adding one.</div>';
 }
 
 function renderWizardEventsStep() {
@@ -5688,25 +6009,20 @@ async function renderWizardFinish() {
   el.innerHTML = buildWizardFinishHtml({ doors, users, rules, eventMode: mode });
 }
 
-// Hand off to the full Configuration tab editor (the single source of truth for
+// Hand off to the full Automations tab editor (the single source of truth for
 // rules and mappings). We persist where we were so the Setup button can resume,
 // and deliberately do not duplicate those editors inside the wizard.
 function wizardGoToConfig(section) {
   persistWizardState({ last_step: wizardState.step });
   hideSetupWizard(true);
-  document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
-  document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
-  const configTab = document.querySelector('[data-page="config"]');
-  if (configTab) configTab.classList.add('active');
-  const configPage = document.getElementById('config');
-  if (configPage) configPage.classList.add('active');
+  activateTab(document.querySelector('#tabBar [data-page="config"]'));
   loadConfig();
   const anchorId = section === 'groups' ? 'configUsers' : 'configNfcRules';
   setTimeout(() => {
     const anchor = document.getElementById(anchorId);
     if (anchor && anchor.scrollIntoView) anchor.scrollIntoView({ block: 'start' });
   }, 400);
-  toast('Opening the Configuration tab. Use the Setup button any time to return here.', 'info');
+  toast('Opening the Automations tab. Use the Setup button any time to return here.', 'info');
 }
 
 // ============================================================
@@ -5811,6 +6127,32 @@ function selectController(ip, port) {
   toast(`Selected controller: ${ip}`, 'info');
 }
 
+// Permissive host/IP check: accept a dotted IPv4 (octets 0 to 255) or a
+// plausible hostname, reject only clearly malformed input so a valid
+// controller address is never blocked. Pure.
+function isLikelyHostOrIp(s) {
+  const v = String(s || '').trim();
+  if (!v) return false;
+  if (/^(\d{1,3})(\.\d{1,3}){3}$/.test(v)) return v.split('.').every((n) => Number(n) <= 255);
+  return /^[a-zA-Z0-9]([a-zA-Z0-9\-.]*[a-zA-Z0-9])?$/.test(v);
+}
+
+// Validate the connect-step inputs before hitting the network, so bad input is
+// flagged inline rather than after a failed request. Pure over the field
+// values. Returns { ok, errors }.
+function validateConnectInputs(f) {
+  f = f || {};
+  const errors = [];
+  const host = String(f.host || '').trim();
+  const token = String(f.token || '').trim();
+  const port = String(f.port == null ? '' : f.port).trim();
+  if (!host) errors.push('Enter the controller IP address or hostname.');
+  else if (!isLikelyHostOrIp(host)) errors.push('That does not look like a valid IP address or hostname.');
+  if (!token) errors.push('Paste the API token from the UniFi Access portal.');
+  if (port && !(Number(port) >= 1 && Number(port) <= 65535)) errors.push('The API port must be between 1 and 65535.');
+  return { ok: errors.length === 0, errors };
+}
+
 async function testConnection() {
   const hostEl = document.getElementById('setupHost');
   const portEl = document.getElementById('setupPort');
@@ -5821,8 +6163,9 @@ async function testConnection() {
   const port = portEl ? portEl.value.trim() : '';
   const token = tokenEl ? tokenEl.value.trim() : '';
 
-  if (!host || !token) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Please enter both the IP address and API token.</span>';
+  const check = validateConnectInputs({ host, token, port });
+  if (!check.ok) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">' + check.errors.map(escapeHtml).join('<br>') + '</span>';
     return;
   }
 
@@ -5830,11 +6173,10 @@ async function testConnection() {
   if (testBtn) testBtn.disabled = true;
 
   try {
-    // Save the connection details so the orchestrator can use them. PUT
-    // auto-reloads the service, so no separate /reload call is needed.
-    await api('PUT', '/api/config', {
-      unifi: { host, port: parseInt(port, 10) || 12445, token, verify_ssl: false, user_sync_interval_minutes: 5 }
-    });
+    // Save the connection details so the orchestrator can use them, through
+    // the shared builder. PUT auto-reloads the service, so no separate /reload
+    // call is needed.
+    await persistConnectionSettings({ host, port, token });
 
     // Keep the client-side cache in step so the wizard treats the host as set.
     if (configData && typeof configData === 'object') {
@@ -5849,9 +6191,9 @@ async function testConnection() {
     const usersCount = (health.unifi && health.unifi.users_mapped) || 0;
 
     if (doorsCount > 0 || usersCount > 0) {
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">Connected! Found ${doorsCount} doors and ${usersCount} users. Click Next to continue.</span>`;
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">Connected. Found ${doorsCount} doors and ${usersCount} users. Click Next to continue.</span>`;
     } else {
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--yellow)">Connected, but no doors or users were found yet. Check the Access Gateway IP and token, and that you can reach port ${escapeHtml(port)} from this machine. You can still continue.</span>`;
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--yellow)">Connected, but no doors or users were found yet. Check the UniFi controller IP and token, and that you can reach port ${escapeHtml(port)} from this machine. You can still continue.</span>`;
     }
     // Test passed: satisfy the connect gate so Next becomes available.
     if (typeof wizardOnConnectTested === 'function') wizardOnConnectTested();
@@ -5882,6 +6224,11 @@ async function saveSetup() {
 // Init
 // ============================================================
 (async () => {
+  // Reflect the persisted event filters in the controls and the empty feed
+  // before any event arrives.
+  eventFilters = loadEventFilters();
+  syncEventFilterControls();
+  renderEventFeed();
   const isFirstRun = await checkFirstRun();
   if (!isFirstRun) {
     fetchHealth();
@@ -6421,7 +6768,7 @@ setInterval(fetchHealth, 10000);
   function renderPalette() {
     panelEl.innerHTML = ''
       + '<div class="fd-panel-title">Design</div>'
-      + '<div class="fd-hint">Drag from a node\'s right dot onto another node to wire a rule, or add one below. Every change here fills in the matching manual fields on the Configuration tab.</div>'
+      + '<div class="fd-hint">Drag from a node\'s right dot onto another node to wire a rule, or add one below. Every change here fills in the matching manual fields on the Automations tab.</div>'
       + '<div class="fd-add">'
       + '<button class="btn btn-sm btn-primary" data-add="access">+ Access rule</button>'
       + '<button class="btn btn-sm btn-primary" data-add="visitor">+ Visitor rule</button>'
@@ -6541,7 +6888,7 @@ setInterval(fetchHealth, 10000);
     return h;
   }
   function doorChecklist(doors, selected) {
-    if (!doors.length) return '<div class="fd-hint">No doors discovered yet. Rediscover doors on the Configuration tab.</div>';
+    if (!doors.length) return '<div class="fd-hint">No doors discovered yet. Rediscover doors on the Automations tab.</div>';
     const sel = new Set(selected);
     return '<div class="fd-checks">' + doors.map((d) =>
       '<label class="fd-check' + (sel.has(d) ? ' on' : '') + '"><input type="checkbox" class="fd-door" value="' + esc(d) + '"' + (sel.has(d) ? ' checked' : '') + '>' + esc(d) + '</label>'

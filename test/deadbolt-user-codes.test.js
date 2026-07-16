@@ -29,8 +29,18 @@ function extractFn(name) {
 }
 
 function load() {
-  const src = extractFn('escapeHtml') + '\n' + extractFn('buildKeypadUsersPanel');
+  const src = extractFn('escapeHtml')
+    + '\n' + extractFn('keypadBlockedLabel')
+    + '\n' + extractFn('keypadLockBadge')
+    + '\n' + extractFn('accessGatingBanner')
+    + '\n' + extractFn('buildKeypadUsersPanel');
   return new Function(src + '; return buildKeypadUsersPanel;')();
+}
+
+// accessGatingBanner is pure and worth testing on its own.
+function loadBanner() {
+  const src = extractFn('escapeHtml') + '\n' + extractFn('accessGatingBanner');
+  return new Function(src + '; return accessGatingBanner;')();
 }
 
 const LOCKS = [
@@ -174,6 +184,32 @@ test('gating: blocked status renders a blocked badge naming the door', () => {
   assert.match(out, /Access-gated:/, 'header explains gating');
 });
 
+test('gating: blocked badge distinguishes code present, pending, and removed', () => {
+  const build = load();
+  const out = build({
+    locks: LOCKS,
+    pin_rule: RULE,
+    access_gating: { available: true, incomplete_users: 0 },
+    users: [
+      {
+        user_id: 'u-1', name: 'Alice', pin_length: 4, in_unifi: true, user_missing: false,
+        locks: [{ lock_id: 'front_door', slot: 3, status: 'blocked', code_present: true, revoke_pending: false }],
+      },
+      {
+        user_id: 'u-2', name: 'Bob', pin_length: 4, in_unifi: true, user_missing: false,
+        locks: [{ lock_id: 'front_door', slot: null, status: 'blocked', code_present: false, revoke_pending: true }],
+      },
+      {
+        user_id: 'u-3', name: 'Cara', pin_length: 4, in_unifi: true, user_missing: false,
+        locks: [{ lock_id: 'front_door', slot: null, status: 'blocked', code_present: false, revoke_pending: false }],
+      },
+    ],
+  }, USERS, false);
+  assert.match(out, /blocked, code still on lock/, 'code_present says the code is still on the lock');
+  assert.match(out, /blocked, removal pending/, 'revoke_pending says the clear is queued');
+  assert.match(out, /blocked, code removed/, 'neither flag says the code was cleared');
+});
+
 test('gating: warning banner when access policies are unavailable', () => {
   const build = load();
   const out = build({
@@ -183,6 +219,25 @@ test('gating: warning banner when access policies are unavailable', () => {
     users: [],
   }, USERS, false);
   assert.match(out, /Access policies not synced/, 'banner warns gating is not enforced');
+});
+
+test('gating: banner warns when door groups could not be read', () => {
+  const banner = loadBanner();
+  const out = banner({ available: true, incomplete_users: 3, door_groups_error: 'timeout', groups_referenced: true }, 2);
+  assert.match(out, /Group access could not be read/, 'the door-groups failure is called out specifically');
+  // The specific door-groups message wins over the generic incomplete-users note.
+  assert.ok(!/can't fully read/.test(out), 'does not fall through to the generic incomplete message');
+});
+
+test('gating: door-groups error is silent when no user relies on a group', () => {
+  const banner = loadBanner();
+  const out = banner({ available: true, incomplete_users: 0, door_groups_error: 'timeout', groups_referenced: false }, 2);
+  assert.equal(out, '', 'a groups read failure that affects nobody shows no banner');
+});
+
+test('gating: no banner when nothing is gated', () => {
+  const banner = loadBanner();
+  assert.equal(banner({ available: false }, 0), '', 'ungated setups never warn');
 });
 
 test('gating: banner notes incomplete users fail open', () => {
