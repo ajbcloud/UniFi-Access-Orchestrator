@@ -132,11 +132,6 @@ function unlockActionsOf(trigger) {
   return one ? [one] : [];
 }
 
-/** The FIRST unlock action of a trigger, or null (legacy readers only). */
-function unlockOf(trigger) {
-  return unlockActionsOf(trigger)[0] || null;
-}
-
 /** Canonicalize a scope value to null | {any_group:true} | {groups:[...]}. */
 function normalizeScope(scope) {
   if (!isPlainObject(scope)) return null;
@@ -835,12 +830,14 @@ function legacyProjection(flows) {
       if (!actionsList.length) continue;
       const type = TRIGGER_TYPES.includes(trig.type) ? trig.type : 'entry';
       const scope = normalizeScope(trig.scope);
+      // Doorbell metadata (reason code + viewer map) is per-trigger, not
+      // per-action, so capture it once before iterating the stacked unlocks.
+      if (type === 'doorbell' && isPlainObject(trig.doorbell)) {
+        if (Number.isFinite(trig.doorbell.reason_code)) doorbell_rules.trigger_reason_code = trig.doorbell.reason_code;
+        if (isPlainObject(trig.doorbell.viewer_to_group)) Object.assign(doorbell_rules.viewer_to_group, trig.doorbell.viewer_to_group);
+      }
       for (const u of actionsList) {
         if (type === 'doorbell') {
-          if (isPlainObject(trig.doorbell)) {
-            if (Number.isFinite(trig.doorbell.reason_code)) doorbell_rules.trigger_reason_code = trig.doorbell.reason_code;
-            if (isPlainObject(trig.doorbell.viewer_to_group)) Object.assign(doorbell_rules.viewer_to_group, trig.doorbell.viewer_to_group);
-          }
           if (scope && scope.any_group) unionInto(doorbell_rules.default_action.unlock, u.doors);
           else if (scope && scope.groups) for (const g of scope.groups) doorbell_rules.rules.push({ group: g, trigger: door, unlock: [...u.doors], delay: u.delay_seconds || 0 });
         } else {
