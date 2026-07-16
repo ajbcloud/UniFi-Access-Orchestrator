@@ -1,6 +1,6 @@
 {
   "name": "unifi-access-orchestrator",
-  "version": "10.4.0",
+  "version": "10.6.0",
   "description": "Multi-door unlock automation for UniFi Access with built-in admin dashboard.",
   "main": "electron/main.js",
   "engines": {
