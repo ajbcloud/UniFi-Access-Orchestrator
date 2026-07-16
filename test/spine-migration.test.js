@@ -150,6 +150,46 @@ test('migration: default_action becomes an any_group unlock (resolved gets it, u
   destroy();
 });
 
+test('migration: default_action is a FALLBACK, not additive (a group with its own rule does not also get the default)', async () => {
+  // Old rules-engine treated default_action as an else-if: a Staff tap at Main
+  // unlocked only Elevator, never the default. The migration must preserve that.
+  const cfg = v10Config();
+  cfg.unlock_rules = { rules: [{ group: 'Staff', trigger: 'Main Entrance', unlock: ['Elevator'] }], default_action: { unlock: ['Lobby'] } };
+  cfg.doorbell_rules = { rules: [], trigger_reason_code: 107, viewer_to_group: {}, default_action: { unlock: [] } };
+  const { flows } = doorFlows.migrateToTriggers(cfg, cfg.devices.zwave.locks);
+  const { unifi, feed, lock, advance, destroy } = buildControllers(flows, { 'u-staff': 'Staff', 'u-visitor': 'Visitors' });
+  await lock.init();
+  // Staff HAS a rule at Main -> gets ONLY Elevator, not the default Lobby.
+  feed(entryGrant('Main Entrance', { actorId: 'u-staff' }));
+  await flush();
+  assert.ok(unifi.calls.includes('Elevator'), 'staff gets its own rule');
+  assert.ok(!unifi.calls.includes('Lobby'), 'staff does NOT also get the default (fallback, not additive)');
+  unifi.calls.length = 0;
+  advance();
+  // A resolved group with NO rule at Main falls back to the default Lobby.
+  feed(entryGrant('Main Entrance', { actorId: 'u-visitor' }));
+  await flush();
+  assert.ok(unifi.calls.includes('Lobby'), 'a resolved group with no rule gets the default');
+  assert.ok(!unifi.calls.includes('Elevator'), 'and not the Staff-only door');
+  destroy();
+});
+
+test('migration: an array unlock_rule with no trigger stays a dead rule (no trigger_location graft)', () => {
+  // The old engine returned array rules verbatim; a rule with no `trigger`
+  // never matched. A leftover trigger_location must NOT resurrect it.
+  const out = doorFlows.migrateToTriggers({
+    unlock_rules: { trigger_location: 'Main', rules: [{ group: 'Staff', unlock: ['Elevator'] }] },
+  }, {});
+  assert.deepEqual(Object.keys(out.flows), [], 'the triggerless rule produced no flow');
+});
+
+test('migration is PURE: it never mutates the input config edges', () => {
+  const input = { door_flows: { 'A': { door_id: null, triggers: [{ type: 'entry', scope: null, actions: { unlock: null, retract: [{ lock_id: 'l', after_unlock: 'lock_default' }] } }] } } };
+  const before = JSON.stringify(input);
+  doorFlows.migrateToTriggers(input, { l: { auto_relock: true, auto_relock_seconds: 60 } });
+  assert.equal(JSON.stringify(input), before, 'the caller config is untouched (no shared-ref mutation)');
+});
+
 test('migration: lock_default converts to relock_after when the lock hardware auto-relock was on', () => {
   const cfg = v10Config();
   cfg.devices.zwave.locks.front_deadbolt.auto_relock = true;

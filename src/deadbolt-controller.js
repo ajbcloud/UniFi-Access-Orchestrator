@@ -266,14 +266,17 @@ class DeadboltController {
   }
 
   // Infer the event type from Alarm Manager trigger keys (doorbell before door,
-  // since "doorbell.completed" contains "door").
+  // since "doorbell.completed" contains "door"). Only a key that actually says
+  // UNLOCK counts as a grant: a denial / lockdown / held-open door alarm must
+  // NOT be treated as an unlock (that would fire the cascade on a denial, since
+  // the alarm envelope carries no result to gate on).
   _alarmType(raw) {
     for (const t of (raw.alarm && raw.alarm.triggers) || []) {
       const key = (t.key || '').toLowerCase();
       if (key.includes('doorbell') || key.includes('ring') || key.includes('intercom')) {
         return (key.includes('complete') || key.includes('answer')) ? 'access.doorbell.completed' : 'access.doorbell.incoming';
       }
-      if (key.includes('unlock') || key.includes('door')) return 'access.door.unlock';
+      if (key.includes('unlock')) return 'access.door.unlock';
     }
     return null;
   }
@@ -434,18 +437,40 @@ class DeadboltController {
         (e) => g.result === e.require_result, group);
       if (edge) this._retract(`entry: ${this._who(g, group())} at ${g.doorName}`, edge, { actor: this._who(g, group()), location: g.doorName });
     }
+    // any_group is a FALLBACK (the migrated default_action's else-if): it fires
+    // only when no group-specific unlock matched this group at this door.
+    const entrySpecificMatched = this._specificGroupMatchedGetter('entry', g, group,
+      () => g.result == null || g.result === this.requireResult);
     this.cascadeRules.forEach((rule, idx) => {
       if ((rule.type || 'entry') !== 'entry') return;
       if (!this._matchDoorSpec(g.doorName, g.doorId, rule.trigger_door, rule.trigger_door_id)) return;
-      // An everyone cascade (scope null, from the old cascade_rules) keeps its
-      // ACCESS result gate; a group-scoped unlock (from the old unlock_rules)
-      // fired on any grant event regardless of the result value ('ACCESS' vs
-      // 'Access Granted' vary by source), so it is not result-gated.
-      if (rule.scope == null && g.result != null && g.result !== this.requireResult) return;
+      // A denied event must never fire an interior unlock, scoped or not.
+      if (g.result != null && g.result !== this.requireResult) return;
+      if (rule.scope && rule.scope.any_group && entrySpecificMatched()) return;
       if (!scopeMatches(rule.scope, group())) return;
       if (!this._debounceOk(rule, idx)) return;
       this._fireCascade(rule, g, group());
     });
+  }
+
+  // A lazy getter for "did a group-specific unlock rule of this type match the
+  // resolved group at this event's door" (so an any_group fallback rule is
+  // suppressed, matching the old default_action else-if semantics). Consults
+  // the resolver at most once, and only when an any_group rule needs it.
+  _specificGroupMatchedGetter(type, ev, group, gate) {
+    let val; let done = false;
+    return () => {
+      if (!done) {
+        const g0 = group();
+        val = !!g0 && this.cascadeRules.some((r) => (r.type || 'entry') === type
+          && r.scope && Array.isArray(r.scope.groups)
+          && this._matchDoorSpec(ev.doorName, ev.doorId, r.trigger_door, r.trigger_door_id)
+          && (!gate || gate(r))
+          && scopeMatches(r.scope, g0));
+        done = true;
+      }
+      return val;
+    };
   }
 
   _onDoorbell(d) {
@@ -459,10 +484,13 @@ class DeadboltController {
         (e) => this._doorbellReasonOk(e, d.reasonCode), group);
       if (edge) this._retract(`doorbell: ${this._who(d, group())} at ${d.doorName}`, edge, { actor: this._who(d, group()), location: d.doorName });
     }
+    const bellSpecificMatched = this._specificGroupMatchedGetter('doorbell', d, group,
+      (r) => this._doorbellReasonOk(r, d.reasonCode));
     this.cascadeRules.forEach((rule, idx) => {
       if ((rule.type || 'entry') !== 'doorbell') return;
       if (!this._matchDoorSpec(d.doorName, d.doorId, rule.trigger_door, rule.trigger_door_id)) return;
       if (!this._doorbellReasonOk(rule, d.reasonCode)) return;
+      if (rule.scope && rule.scope.any_group && bellSpecificMatched()) return;
       if (!scopeMatches(rule.scope, group())) return;
       if (!this._debounceOk(rule, idx)) return;
       this._fireCascade(rule, d, group());

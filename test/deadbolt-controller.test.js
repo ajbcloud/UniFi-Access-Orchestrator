@@ -647,6 +647,48 @@ test('delay: a cascade with delay_seconds fires after the delay, and destroy can
   assert.equal(unifi.calls.length, 1, 'destroy cancelled the pending delayed cascade');
 });
 
+test('scope: a group-scoped unlock does NOT fire on a denied (BLOCKED) event', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [{ trigger_door: 'Gate', type: 'entry', scope: { groups: ['Staff'] }, unlock: ['Lobby'], debounce_seconds: 0 }],
+    groups: { 'u-staff': 'Staff' },
+  });
+  ctl.observe(scopedGrant('Gate', { actorId: 'u-staff', result: 'BLOCKED' }));
+  await flush();
+  assert.equal(unifi.calls.length, 0, 'a denied entry never opens the interior door, scoped or not');
+  ctl.observe(scopedGrant('Gate', { actorId: 'u-staff', result: 'ACCESS' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Lobby'], 'a granted entry still fires');
+});
+
+test('any_group is a fallback: it is suppressed when a group-specific rule matched the same door', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [
+      { trigger_door: 'Main', type: 'entry', scope: { groups: ['Staff'] }, unlock: ['Elevator'], debounce_seconds: 0 },
+      { trigger_door: 'Main', type: 'entry', scope: { any_group: true }, unlock: ['Lobby'], debounce_seconds: 0 },
+    ],
+    groups: { 'u-staff': 'Staff', 'u-other': 'Visitors' },
+  });
+  ctl.observe(scopedGrant('Main', { actorId: 'u-staff' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name).sort(), ['Elevator'], 'Staff (has a specific rule) does not also get the any_group fallback');
+  unifi.calls.length = 0;
+  ctl.observe(scopedGrant('Main', { actorId: 'u-other' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Lobby'], 'a resolved group with no specific rule gets the any_group fallback');
+});
+
+test('alarm mode: a denial door alarm never fires the cascade, but an unlock alarm does', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [{ trigger_door: 'Front Door', type: 'entry', scope: null, unlock: ['Interior'], debounce_seconds: 0 }],
+  });
+  ctl.observe({ alarm: { name: 'Front Door', triggers: [{ key: 'access.door.access_denied', actor: { name: 'Mallory' } }] } });
+  await flush();
+  assert.equal(unifi.calls.length, 0, 'a denial/lockdown door alarm is not treated as an unlock');
+  ctl.observe({ alarm: { name: 'Front Door', triggers: [{ key: 'access.door.unlock', actor: { name: 'Kim' } }] } });
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Interior'], 'a real door-unlock alarm still cascades');
+});
+
 test('acceptance B: front stays open, side relocks 30s, on ONE shared lock (last writer wins)', async () => {
   // Front edge stay_unlocked; side edge relock_after. Both drive the same lock.
   const { ctl, lock } = makeEdgeController([

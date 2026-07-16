@@ -142,9 +142,10 @@ function migrateDoorFlowsOnDisk(markApplied) {
     const disk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
     const hadLegacy = disk.deadbolt_rules !== undefined || disk.cascade_rules !== undefined
       || disk.unlock_rules !== undefined || disk.doorbell_rules !== undefined;
-    const flatDoorFlows = doorFlows.migrateToTriggers({ door_flows: disk.door_flows }, {}); // detect a flat door_flows
+    // migrateToTriggers reports changed=true when a flat door_flows is upgraded,
+    // so a single call covers both the legacy-keys and flat-door_flows cases.
     const result = doorFlows.migrateToTriggers(disk, disk.devices && disk.devices.zwave && disk.devices.zwave.locks);
-    if (!result.changed && !hadLegacy && !flatDoorFlows.changed) return false;
+    if (!result.changed && !hadLegacy) return false;
     // One-time safety: snapshot the pre-spine config before the first rewrite
     // (the app does not otherwise back up on save).
     try { createBackup(CONFIG_PATH, BACKUP_DIR); } catch (e) { logger.warn(`Config: pre-migration backup skipped (${e.message})`); }
@@ -537,12 +538,16 @@ function resolveGroupForEvent(info) {
 
 function buildDeadboltControllers() {
   destroyDeadboltControllers();
-  // Refresh the merged viewer->group map from the current doorbell triggers.
+  // Refresh the merged viewer->group map from EVERY doorbell trigger, including
+  // retract-only ones (unlockRulesFromFlows drops triggers with no unlock, which
+  // would lose the viewer map for a doorbell that only retracts a deadbolt).
   _viewerToGroupCI = {};
-  for (const rule of doorFlows.unlockRulesFromFlows(config.door_flows)) {
-    if (rule.type === 'doorbell' && rule.doorbell && rule.doorbell.viewer_to_group) {
-      for (const [k, v] of Object.entries(rule.doorbell.viewer_to_group)) {
-        if (typeof k === 'string' && v) _viewerToGroupCI[k.trim().toLowerCase()] = v;
+  for (const flow of Object.values(config.door_flows || {})) {
+    for (const trig of doorFlows.triggersOf(flow)) {
+      if (trig.type === 'doorbell' && trig.doorbell && trig.doorbell.viewer_to_group) {
+        for (const [k, v] of Object.entries(trig.doorbell.viewer_to_group)) {
+          if (typeof k === 'string' && v) _viewerToGroupCI[k.trim().toLowerCase()] = v;
+        }
       }
     }
   }
@@ -3221,9 +3226,12 @@ app.put('/api/config', async (req, res) => {
         for (const k of Object.keys(normalized || {})) {
           if (!deadboltRules.FLAT_KEYS.includes(k)) touchedLocks.add(k);
         }
+        // Only the everyone-entry trigger owns the legacy deadbolt_rules retract;
+        // a doorbell or group-scoped retract is a category deadbolt_rules never
+        // expressed, so it must survive an unrelated deadbolt_rules PUT.
         for (const door of Object.keys(flows)) {
           for (const t of (flows[door].triggers || [])) {
-            if (t.actions && Array.isArray(t.actions.retract)) {
+            if (isEntry(t) && t.scope == null && t.actions && Array.isArray(t.actions.retract)) {
               t.actions.retract = t.actions.retract.filter((e) => !e || !touchedLocks.has(e.lock_id));
             }
           }

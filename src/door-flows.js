@@ -218,18 +218,22 @@ function migrateToFlows(cfg, locks) {
 
 /** A normalized rule list ({group, trigger, unlock, delay}) from unlock_rules
  *  / doorbell_rules, absorbing the legacy trigger_location + group_actions
- *  alternate shape exactly as the rules engine did. */
+ *  alternate shape exactly as the rules engine did. IMPORTANT: the rules engine
+ *  applied trigger_location ONLY to the group_actions shape, never to an
+ *  array-shaped rule. An array rule with no `trigger` never matched (it stays a
+ *  dead rule), so we must NOT graft trigger_location onto it here or migration
+ *  would resurrect an unlock that never fired. */
 function normalizeRuleList(rulesConfig) {
   if (!isPlainObject(rulesConfig)) return [];
-  const fallbackTrigger = typeof rulesConfig.trigger_location === 'string' ? rulesConfig.trigger_location : '';
   if (Array.isArray(rulesConfig.rules)) {
     return rulesConfig.rules.filter(isPlainObject).map((r) => ({
       group: typeof r.group === 'string' ? r.group : null,
-      trigger: typeof r.trigger === 'string' && r.trigger ? r.trigger : fallbackTrigger,
+      trigger: typeof r.trigger === 'string' ? r.trigger : '',
       unlock: Array.isArray(r.unlock) ? r.unlock.filter((d) => typeof d === 'string' && d) : [],
       delay: Number.isFinite(r.delay) ? r.delay : 0,
     }));
   }
+  const fallbackTrigger = typeof rulesConfig.trigger_location === 'string' ? rulesConfig.trigger_location : '';
   const groupActions = isPlainObject(rulesConfig.group_actions) ? rulesConfig.group_actions : {};
   const out = [];
   for (const [group, action] of Object.entries(groupActions)) {
@@ -241,12 +245,17 @@ function normalizeRuleList(rulesConfig) {
   return out;
 }
 
-/** The doors a rule set can trigger at: each rule's trigger door, plus a bare
- *  trigger_location. Used to place a default_action fallback. */
-function candidateTriggerDoors(rulesConfig, normalizedRules) {
+/** The doors a default_action fallback should attach to. The old default_action
+ *  fired at ANY door for any resolved group with no matching rule; a
+ *  door-centric model cannot express "any door", so we approximate it with
+ *  every door the config knows about (rule trigger doors, trigger_location, and
+ *  every already-configured flow door). A default_action still cannot fire at a
+ *  door with no other configuration, a documented limitation. */
+function candidateTriggerDoors(rulesConfig, normalizedRules, extraDoors) {
   const set = [];
-  const add = (d) => { const t = String(d || '').trim(); if (t && !set.some((x) => normName(x) === normName(t))) set.push(t); };
+  const add = (d) => { const t = String(d || '').trim(); if (t && isSafeKey(t) && !set.some((x) => normName(x) === normName(t))) set.push(t); };
   for (const r of normalizedRules) add(r.trigger);
+  for (const d of (extraDoors || [])) add(d);
   if (rulesConfig && typeof rulesConfig.trigger_location === 'string') add(rulesConfig.trigger_location);
   return set;
 }
@@ -302,11 +311,13 @@ function sameDoorbell(a, b) {
   return (a.reason_code || DEFAULT_DOORBELL_REASON_CODE) === (b.reason_code || DEFAULT_DOORBELL_REASON_CODE);
 }
 
-/** Convert a flat flow (or an already-trigger flow) to the trigger shape. */
+/** Convert a flat flow (or an already-trigger flow) to the trigger shape. Deep
+ *  copies so the migration is PURE: convertLockDefaults (and callers) must never
+ *  mutate the input config's trigger/edge objects. */
 function toTriggerFlow(flow, state) {
   if (!isPlainObject(flow)) return { door_id: null, triggers: [] };
   if (Array.isArray(flow.triggers)) {
-    return { door_id: flow.door_id || null, triggers: flow.triggers.filter(isPlainObject) };
+    return { door_id: flow.door_id || null, triggers: flow.triggers.filter(isPlainObject).map((t) => JSON.parse(JSON.stringify(t))) };
   }
   if (state) state.changed = true; // a flat flow was upgraded
   const retract = Array.isArray(flow.retract) ? flow.retract.map((e) => ({ ...e })) : [];
@@ -392,7 +403,7 @@ function migrateToTriggers(cfg, locks) {
     const da = c.unlock_rules.default_action;
     const daDoors = isPlainObject(da) && Array.isArray(da.unlock) ? da.unlock.filter((d) => typeof d === 'string' && d) : [];
     if (daDoors.length) {
-      const doors = candidateTriggerDoors(c.unlock_rules, rules).map((d) => ensureFlow(flows, d)).filter(Boolean);
+      const doors = candidateTriggerDoors(c.unlock_rules, rules, Object.keys(flows)).map((d) => ensureFlow(flows, d)).filter(Boolean);
       if (doors.length) {
         for (const flow of doors) addUnlockTrigger(flow, 'entry', { any_group: true }, daDoors, 0, null, 0);
         state.changed = true;
@@ -420,7 +431,7 @@ function migrateToTriggers(cfg, locks) {
     const da = c.doorbell_rules.default_action;
     const daDoors = isPlainObject(da) && Array.isArray(da.unlock) ? da.unlock.filter((d) => typeof d === 'string' && d) : [];
     if (daDoors.length) {
-      const doors = candidateTriggerDoors(c.doorbell_rules, rules).map((d) => ensureFlow(flows, d)).filter(Boolean);
+      const doors = candidateTriggerDoors(c.doorbell_rules, rules, Object.keys(flows)).map((d) => ensureFlow(flows, d)).filter(Boolean);
       if (doors.length) {
         for (const flow of doors) addUnlockTrigger(flow, 'doorbell', { any_group: true }, daDoors, 0, meta(), 0);
         state.changed = true;
