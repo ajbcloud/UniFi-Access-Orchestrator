@@ -1,13 +1,11 @@
 'use strict';
 
-// Guards buildUnlockAction: the "unlock doors" action of a trigger on a door
-// card. It momentarily unlocks UniFi doors (never a lock command). By default
-// the trigger door itself is excluded (entry/badge-in already unlocks it); with
-// includeSelf true (doorbell buzz-in) the trigger door is offered and labeled
-// "(this door)". The action is opt-in: it only renders once the trigger has an
-// unlock object (added via "+ add action"), and it vanishes when there is
-// nowhere to unlock to. It also carries a debounce and a delay. Extracts the
-// REAL function from public/index.html.
+// Guards buildUnlockAction: one "Unlock a door" action card on a trigger. Each
+// action targets ONE door (chosen via the "+ add action" picker) and carries its
+// own debounce and delay. It renders nothing for an empty action (a door is
+// always chosen on add). When the target is the trigger's own door (doorbell
+// buzz-in) it is labeled "(this door)". Extracts the REAL function from
+// public/index.html.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -33,71 +31,50 @@ function load() {
   return new Function(src + '; return buildUnlockAction;')();
 }
 
-const DOORS = [
-  { name: 'Front Door', id: 'd1', discovered: true },
-  { name: 'Interior Door', id: 'd2', discovered: true },
-  { name: 'Elevator', id: 'd3', discovered: true },
-];
-
-// signature: buildUnlockAction(door, tIdx, unlock, aIdx, doors, includeSelf)
-test('one known door -> no unlock action (nowhere to unlock to)', () => {
-  const out = load()('Front Door', 0, { doors: [] }, 0, [DOORS[0]]);
-  assert.equal(out, '', 'a single-door site never sees the unlock action');
+// signature: buildUnlockAction(door, tIdx, unlock, aIdx)
+test('an empty action renders nothing (a door is always chosen on add)', () => {
+  assert.equal(load()('Front Door', 0, { doors: [] }, 0), '', 'no door -> no card');
+  assert.equal(load()('Front Door', 0, null, 0), '', 'no action -> no card');
 });
 
-test('the unlock action is opt-in: no unlock object -> nothing rendered', () => {
-  const out = load()('Front Door', 0, null, 0, DOORS);
-  assert.equal(out, '', 'even with other doors, the action only appears once added via + add action');
-});
-
-test('the checklist offers every OTHER door, never the trigger itself', () => {
-  const out = load()('Front Door', 0, { doors: [] }, 0, DOORS);
-  assert.match(out, /value="Interior Door"/);
-  assert.match(out, /value="Elevator"/, 'the elevator is just another door in the list');
-  assert.ok(!out.includes('value="Front Door"'), 'a door cannot unlock itself');
-});
-
-test('includeSelf offers the trigger door too, labeled this door (doorbell buzz-in)', () => {
-  const out = load()('Front Door', 0, { doors: [] }, 0, DOORS, true);
-  assert.match(out, /value="Front Door"/, 'the trigger door is a real unlock target');
-  assert.match(out, /Front Door \(this door\)/, 'and is labeled so buzz-in is obvious');
-});
-
-test('a single-door doorbell site can still unlock its own door', () => {
-  const out = load()('Front Door', 0, { doors: [] }, 0, [DOORS[0]], true);
-  assert.notEqual(out, '', 'includeSelf makes the one door a candidate');
-  assert.match(out, /Front Door \(this door\)/);
-});
-
-test('an existing unlock action pre-checks its doors and shows its debounce + delay', () => {
-  const out = load()('Front Door', 0, { doors: ['Elevator'], debounce_seconds: 15, delay_seconds: 5 }, 0, DOORS);
-  assert.match(out, /value="Elevator" checked/, 'saved target checked');
-  assert.ok(!/value="Interior Door" checked/.test(out), 'unselected door unchecked');
+test('a single-door unlock card names the target door and shows its debounce + delay', () => {
+  const out = load()('Front Door', 0, { doors: ['Elevator'], debounce_seconds: 15, delay_seconds: 5 }, 0);
+  assert.match(out, /data-df-action="unlock"/, 'it is an unlock action card');
+  assert.match(out, /Unlock a door/, 'titled Unlock a door');
+  assert.match(out, /Elevator/, 'the one target door is named');
   assert.match(out, /value="15"/, 'saved debounce shown');
   assert.match(out, /value="5"/, 'saved delay shown');
 });
 
-test('a freshly added unlock action -> nothing checked, default 8s debounce and 0s delay', () => {
-  const out = load()('Front Door', 0, { doors: [] }, 0, DOORS);
-  assert.ok(!out.includes(' checked'), 'nothing pre-checked');
+test('defaults: 8s debounce and 0s delay when unset', () => {
+  const out = load()('Front Door', 0, { doors: ['Interior Door'] }, 0);
   assert.match(out, /value="8"/, 'default debounce');
   assert.match(out, /value="0"/, 'default delay');
 });
 
+test('the trigger own door is labeled "(this door)" (doorbell buzz-in)', () => {
+  const out = load()('Front Door', 0, { doors: ['Front Door'] }, 0);
+  assert.match(out, /Front Door \(this door\)/, 'buzz-in target is obvious');
+});
+
+test('another door is not labeled "(this door)"', () => {
+  const out = load()('Front Door', 0, { doors: ['Elevator'] }, 0);
+  assert.ok(!/\(this door\)/.test(out), 'a different door is just named');
+});
+
 test('copy states the safety contract: UniFi unlock only, never a lock command', () => {
-  const out = load()('Front Door', 0, { doors: [] }, 0, DOORS);
+  const out = load()('Front Door', 0, { doors: ['Elevator'] }, 0);
   assert.match(out, /never a lock command/);
 });
 
-test('checkboxes are keyed per door and trigger so distinct triggers do not collide', () => {
-  const out = load()('Front Door', 2, { doors: ['Elevator'] }, 1, DOORS);
-  assert.match(out, /data-df-trig="2"/, 'the trigger index is carried on each checkbox');
-  assert.match(out, /class="df-unlock-door"/);
+test('debounce/delay inputs are keyed per door, trigger and action so they do not collide', () => {
+  const out = load()('Front Door', 2, { doors: ['Elevator'] }, 1);
+  assert.match(out, /id="dfDebounce_[^"]*_2_1"/, 'trigger + action indices carried on the debounce input');
+  assert.match(out, /id="dfDelay_[^"]*_2_1"/, 'and on the delay input');
 });
 
-test('door names are escaped in the checklist', () => {
-  const doors = [{ name: 'Front Door', id: 'd1' }, { name: 'Evil <img src=x>', id: 'd2' }];
-  const out = load()('Front Door', 0, { doors: [] }, 0, doors);
+test('the target door name is escaped', () => {
+  const out = load()('Front Door', 0, { doors: ['Evil <img src=x>'] }, 0);
   assert.ok(!out.includes('<img src=x>'));
   assert.match(out, /Evil &lt;img src=x&gt;/);
 });

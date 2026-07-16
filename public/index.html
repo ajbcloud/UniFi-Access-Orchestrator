@@ -575,8 +575,13 @@ body {
 .df-inline { width: auto; display: inline-block; padding: 6px 10px; font-size: 12px;
   border-radius: 999px; }
 select.df-inline { padding-right: 24px; }
-.df-scope { background: var(--accent-dim); color: var(--accent); border-color: var(--accent);
-  font-weight: 600; }
+/* The scope select is styled as an accent pill. Use background-COLOR (not the
+   background shorthand, which would erase the global caret image) and give it an
+   accent-colored caret so it reads as a dropdown, not a static chip. */
+.df-scope { background-color: var(--accent-dim); color: var(--accent); border-color: var(--accent);
+  font-weight: 600;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2315522A'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 9px center; }
 .df-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
 .df-action-card { border: 1px solid var(--border); border-radius: var(--radius);
   padding: 12px 14px; background: var(--bg-card); }
@@ -593,10 +598,6 @@ select.df-inline { padding-right: 24px; }
 .df-add:hover { border-color: var(--accent); background: var(--accent-dim); }
 .df-note { display: flex; align-items: flex-start; gap: 6px; font-size: 12px;
   color: var(--text-muted); margin-top: 12px; }
-.df-unlock-chip { position: relative; user-select: none; }
-.df-unlock-chip:has(input:checked) { background: var(--accent); color: var(--on-accent);
-  border-color: var(--accent); }
-.df-unlock-chip:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Event log container */
 .event-log {
@@ -669,6 +670,11 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* A saved (clean) Door Flow Save button fades from full neon to a solid pale
+   lime so "saved" reads at a glance; editing re-enables it to full neon. */
+button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(--neon-dim);
+  color: var(--on-neon); opacity: 1; cursor: default; }
 
 /* Distinct loading vs empty states, so a stalled fetch does not look like an
    empty result. */
@@ -4380,35 +4386,33 @@ function _unlockList(trig) {
   return trig.actions.unlock;
 }
 
-// One "Unlock other doors" action card. A trigger can stack several of these,
-// each with its own door set, debounce and delay. Pure builder.
-function buildUnlockAction(door, tIdx, unlock, aIdx, doors, includeSelf) {
-  const cands = (doors || []).filter((d) => includeSelf || d.name !== door);
-  if (!cands.length || !unlock) return ''; // only shown once added as an action
+// One "Unlock a door" action card: a single target door with its own debounce
+// and delay. A trigger stacks one card per door (added via the + add action
+// picker). Renders nothing for an empty action (a door is always chosen on add).
+// Pure builder.
+function buildUnlockAction(door, tIdx, unlock, aIdx) {
+  if (!unlock || !Array.isArray(unlock.doors) || !unlock.doors.length) return '';
   const cssD = cssId(door);
   const doorArg = escapeHtml(JSON.stringify(String(door)));
   const sfx = `${cssD}_${tIdx}_${aIdx}`;
-  const sel = new Set(Array.isArray(unlock.doors) ? unlock.doors : []);
-  const chips = cands.map((d) => {
-    const label = d.name === door ? `${escapeHtml(d.name)} (this door)` : escapeHtml(d.name);
-    return `<label class="chip df-unlock-chip"><input type="checkbox" class="df-unlock-door" data-df-door="${cssD}" data-df-trig="${tIdx}" data-df-act="${aIdx}" value="${escapeHtml(d.name)}"${sel.has(d.name) ? ' checked' : ''} style="position:absolute;opacity:0;width:1px;height:1px"> ${label}</label>`;
-  }).join('');
+  const target = unlock.doors[0];
+  const label = target === door ? `${escapeHtml(target)} (this door)` : escapeHtml(target);
   const deb = unlock.debounce_seconds != null ? unlock.debounce_seconds : 8;
   const delay = unlock.delay_seconds != null ? unlock.delay_seconds : 0;
   return `<div class="df-action-card" data-df-action="unlock" data-df-act="${aIdx}">
     <div class="df-action-head">
       <span aria-hidden="true">&#9193;</span>
-      <span class="df-action-title">Unlock other doors</span>
+      <span class="df-action-title">Unlock a door</span>
+      <span class="df-doorpill">${label}</span>
       <span class="df-action-spacer"></span>
       <button class="btn btn-sm btn-secondary" onclick="removeUnlockAction(${doorArg}, ${tIdx}, ${aIdx})">Remove</button>
     </div>
-    <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Momentarily unlocks these UniFi doors, a UniFi unlock only, never a lock command.</div>
-    <div class="df-chiprow">${chips}</div>
+    <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Momentarily unlocks this UniFi door, a UniFi unlock only, never a lock command.</div>
     <div class="df-chiprow">
       <label style="display:inline-flex;align-items:center;gap:6px" title="Ignore repeat triggers for this many seconds so one person twice does not fire it twice.">
         debounce <input type="number" id="dfDebounce_${sfx}" value="${escapeHtml(deb)}" min="0" max="600" style="width:70px;font-size:12px;padding:5px"> seconds
       </label>
-      <label style="display:inline-flex;align-items:center;gap:6px" title="Wait this many seconds before this action unlocks its doors.">
+      <label style="display:inline-flex;align-items:center;gap:6px" title="Wait this many seconds before this action unlocks the door.">
         delay <input type="number" id="dfDelay_${sfx}" value="${escapeHtml(delay)}" min="0" max="600" style="width:70px;font-size:12px;padding:5px"> seconds
       </label>
     </div>
@@ -4447,15 +4451,15 @@ function buildTriggerBlock(door, tIdx, trigger, data, hasSameTypeSiblings) {
     scopeControl = `<select id="dfScope_${sfx2}" class="df-scope df-inline" data-df-door="${cssD}" data-df-trig="${tIdx}">${opts}</select>`;
   }
   // The type chip carries the whole trigger identity so no extra sentence is
-  // needed: "When [Everyone] [badges in]" / "When [doorbell] rings and
-  // [anyone] answers". A no-groups site shows static text where the scope
-  // dropdown would be.
+  // needed: "When [Everyone] [badges in]" / "When [doorbell] rings, [anyone]
+  // answers and unlocks the door". A no-groups site shows static text where the
+  // scope dropdown would be.
   const typeChip = `<span class="chip active" style="cursor:default">${type === 'doorbell' ? 'doorbell' : 'badges in'}</span>`;
   const scopeOrStatic = groups.length
     ? scopeControl
     : `<span class="df-step-hint">${type === 'doorbell' ? 'anyone' : 'everyone'}</span>`;
   const when = type === 'doorbell'
-    ? `${typeChip}<span class="df-step-hint">rings and</span>${scopeOrStatic}<span class="df-step-hint">answers</span>`
+    ? `${typeChip}<span class="df-step-hint">rings,</span>${scopeOrStatic}<span class="df-step-hint">answers and unlocks the door</span>`
     : `${scopeOrStatic}${typeChip}`;
 
   const retractCards = edges.map((e, i) => buildRetractEdgeRow(door, tIdx, e, i, locks)).join('');
@@ -4463,34 +4467,47 @@ function buildTriggerBlock(door, tIdx, trigger, data, hasSameTypeSiblings) {
   // trigger door out since badging already unlocks it.
   const includeSelf = type === 'doorbell';
   const candidateDoors = doors.filter((d) => includeSelf || d.name !== door);
-  const unlockCards = unlockActions.map((u, aIdx) => buildUnlockAction(door, tIdx, u, aIdx, doors, includeSelf)).join('');
+  const unlockCards = unlockActions.map((u, aIdx) => buildUnlockAction(door, tIdx, u, aIdx)).join('');
+  // Each unlock action targets ONE door; the picker only offers doors not
+  // already added, so "+ add action" can be clicked once per remaining door.
+  const usedUnlockDoors = new Set(unlockActions.map((u) => Array.isArray(u.doors) && u.doors[0]).filter(Boolean));
+  const freeUnlockDoors = candidateDoors.filter((d) => !usedUnlockDoors.has(d.name));
 
   const hasAnyAction = edges.length > 0 || hasUnlock;
   const canAddRetract = freeLocks.length > 0;
-  // Unlock actions STACK: each has its own doors, delay and debounce, so
-  // adding another is always allowed while there are candidate doors.
-  const canAddUnlock = candidateDoors.length > 0;
+  const canAddUnlock = freeUnlockDoors.length > 0;
 
-  // The chooser ALWAYS lists both action types with their current state, so the
-  // full palette is visible and a single action never reads as a hard limit. It
-  // starts open on a fresh trigger and tucks behind the button once the trigger
-  // has an action.
+  // The chooser is one prompt reached via "+ add action": add a door to unlock
+  // OR a deadbolt to retract. Each is a picker + Add that drops the chosen item
+  // in as its own card; click "+ add action" again for the next one. Both rows
+  // stay visible (disabled with a note) when nothing is left to add, so the
+  // design reads correctly on a bare site. Collapsed until opened (no default).
   const choiceRow = (inner) => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px">${inner}</div>`;
   const muted = (html) => `<span style="color:var(--text-muted)">${html}</span>`;
+  const rowLabel = (t) => `<span style="font-weight:600;min-width:130px">${t}</span>`;
   const unlockRow = canAddUnlock
-    ? choiceRow(`<span style="font-weight:600">Unlock other doors</span>${hasUnlock ? `<span style="color:var(--text-muted)">each action has its own delay</span>` : ''}<button class="btn btn-sm btn-secondary" onclick="addUnlockAction(${doorArg}, ${tIdx})">${hasUnlock ? 'Add another' : 'Add'}</button>`)
-    : choiceRow(muted('Unlock other doors: no other doors are set up in UniFi yet'));
+    ? choiceRow(`${rowLabel('Unlock a door')}
+        <select id="dfAddDoorSel_${sfx2}" class="df-inline" style="min-width:160px">
+          ${freeUnlockDoors.map((d) => `<option value="${escapeHtml(d.name)}">${d.name === door ? `${escapeHtml(d.name)} (this door)` : escapeHtml(d.name)}</option>`).join('')}
+        </select>
+        <button class="btn btn-sm btn-secondary" onclick="addUnlockAction(${doorArg}, ${tIdx})">Add</button>`)
+    : choiceRow(`${rowLabel('Unlock a door')}
+        <select class="df-inline" style="min-width:160px" disabled><option>${candidateDoors.length ? 'every other door already added' : 'none'}</option></select>
+        <button class="btn btn-sm btn-secondary" disabled>Add</button>
+        ${candidateDoors.length ? '' : muted('no other doors are set up in UniFi yet')}`);
   const retractRow = canAddRetract
-    ? choiceRow(`<span style="font-weight:600">Retract a deadbolt</span>
+    ? choiceRow(`${rowLabel('Retract a deadbolt')}
         <select id="dfAddLock_${sfx2}" class="df-inline" style="min-width:160px">
           ${freeLocks.map((l) => `<option value="${escapeHtml(l.lock_id)}">${escapeHtml(l.name || l.lock_id)}</option>`).join('')}
         </select>
         <button class="btn btn-sm btn-secondary" onclick="addRetractEdge(${doorArg}, ${tIdx})">Add</button>`)
-    : usableLocks.length
-      ? choiceRow(muted('Retract a deadbolt: every paired deadbolt is already retracting on this trigger'))
-      : choiceRow(muted('Retract a deadbolt: no deadbolt is paired yet, pair one on the <a href="#" onclick="openDeadboltTab();return false;" style="color:var(--accent)">Devices tab</a>'));
+    : choiceRow(`${rowLabel('Retract a deadbolt')}
+        <select class="df-inline" style="min-width:160px" disabled><option>${usableLocks.length ? 'all retracting' : 'none paired'}</option></select>
+        <button class="btn btn-sm btn-secondary" disabled>Add</button>
+        ${usableLocks.length ? muted('every paired deadbolt is already retracting on this trigger') : muted('no deadbolt is paired yet, pair one on the <a href="#" onclick="openDeadboltTab();return false;" style="color:var(--accent)">Devices tab</a>')}`);
   const addAction = `<button type="button" class="df-add" onclick="toggleAddAction(${doorArg}, ${tIdx})">+ add action</button>
-    <div id="dfAddMenu_${sfx2}" class="df-action-card" style="${hasAnyAction ? 'display:none;' : ''}margin-top:8px">
+    <div id="dfAddMenu_${sfx2}" class="df-action-card" style="display:none;margin-top:8px">
+      <div style="font-weight:600;font-size:12px;margin-bottom:8px">Add a door to unlock or a deadbolt to retract:</div>
       <div style="display:flex;flex-direction:column;gap:10px">${unlockRow}${retractRow}</div>
     </div>`;
   // When a door carries more than one rule of the same type, remind the user
@@ -4563,10 +4580,11 @@ function buildDoorFlowCard(door, flow, data) {
   const gate = lockSet.size
     ? `<div class="df-note"><span aria-hidden="true">&#128273;</span><span>Keypad PINs on ${lockSet.size > 1 ? 'these deadbolts' : 'this deadbolt'} follow UniFi access to <strong>${escapeHtml(door)}</strong>. <a href="#" onclick="openKeypadTab();return false;" style="color:var(--accent)">Manage keypad users</a></span></div>`
     : '';
-  // Every flow is seeded with one badge-in (entry) trigger (see addDoorFlow), so
-  // the palette only adds doorbell triggers; a door can still hold several
-  // doorbell rules, each scoped differently.
+  // A door can hold several triggers of each type, scoped differently: badge-in
+  // (entry) rules and doorbell rules. Both types are addable so a removed badge-in
+  // trigger can always be added back.
   const addTriggerRow = `<div class="df-addrow">
+    <button type="button" class="df-add" onclick="addTrigger(${doorArg}, 'entry')">+ add badge in trigger</button>
     <button type="button" class="df-add" onclick="addTrigger(${doorArg}, 'doorbell')">+ add doorbell trigger</button>
   </div>`;
 
@@ -4607,6 +4625,9 @@ function buildDoorFlowsSection(data) {
   const empty = !flowDoors.length
     ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">No door flows yet. Add one below to automate a deadbolt or cascade.</div>`
     : '';
+  // Always render the add-door control so configuring more than one door is
+  // discoverable even on a single-door site. When every discovered door already
+  // has a flow, show it disabled with a note instead of hiding it.
   const addFlow = freeDoors.length
     ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:${flowDoors.length ? 8 : 0}px">
         <select id="dfAddDoor" style="min-width:220px;font-size:12px;padding:6px">
@@ -4615,7 +4636,11 @@ function buildDoorFlowsSection(data) {
         </select>
         <button class="btn btn-sm btn-secondary" onclick="addDoorFlow()">Add Door Flow</button>
       </div>`
-    : '';
+    : `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:${flowDoors.length ? 8 : 0}px">
+        <select style="min-width:220px;font-size:12px;padding:6px" disabled><option>all discovered doors are configured</option></select>
+        <button class="btn btn-sm btn-secondary" disabled>Add Door Flow</button>
+        <span style="font-size:12px;color:var(--text-muted)">each door gets its own flow; a second reader would appear here</span>
+      </div>`;
   return intro + warnings + empty + cards + addFlow;
 }
 
@@ -4724,19 +4749,17 @@ function collectDoorFlowCard(door) {
       const cd = parseInt(document.getElementById(`dfCooldown_${sfx}`)?.value, 10);
       if (Number.isFinite(cd)) edge.relock_cooldown_seconds = cd;
     });
-    // unlock actions (each card is one action with its own doors/debounce/delay)
-    // A card renders only when the action exists, so its checkboxes present
-    // means "keep this action". Preserve an action even with no doors picked;
-    // the server drops empty ones on save, and "Remove" is the explicit way
-    // to delete an action.
+    // unlock actions (each card is one door with its own debounce/delay). The
+    // target door is fixed when the action is added, so collect only reads the
+    // debounce/delay inputs and keeps the stored door.
     const uList = _unlockList(trig);
     uList.forEach((u, aIdx) => {
-      const checks = document.querySelectorAll(`input.df-unlock-door[data-df-door="${cssD}"][data-df-trig="${tIdx}"][data-df-act="${aIdx}"]`);
-      if (!checks.length) return; // card not rendered
-      const doorsSel = Array.from(checks).filter((c) => c.checked).map((c) => c.value);
-      const deb = parseInt(document.getElementById(`dfDebounce_${cssD}_${tIdx}_${aIdx}`)?.value, 10);
+      const debEl = document.getElementById(`dfDebounce_${cssD}_${tIdx}_${aIdx}`);
+      if (!debEl) return; // card not rendered
+      const deb = parseInt(debEl.value, 10);
       const delay = parseInt(document.getElementById(`dfDelay_${cssD}_${tIdx}_${aIdx}`)?.value, 10);
-      uList[aIdx] = { doors: doorsSel, debounce_seconds: Number.isFinite(deb) ? deb : 8, delay_seconds: Number.isFinite(delay) ? delay : 0 };
+      const doors = Array.isArray(u.doors) ? u.doors : [];
+      uList[aIdx] = { doors, debounce_seconds: Number.isFinite(deb) ? deb : 8, delay_seconds: Number.isFinite(delay) ? delay : 0 };
     });
     // doorbell reason code
     if (trig.type === 'doorbell') {
@@ -4791,15 +4814,17 @@ function _triggersOf(flow) {
   return flow.triggers;
 }
 
-// Add a doorbell trigger to a door. Every flow already starts with one badge-in
-// (entry) trigger (seeded by addDoorFlow), so the palette only adds doorbell
-// triggers; a door can hold several, each scoped differently. `type` is kept so
-// the call site reads self-documenting; doorbell is the only added type.
+// Add a trigger of the given type to a door. Both badge-in (entry) and doorbell
+// are addable, each stackable and scoped differently, so a removed badge-in
+// trigger can always be added back.
 function addTrigger(door, type) {
   const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
   if (!flow) return;
   collectDoorFlowCard(door);
-  _triggersOf(flow).push({ type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: [], retract: [] } });
+  const t = type === 'entry'
+    ? _newEntryTrigger()
+    : { type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: [], retract: [] } };
+  _triggersOf(flow).push(t);
   repaintDoorFlowCard(door);
 }
 
@@ -4861,14 +4886,17 @@ function toggleAddAction(door, tIdx) {
   if (m) m.style.display = m.style.display === 'none' ? '' : 'none';
 }
 
-// Add another "unlock other doors" action to a trigger (an empty selection to
-// start). Actions stack; each keeps its own doors, debounce and delay.
+// Add an "unlock a door" action for the door chosen in the trigger's picker.
+// One door per action; actions stack, each with its own debounce and delay.
 function addUnlockAction(door, tIdx) {
   const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
   const trig = _triggersOf(flow)[tIdx];
   if (!trig) return;
+  const sel = document.getElementById(`dfAddDoorSel_${cssId(door)}_${tIdx}`);
+  const target = sel && sel.value;
+  if (!target) { toast('Pick a door first.', 'error'); return; }
   collectDoorFlowCard(door);
-  _unlockList(trig).push({ doors: [], debounce_seconds: 8, delay_seconds: 0 });
+  _unlockList(trig).push({ doors: [target], debounce_seconds: 8, delay_seconds: 0 });
   repaintDoorFlowCard(door);
 }
 
@@ -4903,6 +4931,10 @@ async function saveDoorFlow(door) {
   }
   const r = await putDoorFlows();
   if (!r) return;
+  // Mark this card clean BEFORE the repaint so _dirtyDoorFlowCards() excludes it
+  // and the rebuilt Save button comes back disabled (faded), not re-armed dirty.
+  const savedBtn = document.querySelector(`#dfCard_${cssId(door)} button[data-df-save]`);
+  if (savedBtn) savedBtn.disabled = true;
   toast(`Door flow for "${door}" saved (applies immediately).`, 'success');
   repaintOwned('doorflows');
   refreshZwaveDeadbolt(); // the lock cards' "Triggered by" lines just changed
