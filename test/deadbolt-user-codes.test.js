@@ -29,7 +29,10 @@ function extractFn(name) {
 }
 
 function load() {
-  const src = extractFn('escapeHtml') + '\n' + extractFn('buildKeypadUsersPanel');
+  const src = extractFn('escapeHtml')
+    + '\n' + extractFn('keypadBlockedLabel')
+    + '\n' + extractFn('keypadLockBadge')
+    + '\n' + extractFn('buildKeypadUsersPanel');
   return new Function(src + '; return buildKeypadUsersPanel;')();
 }
 
@@ -172,6 +175,32 @@ test('gating: blocked status renders a blocked badge naming the door', () => {
   assert.match(out, /blocked/, 'blocked badge shown');
   assert.match(out, /Door B/, 'names the door the user cannot access');
   assert.match(out, /Access-gated:/, 'header explains gating');
+});
+
+test('gating: blocked badge distinguishes code present, pending, and removed', () => {
+  const build = load();
+  const out = build({
+    locks: LOCKS,
+    pin_rule: RULE,
+    access_gating: { available: true, incomplete_users: 0 },
+    users: [
+      {
+        user_id: 'u-1', name: 'Alice', pin_length: 4, in_unifi: true, user_missing: false,
+        locks: [{ lock_id: 'front_door', slot: 3, status: 'blocked', code_present: true, revoke_pending: false }],
+      },
+      {
+        user_id: 'u-2', name: 'Bob', pin_length: 4, in_unifi: true, user_missing: false,
+        locks: [{ lock_id: 'front_door', slot: null, status: 'blocked', code_present: false, revoke_pending: true }],
+      },
+      {
+        user_id: 'u-3', name: 'Cara', pin_length: 4, in_unifi: true, user_missing: false,
+        locks: [{ lock_id: 'front_door', slot: null, status: 'blocked', code_present: false, revoke_pending: false }],
+      },
+    ],
+  }, USERS, false);
+  assert.match(out, /blocked, code still on lock/, 'code_present says the code is still on the lock');
+  assert.match(out, /blocked, removal pending/, 'revoke_pending says the clear is queued');
+  assert.match(out, /blocked, code removed/, 'neither flag says the code was cleared');
 });
 
 test('gating: warning banner when access policies are unavailable', () => {

@@ -62,12 +62,12 @@ test('aggregateKeypadUsers: per-lock status and pin_length only (no digits)', ()
   assert.equal(alice.pin_length, 4);
   assert.ok(!JSON.stringify(users).includes('9999'), 'digits never appear');
   assert.deepEqual(alice.locks, [
-    { lock_id: 'front', slot: 1, status: 'differs' },  // holds old 1111
-    { lock_id: 'side', slot: 1, status: 'ok' },
+    { lock_id: 'front', slot: 1, status: 'differs', code_present: true, revoke_pending: false },  // holds old 1111
+    { lock_id: 'side', slot: 1, status: 'ok', code_present: true, revoke_pending: false },
   ]);
   assert.deepEqual(bob.locks, [
-    { lock_id: 'front', slot: 2, status: 'ok' },       // pre-confirmed-field entry reads ok
-    { lock_id: 'side', slot: null, status: 'missing' },
+    { lock_id: 'front', slot: 2, status: 'ok', code_present: true, revoke_pending: false },       // pre-confirmed-field entry reads ok
+    { lock_id: 'side', slot: null, status: 'missing', code_present: false, revoke_pending: false },
   ]);
   assert.equal(alice.in_unifi, true);
 });
@@ -78,6 +78,33 @@ test('aggregateKeypadUsers: confirmed null/false reads pending', () => {
   };
   const users = aggregateKeypadUsers(cfg, [{ lock_id: 'a', label: 'A' }]);
   assert.equal(users[0].locks[0].status, 'pending');
+});
+
+test('aggregateKeypadUsers: code_present reflects a held slot', () => {
+  const cfg = {
+    a: { user_codes: { 1: { user_id: 'u1', name: 'A', pin_code: '1111', updated_at: '2026-01-01T00:00:00Z', confirmed: true } } },
+    b: { user_codes: {} },
+  };
+  const relevant = [{ lock_id: 'a', label: 'A' }, { lock_id: 'b', label: 'B' }];
+  const u1 = aggregateKeypadUsers(cfg, relevant).find((u) => u.user_id === 'u1');
+  const byLock = Object.fromEntries(u1.locks.map((l) => [l.lock_id, l]));
+  assert.equal(byLock.a.code_present, true, 'a held slot means a code is on the lock');
+  assert.equal(byLock.b.code_present, false, 'no held slot means no code');
+});
+
+test('aggregateKeypadUsers: revoke_pending reflects a pending_clears marker', () => {
+  const cfg = {
+    a: {
+      user_codes: {},
+      pending_clears: { 3: { user_id: 'u1', requested_at: '2026-01-01T00:00:00Z', reason: 'no UniFi access' } },
+    },
+  };
+  const u1 = aggregateKeypadUsers(cfg, [{ lock_id: 'a', label: 'A' }]).find((u) => u.user_id === 'u1');
+  // The user still surfaces via the marker even though the code entry is gone.
+  const lock = u1 ? u1.locks[0] : null;
+  assert.ok(lock, 'the user with a pending clear is still listed');
+  assert.equal(lock.revoke_pending, true, 'the pending clear marker is surfaced');
+  assert.equal(lock.code_present, false, 'the managed entry was already removed');
 });
 
 test('aggregateKeypadUsers: verdicts surface blocked (denied) and unknown eligibility', () => {

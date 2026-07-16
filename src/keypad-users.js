@@ -66,6 +66,17 @@ function canonicalPins(locksCfg) {
 function aggregateKeypadUsers(locksCfg, relevantLocks, verdicts) {
   const canon = canonicalPins(locksCfg);
   const verdictMap = verdicts instanceof Map ? verdicts : new Map();
+  // A user whose code was revoked but not confirmed cleared has no user_codes
+  // entry left, only a pending_clears marker. Keep them listed so the panel can
+  // still show "removal pending" instead of the row silently vanishing.
+  for (const rl of relevantLocks || []) {
+    const pc = ((locksCfg || {})[rl.lock_id] && locksCfg[rl.lock_id].pending_clears) || {};
+    for (const m of Object.values(pc)) {
+      if (m && m.user_id && !canon.has(m.user_id)) {
+        canon.set(m.user_id, { pin: '', name: null, updated_at: null, source_lock: null, pushed_to_unifi: false });
+      }
+    }
+  }
   const users = [];
   for (const [userId, c] of canon) {
     const perLock = [];
@@ -83,7 +94,13 @@ function aggregateKeypadUsers(locksCfg, relevantLocks, verdicts) {
       // confirmed (they predate the stricter bookkeeping).
       else if (found.confirmed === null || found.confirmed === false) status = 'pending';
       else status = 'ok';
-      const entry = { lock_id: rl.lock_id, slot, status };
+      // code_present: a managed user_codes entry exists, so a code is believed
+      // to be on the lock. revoke_pending: a clear was attempted but did not
+      // confirm, so the physical code may still be live until the retry lands.
+      // The UI uses these instead of inferring removal from slot presence.
+      const pc = (((locksCfg || {})[rl.lock_id]) && locksCfg[rl.lock_id].pending_clears) || {};
+      const revokePending = Object.values(pc).some((m) => m && m.user_id === userId);
+      const entry = { lock_id: rl.lock_id, slot, status, code_present: !!found, revoke_pending: revokePending };
       const verdict = verdictMap.get(`${userId}|${rl.lock_id}`);
       if (verdict === 'denied') entry.status = 'blocked';
       else if (verdict === 'unknown') entry.eligibility = 'unknown';
