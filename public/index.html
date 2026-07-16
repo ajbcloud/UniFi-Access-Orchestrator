@@ -615,12 +615,20 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .btn-secondary:hover { background: var(--btn2-hover); }
 .btn-ghost { background: transparent; color: var(--accent); border-color: var(--border); }
 .btn-ghost:hover { background: var(--accent-dim); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-danger { background: var(--red); color: var(--on-danger); }
 .btn-danger:hover { background: var(--red-hover); }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Distinct loading vs empty states, so a stalled fetch does not look like an
+   empty result. */
+.loading { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 13px; padding: 16px; }
+.loading-spinner { width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: var(--accent); animation: uao-spin 0.7s linear infinite; }
+@keyframes uao-spin { to { transform: rotate(360deg); } }
+.empty-state { text-align: center; padding: 32px 20px; color: var(--text-muted); font-size: 13px; }
+.empty-state .empty-icon { font-size: 26px; opacity: 0.5; margin-bottom: 8px; }
 
 /* Config section */
 .config-section {
@@ -736,11 +744,12 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   right: 16px;
   display: flex;
   gap: 6px;
-  opacity: 0;
+  opacity: 0.55; /* discoverable at rest, full on hover or keyboard focus */
   transition: opacity 0.15s;
 }
 
-.rule-card:hover .rule-actions { opacity: 1; }
+.rule-card:hover .rule-actions,
+.rule-card:focus-within .rule-actions { opacity: 1; }
 
 .rule-actions button {
   background: var(--bg-hover);
@@ -1350,7 +1359,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <!-- STEP: welcome -->
       <section class="wizard-step" data-step="welcome">
         <div class="card">
-          <div class="card-title">What this wizard does</div>
+          <div class="card-title" role="heading" aria-level="2">What this wizard does</div>
           <div style="font-size:13px;color:var(--text-secondary);line-height:1.6">
             In a few short steps we'll connect to your UniFi Access controller,
             confirm it can see your doors and users, and help you create your
@@ -1372,7 +1381,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
            runDiscovery / selectController / testConnection work unchanged) -->
       <section class="wizard-step" data-step="connect">
         <div class="card" id="setupStep1">
-          <div class="card-title">Find your controller
+          <div class="card-title" role="heading" aria-level="2">Find your controller
             <span class="tip" tabindex="0" data-tip="We scan your local subnets for devices answering on the UniFi Access API port. If yours is on another VLAN, type its IP below.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
@@ -1396,7 +1405,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         </div>
 
         <div class="card" style="margin-top:16px" id="setupStep2">
-          <div class="card-title">API token
+          <div class="card-title" role="heading" aria-level="2">API token
             <span class="tip" tabindex="0" data-tip="The token authorizes this app to read doors and users and to trigger unlocks. Treat it like a password; it is stored locally and never shown again after saving.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
@@ -1410,7 +1419,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         </div>
 
         <div class="card" style="margin-top:16px">
-          <div class="card-title">Test the connection</div>
+          <div class="card-title" role="heading" aria-level="2">Test the connection</div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             We'll save these details and check that the controller responds and
             can see your doors and users. Once it succeeds you can continue.
@@ -1445,7 +1454,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <!-- STEP: sync -->
       <section class="wizard-step" data-step="sync">
         <div class="card">
-          <div class="card-title">Confirm doors and users
+          <div class="card-title" role="heading" aria-level="2">Confirm doors and users
             <span class="tip" tabindex="0" data-tip="The orchestrator pulls the door list and the user directory from the controller. Rules reference these by name, so it helps to confirm they came through.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
@@ -1453,14 +1462,14 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
             users are missing, run a sync; new users appear once they badge in or
             after the next scheduled sync.
           </div>
-          <div id="wizSyncStats"><div style="color:var(--text-muted)">Loading...</div></div>
+          <div id="wizSyncStats"><div style="color:var(--text-muted)"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div></div>
         </div>
       </section>
 
       <!-- STEP: groups -->
       <section class="wizard-step" data-step="groups">
         <div class="card">
-          <div class="card-title">Name your groups
+          <div class="card-title" role="heading" aria-level="2">Name your groups
             <span class="tip" tabindex="0" data-tip="UniFi group names are often technical. Map them to friendly labels (like Staff or Delivery) that your rules will use. Leave a row blank to keep the UniFi name.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
@@ -1474,7 +1483,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <!-- STEP: rule -->
       <section class="wizard-step" data-step="rule">
         <div class="card">
-          <div class="card-title">Create your first rule
+          <div class="card-title" role="heading" aria-level="2">Create your first rule
             <span class="tip" tabindex="0" data-tip="An access rule says: when someone in a group badges at a chosen door, unlock one or more doors. This is the core of the orchestrator.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
@@ -1490,14 +1499,14 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <!-- STEP: events -->
       <section class="wizard-step" data-step="events">
         <div class="card">
-          <div class="card-title">How events reach the app
+          <div class="card-title" role="heading" aria-level="2">How events reach the app
             <span class="tip" tabindex="0" data-tip="This is how the controller tells the app that someone badged in. Most installs should use Alarm Manager, which the app configures on the controller for you.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             Pick how the orchestrator learns about access events. If you're not
             sure, leave the recommended option selected.
           </div>
-          <div id="wizEventChoice"><div style="color:var(--text-muted)">Loading...</div></div>
+          <div id="wizEventChoice"><div style="color:var(--text-muted)"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div></div>
         </div>
       </section>
 
@@ -1524,7 +1533,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         <button class="btn btn-sm btn-secondary" onclick="hideDocs()">Back to Dashboard</button>
       </div>
       <div class="card">
-        <div id="docsContent" style="font-size:14px;line-height:1.8;color:var(--text-secondary)">Loading...</div>
+        <div id="docsContent" style="font-size:14px;line-height:1.8;color:var(--text-secondary)"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
       </div>
     </div>
   </div>
@@ -1534,25 +1543,25 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <div class="grid grid-4" style="margin-bottom:16px">
       <div class="card">
         <div class="stat-icon blue" aria-hidden="true">&#x1F6AA;</div>
-        <div class="card-title">Doors Discovered</div>
+        <div class="card-title" role="heading" aria-level="2">Doors Discovered</div>
         <div class="card-value" id="statDoors">-</div>
         <div class="card-sub" id="statDoorsOnline"></div>
       </div>
       <div class="card">
         <div class="stat-icon green" aria-hidden="true">&#x1F465;</div>
-        <div class="card-title">Users Mapped</div>
+        <div class="card-title" role="heading" aria-level="2">Users Mapped</div>
         <div class="card-value" id="statUsers">-</div>
         <div class="card-sub" id="statUsersGroups"></div>
       </div>
       <div class="card">
         <div class="stat-icon yellow" aria-hidden="true">&#x26A1;</div>
-        <div class="card-title">Events Received</div>
+        <div class="card-title" role="heading" aria-level="2">Events Received</div>
         <div class="card-value" id="statEvents">-</div>
         <div class="card-sub" id="statEventsProcessed"></div>
       </div>
       <div class="card">
         <div class="stat-icon green" aria-hidden="true">&#x1F513;</div>
-        <div class="card-title">Unlocks Triggered</div>
+        <div class="card-title" role="heading" aria-level="2">Unlocks Triggered</div>
         <div class="card-value" id="statUnlocks">-</div>
         <div class="card-sub" id="statUnlocksFailed"></div>
       </div>
@@ -1560,17 +1569,17 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 
     <div class="grid grid-2">
       <div class="card">
-        <div class="card-title">Last Event</div>
+        <div class="card-title" role="heading" aria-level="2">Last Event</div>
         <div id="lastEvent" style="font-size:13px;color:var(--text-secondary)">No events yet</div>
       </div>
       <div class="card">
-        <div class="card-title">Last Unlock</div>
+        <div class="card-title" role="heading" aria-level="2">Last Unlock</div>
         <div id="lastUnlock" style="font-size:13px;color:var(--text-secondary)">No unlocks yet</div>
       </div>
     </div>
 
     <div class="card" style="margin-top:16px">
-      <div class="card-title" style="display:flex;align-items:center;gap:8px">System Info <span id="infoVersion" style="font-size:11px;font-weight:500;color:var(--text-muted);background:var(--bg-secondary);padding:2px 8px;border-radius:4px">-</span></div>
+      <div class="card-title" role="heading" aria-level="2" style="display:flex;align-items:center;gap:8px">System Info <span id="infoVersion" style="font-size:11px;font-weight:500;color:var(--text-muted);background:var(--bg-secondary);padding:2px 8px;border-radius:4px">-</span></div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px">
         <div><span style="color:var(--text-muted)">Event Source:</span> <span id="infoEventSource">-</span> <span id="infoWsStatus"></span></div>
         <div><span style="color:var(--text-muted)">Memory:</span> <span id="infoMemory">-</span></div>
@@ -1583,7 +1592,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     </div>
 
     <div class="card" id="deadboltCard" style="margin-top:16px;display:none">
-      <div class="card-title" style="display:flex;align-items:center;gap:8px">Smart Deadbolt <span id="deadboltState" class="badge">-</span></div>
+      <div class="card-title" role="heading" aria-level="2" style="display:flex;align-items:center;gap:8px">Smart Deadbolt <span id="deadboltState" class="badge">-</span></div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px">
         <div><span style="color:var(--text-muted)">Lock:</span> <span id="deadboltModel">-</span></div>
         <div><span style="color:var(--text-muted)">Security:</span> <span id="deadboltSecurity">-</span></div>
@@ -1600,7 +1609,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <!-- LIVE EVENTS -->
   <div id="events" class="page">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <div style="font-size:15px;font-weight:600">Live Event Feed</div>
+      <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Live Event Feed</div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-sm btn-secondary" onclick="toggleAutoscroll()" id="autoscrollBtn">Autoscroll: ON</button>
         <button class="btn btn-sm btn-secondary" onclick="clearEvents()">Clear</button>
@@ -1630,7 +1639,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <!-- CONFIGURATION -->
   <div id="config" class="page">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <div style="font-size:15px;font-weight:600">Automations</div>
+      <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Automations</div>
       <div style="display:flex;gap:8px;align-items:center">
         <span id="autoSyncPill" class="badge info" title="Background config sync status" style="font-size:11px">Auto-sync: …</span>
         <button class="btn btn-sm btn-secondary" onclick="loadConfig()">Refresh automations</button>
@@ -1643,12 +1652,12 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         Door Mappings
         <button class="btn btn-sm btn-secondary" onclick="syncDoors()">Rediscover Doors</button>
       </div>
-      <div class="config-body" id="configDoors">Loading...</div>
+      <div class="config-body" id="configDoors"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
 
     <div class="config-section">
       <div class="config-header">User Groups</div>
-      <div class="config-body" id="configUsers">Loading...</div>
+      <div class="config-body" id="configUsers"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
 
     <div class="config-section">
@@ -1656,7 +1665,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         Access Rules (NFC / PIN / Face / Mobile)
         <button class="btn btn-sm btn-ghost" onclick="showNfcRuleForm()">Add Rule</button>
       </div>
-      <div class="config-body" id="configNfcRules">Loading...</div>
+      <div class="config-body" id="configNfcRules"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
 
     <div class="config-section">
@@ -1664,7 +1673,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         Visitor Rules (Doorbell / Buzz-in)
         <button class="btn btn-sm btn-ghost" onclick="showDoorbellRuleForm()">Add Rule</button>
       </div>
-      <div class="config-body" id="configDoorbellRules">Loading...</div>
+      <div class="config-body" id="configDoorbellRules"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
 
 
@@ -1673,7 +1682,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         Smart Deadbolt (Z-Wave)
         <button class="btn btn-sm btn-secondary" onclick="loadSerialPorts()">Refresh Ports</button>
       </div>
-      <div class="config-body" id="configZwave">Loading...</div>
+      <div class="config-body" id="configZwave"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
   </div>
 
@@ -1681,7 +1690,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <div id="designer" class="page">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div>
-        <div style="font-size:15px;font-weight:600">Visual Designer</div>
+        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Visual Designer</div>
         <div style="font-size:12px;color:var(--text-muted)">Build cascading door rules and the deadbolt add-on visually. Changes here fill in the Automations tab, and vice versa.</div>
       </div>
       <button class="btn btn-sm btn-secondary" onclick="if(window.openDesigner)window.openDesigner()">Refresh designer</button>
@@ -1708,7 +1717,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <!-- SETTINGS -->
     <div id="settings" class="page">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div style="font-size:15px;font-weight:600">Settings</div>
+        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Settings</div>
         <div style="display:flex;gap:8px;align-items:center">
           <span data-dirty-label style="display:none;font-size:12px;color:var(--text-muted)">Unsaved changes</span>
           <button class="btn btn-sm btn-secondary" onclick="loadSettings()">Refresh settings</button>
@@ -1717,7 +1726,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       </div>
 
       <div class="card">
-        <div class="card-title">Server</div>
+        <div class="card-title" role="heading" aria-level="2">Server</div>
         <div class="form-group">
           <label class="form-label">App Port</label>
           <input type="number" id="settingServerPort" placeholder="3000">
@@ -1729,7 +1738,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       </div>
 
       <div class="card" style="margin-top:16px">
-        <div class="card-title">UniFi controller</div>
+        <div class="card-title" role="heading" aria-level="2">UniFi controller</div>
         <div class="form-group">
           <label class="form-label">Controller Host / IP</label>
           <input type="text" id="settingUnifiHost" placeholder="192.168.1.1">
@@ -1746,12 +1755,12 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       </div>
 
       <div class="card" style="margin-top:16px">
-        <div class="card-title">Event source</div>
-        <div id="settingsEventSource">Loading...</div>
+        <div class="card-title" role="heading" aria-level="2">Event source</div>
+        <div id="settingsEventSource"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
       </div>
 
       <div class="card" style="margin-top:16px">
-        <div class="card-title">Auto-Sync</div>
+        <div class="card-title" role="heading" aria-level="2">Auto-Sync</div>
         <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
           Periodic background job that detects local config edits and upstream UniFi controller changes (doors, users, group membership) and reloads in place. Read-only, never writes to <code>config.json</code> or the controller.
         </div>
@@ -1768,7 +1777,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       </div>
 
       <div class="card" style="margin-top:16px">
-        <div class="card-title">Logging</div>
+        <div class="card-title" role="heading" aria-level="2">Logging</div>
         <div class="form-group">
           <label class="form-label">Log Level</label>
           <select id="settingLogLevel">
@@ -1781,7 +1790,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       </div>
 
       <div class="card" style="margin-top:16px">
-        <div class="card-title">Backup &amp; Restore</div>
+        <div class="card-title" role="heading" aria-level="2">Backup &amp; Restore</div>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
           Your configuration is automatically backed up every time you save changes. You can also create manual backups, download them, or restore from a previous backup.
         </p>
@@ -1799,7 +1808,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <div style="font-size:15px;font-weight:600;margin-bottom:16px">Test Tools</div>
 
     <div class="card">
-      <div class="card-title">Test Configured Rules</div>
+      <div class="card-title" role="heading" aria-level="2">Test Configured Rules</div>
       <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Pick a real user and door, run a preflight check, and simulate the rule end-to-end through the same path a real badge tap takes. By default no controller unlock is sent — flip <strong>Execute real unlock</strong> to verify the door physically opens.</p>
 
       <details class="help-blurb">
@@ -1819,13 +1828,13 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 
     <div class="grid grid-2" style="margin-top:16px">
       <div class="card">
-        <div class="card-title">Test Door Unlock</div>
+        <div class="card-title" role="heading" aria-level="2">Test Door Unlock</div>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Click a door to send a remote unlock command via the API.</p>
         <div class="door-grid" id="doorGrid">Loading doors...</div>
       </div>
 
       <div class="card">
-        <div class="card-title">Custom Event Simulation</div>
+        <div class="card-title" role="heading" aria-level="2">Custom Event Simulation</div>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Manually build and send a synthetic event through the rules engine.</p>
 
         <div class="form-group">
@@ -1874,7 +1883,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     </div>
 
     <div class="card" style="margin-top:16px">
-      <div class="card-title">Quick Actions</div>
+      <div class="card-title" role="heading" aria-level="2">Quick Actions</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-secondary" onclick="forceSync()">Force User Sync</button>
         <button class="btn btn-secondary" onclick="reloadService()">Reload service</button>
@@ -1883,7 +1892,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     </div>
 
     <div class="card" style="margin-top:16px">
-      <div class="card-title">Connectivity Test</div>
+      <div class="card-title" role="heading" aria-level="2">Connectivity Test</div>
       <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
         Test the connection to your UniFi controller without leaving the app.
       </div>
@@ -1892,13 +1901,13 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     </div>
 
     <div class="card" style="margin-top:16px">
-      <div class="card-title" style="cursor:pointer;display:flex;align-items:center;gap:8px" onclick="toggleRawPayloads()">
-        Recent Raw Events <span id="rawPayloadToggle" style="font-size:10px;color:var(--text-muted)">&#9654;</span>
+      <div class="card-title" role="heading" aria-level="2" style="cursor:pointer;display:flex;align-items:center;gap:8px" onclick="toggleRawPayloads()">
+        Diagnostics: recent raw events <span id="rawPayloadToggle" style="font-size:10px;color:var(--text-muted)">&#9654;</span>
       </div>
       <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
-        Inspect the raw JSON payloads received from UniFi (webhook or WebSocket). Useful for verifying event format and troubleshooting field mapping.
+        Advanced. Inspect the raw JSON payloads received from UniFi (webhook or WebSocket), for verifying event format and troubleshooting field mapping. Collapsed by default.
       </div>
-      <button class="btn btn-secondary" onclick="loadRawPayloads()">Refresh Payloads</button>
+      <button class="btn btn-secondary" onclick="loadRawPayloads()">Refresh payloads</button>
       <div id="rawPayloadsContainer" style="display:none;margin-top:12px">
         <div id="rawPayloadsList" style="font-family:var(--mono);font-size:12px;max-height:500px;overflow-y:auto"></div>
       </div>
@@ -2083,6 +2092,19 @@ function markSectionDirty(scopeSelector, buttonSelector) {
   const lbl = scope.querySelector('[data-dirty-label]');
   if (lbl) lbl.style.display = '';
 }
+
+// Distinct loading and empty markup, so "still fetching" never looks like
+// "nothing configured". Pure builders plus thin DOM setters.
+function loadingHtml(label) {
+  return '<div class="loading"><span class="loading-spinner" aria-hidden="true"></span>' + escapeHtml(label || 'Loading') + '</div>';
+}
+function emptyStateHtml(msg, icon) {
+  return '<div class="empty-state">'
+    + (icon ? '<div class="empty-icon" aria-hidden="true">' + icon + '</div>' : '')
+    + escapeHtml(msg) + '</div>';
+}
+function setLoading(el, label) { if (el) el.innerHTML = loadingHtml(label); }
+function renderEmpty(el, msg, icon) { if (el) el.innerHTML = emptyStateHtml(msg, icon); }
 
 // ============================================================
 // API helpers
@@ -3063,7 +3085,7 @@ function renderZwaveSetup() {
         <div style="font-size:13px;font-weight:600">Deadbolt</div>
         <button class="btn btn-sm btn-secondary" onclick="downloadDiagnostics()" title="One file with the app log, Z-Wave log, pairing history, and redacted config">Download Diagnostics</button>
       </div>
-      <div id="zwaveDeadboltStatusLine" style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Loading...</div>
+      <div id="zwaveDeadboltStatusLine" style="font-size:12px;color:var(--text-muted);margin-bottom:8px"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap" id="zwaveDeadboltButtons"></div>
       <div id="zwaveAddDeadbolt" style="margin-top:10px"></div>
       <div id="zwavePairPanel" style="margin-top:10px"></div>
@@ -5192,7 +5214,7 @@ function toggleRawPayloads() {
 
 async function loadRawPayloads() {
   const list = document.getElementById('rawPayloadsList');
-  list.innerHTML = '<div style="color:var(--text-muted)">Loading...</div>';
+  list.innerHTML = '<div style="color:var(--text-muted)"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>';
   try {
     const result = await api('GET', '/api/debug/payloads');
     const payloads = result.payloads || [];
