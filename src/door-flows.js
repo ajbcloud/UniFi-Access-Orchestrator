@@ -24,8 +24,12 @@
  *                | { any_group: true }    // any RESOLVED group (skips unresolved)
  *                | { groups: ["Staff"] }, // only these resolved groups
  *           actions: {
- *             unlock: { doors: ["Interior Door"], door_ids: [id|null,...],
- *                       debounce_seconds: 8, delay_seconds: 0 } | null,
+ *             unlock: [ { doors: ["Interior Door"], door_ids: [id|null,...],
+ *                         debounce_seconds: 8, delay_seconds: 0 }, ... ],
+ *                      // ARRAY of unlock actions, each with its OWN delay +
+ *                      // debounce. Legacy configs stored a single object (or
+ *                      // null); readers accept both and migration normalizes
+ *                      // to the array on load.
  *             retract: [ {
  *               lock_id: "front_deadbolt",
  *               after_unlock: 'stay_unlocked' | 'relock_after' | 'lock_default',
@@ -102,7 +106,7 @@ function triggersOf(flow) {
   const retract = Array.isArray(flow.retract) ? flow.retract : [];
   const unlock = cascadeToUnlockAction(flow.cascade);
   if (!retract.length && !unlock) return [];
-  return [{ type: 'entry', scope: null, actions: { unlock, retract } }];
+  return [{ type: 'entry', scope: null, actions: { unlock: unlock ? [unlock] : [], retract } }];
 }
 
 /** The retract edges of a trigger (defensive). */
@@ -111,11 +115,26 @@ function retractOf(trigger) {
   return Array.isArray(r) ? r : [];
 }
 
-/** The unlock action of a trigger, or null (defensive). */
-function unlockOf(trigger) {
+/** One unlock action, validated: needs a non-empty doors list. */
+function validUnlockAction(u) {
+  return isPlainObject(u) && Array.isArray(u.doors) && u.doors.length ? u : null;
+}
+
+/**
+ * ALL unlock actions of a trigger, as an array. The canonical shape stores an
+ * array; a legacy single object (or null) reads as a 0/1-element array so old
+ * configs and old PUT payloads keep working.
+ */
+function unlockActionsOf(trigger) {
   const u = trigger && trigger.actions && trigger.actions.unlock;
-  if (!isPlainObject(u) || !Array.isArray(u.doors) || !u.doors.length) return null;
-  return u;
+  if (Array.isArray(u)) return u.map(validUnlockAction).filter(Boolean);
+  const one = validUnlockAction(u);
+  return one ? [one] : [];
+}
+
+/** The FIRST unlock action of a trigger, or null (legacy readers only). */
+function unlockOf(trigger) {
+  return unlockActionsOf(trigger)[0] || null;
 }
 
 /** Canonicalize a scope value to null | {any_group:true} | {groups:[...]}. */
@@ -277,9 +296,9 @@ function addUnlockTrigger(flow, type, scope, doors, delay, doorbell, debounceSec
   const match = flow.triggers.find((t) => t.type === type
     && sameScope(normalizeScope(t.scope), wantScope)
     && sameDoorbell(t.doorbell || null, doorbell || null)
-    && t.actions && t.actions.unlock);
+    && unlockActionsOf(t).length);
   if (match) {
-    const u = match.actions.unlock;
+    const u = unlockActionsOf(match)[0];
     for (const d of doors) if (!u.doors.some((x) => normName(x) === normName(d))) u.doors.push(d);
     u.delay_seconds = Math.max(u.delay_seconds || 0, delay || 0);
     return;
@@ -288,7 +307,7 @@ function addUnlockTrigger(flow, type, scope, doors, delay, doorbell, debounceSec
     type,
     scope: wantScope,
     actions: {
-      unlock: { doors: [...doors], debounce_seconds: debounce, delay_seconds: delay || 0 },
+      unlock: [{ doors: [...doors], debounce_seconds: debounce, delay_seconds: delay || 0 }],
       retract: [],
     },
   };
@@ -317,14 +336,23 @@ function sameDoorbell(a, b) {
 function toTriggerFlow(flow, state) {
   if (!isPlainObject(flow)) return { door_id: null, triggers: [] };
   if (Array.isArray(flow.triggers)) {
-    return { door_id: flow.door_id || null, triggers: flow.triggers.filter(isPlainObject).map((t) => JSON.parse(JSON.stringify(t))) };
+    const triggers = flow.triggers.filter(isPlainObject).map((t) => JSON.parse(JSON.stringify(t)));
+    // Normalize a legacy single unlock object (or null) to the array shape.
+    for (const t of triggers) {
+      if (!isPlainObject(t.actions)) continue;
+      const u = t.actions.unlock;
+      if (Array.isArray(u)) continue;
+      t.actions.unlock = isPlainObject(u) ? [u] : [];
+      if (state) state.changed = true;
+    }
+    return { door_id: flow.door_id || null, triggers };
   }
   if (state) state.changed = true; // a flat flow was upgraded
   const retract = Array.isArray(flow.retract) ? flow.retract.map((e) => ({ ...e })) : [];
   const unlock = cascadeToUnlockAction(flow.cascade);
   const triggers = [];
   if (retract.length || unlock) {
-    triggers.push({ type: 'entry', scope: null, actions: { unlock, retract } });
+    triggers.push({ type: 'entry', scope: null, actions: { unlock: unlock ? [unlock] : [], retract } });
   }
   return { door_id: flow.door_id || null, triggers };
 }
@@ -519,14 +547,14 @@ function cascadeRulesFromFlows(flows) {
     for (const trig of triggersOf(flow)) {
       if ((TRIGGER_TYPES.includes(trig.type) ? trig.type : 'entry') !== 'entry') continue;
       if (normalizeScope(trig.scope) != null) continue; // group-scoped unlocks are unlock_rules
-      const u = unlockOf(trig);
-      if (!u) continue;
-      rules.push({
-        trigger_door: door,
-        trigger_door_id: flow.door_id || null,
-        unlock: [...u.doors],
-        debounce_seconds: u.debounce_seconds == null ? 8 : u.debounce_seconds,
-      });
+      for (const u of unlockActionsOf(trig)) {
+        rules.push({
+          trigger_door: door,
+          trigger_door_id: flow.door_id || null,
+          unlock: [...u.doors],
+          debounce_seconds: u.debounce_seconds == null ? 8 : u.debounce_seconds,
+        });
+      }
     }
   }
   return rules;
@@ -543,19 +571,19 @@ function unlockRulesFromFlows(flows) {
   for (const [door, flow] of Object.entries(flows || {})) {
     if (!isSafeKey(door) || !isPlainObject(flow)) continue;
     for (const trig of triggersOf(flow)) {
-      const u = unlockOf(trig);
-      if (!u) continue;
-      rules.push({
-        trigger_door: door,
-        trigger_door_id: flow.door_id || null,
-        type: TRIGGER_TYPES.includes(trig.type) ? trig.type : 'entry',
-        scope: normalizeScope(trig.scope),
-        unlock: [...u.doors],
-        unlock_ids: Array.isArray(u.door_ids) ? [...u.door_ids] : undefined,
-        debounce_seconds: u.debounce_seconds == null ? 8 : u.debounce_seconds,
-        delay_seconds: u.delay_seconds == null ? 0 : u.delay_seconds,
-        doorbell: isPlainObject(trig.doorbell) ? trig.doorbell : null,
-      });
+      for (const u of unlockActionsOf(trig)) {
+        rules.push({
+          trigger_door: door,
+          trigger_door_id: flow.door_id || null,
+          type: TRIGGER_TYPES.includes(trig.type) ? trig.type : 'entry',
+          scope: normalizeScope(trig.scope),
+          unlock: [...u.doors],
+          unlock_ids: Array.isArray(u.door_ids) ? [...u.door_ids] : undefined,
+          debounce_seconds: u.debounce_seconds == null ? 8 : u.debounce_seconds,
+          delay_seconds: u.delay_seconds == null ? 0 : u.delay_seconds,
+          doorbell: isPlainObject(trig.doorbell) ? trig.doorbell : null,
+        });
+      }
     }
   }
   return rules;
@@ -634,7 +662,12 @@ function backfillFlowDoorIds(flows, doorsByName, doorsById) {
     // object reference is stable across a re-key, so operate on it directly.
     // Handles the trigger shape (per trigger) and the flat shape (flow.cascade).
     if (Array.isArray(flow.triggers)) {
-      for (const trig of flow.triggers) if (isPlainObject(trig) && trig.actions) backfillUnlockTargets(trig.actions.unlock);
+      for (const trig of flow.triggers) {
+        if (!isPlainObject(trig) || !trig.actions) continue;
+        const u = trig.actions.unlock;
+        if (Array.isArray(u)) for (const a of u) backfillUnlockTargets(a);
+        else backfillUnlockTargets(u);
+      }
     } else if (isPlainObject(flow.cascade)) {
       const c = flow.cascade;
       const ids = Array.isArray(c.unlock_ids) ? c.unlock_ids : new Array((c.unlock || []).length).fill(null);
@@ -684,15 +717,24 @@ function validateRetractEdges(edges, label, errors) {
 
 function validateUnlockAction(unlock, label, errors) {
   if (unlock == null) return;
-  if (!isPlainObject(unlock)) { errors.push(`${label} unlock must be an object`); return; }
+  if (Array.isArray(unlock)) {
+    unlock.forEach((u, i) => validateOneUnlockAction(u, `${label} unlock[${i}]`, errors));
+    return;
+  }
+  validateOneUnlockAction(unlock, `${label} unlock`, errors);
+}
+
+function validateOneUnlockAction(unlock, label, errors) {
+  if (unlock == null) return;
+  if (!isPlainObject(unlock)) { errors.push(`${label} must be an object`); return; }
   if (!Array.isArray(unlock.doors) || unlock.doors.some((d) => typeof d !== 'string' || !d)) {
-    errors.push(`${label} unlock.doors must be an array of door names`);
+    errors.push(`${label}.doors must be an array of door names`);
   }
   if (unlock.debounce_seconds != null && !(Number.isFinite(unlock.debounce_seconds) && unlock.debounce_seconds >= 0)) {
-    errors.push(`${label} unlock.debounce_seconds must be a number >= 0`);
+    errors.push(`${label}.debounce_seconds must be a number >= 0`);
   }
   if (unlock.delay_seconds != null && !(Number.isFinite(unlock.delay_seconds) && unlock.delay_seconds >= 0)) {
-    errors.push(`${label} unlock.delay_seconds must be a number >= 0`);
+    errors.push(`${label}.delay_seconds must be a number >= 0`);
   }
 }
 
@@ -789,21 +831,23 @@ function legacyProjection(flows) {
   for (const [door, flow] of Object.entries(flows || {})) {
     if (!isSafeKey(door) || !isPlainObject(flow)) continue;
     for (const trig of triggersOf(flow)) {
-      const u = unlockOf(trig);
-      if (!u) continue;
+      const actionsList = unlockActionsOf(trig);
+      if (!actionsList.length) continue;
       const type = TRIGGER_TYPES.includes(trig.type) ? trig.type : 'entry';
       const scope = normalizeScope(trig.scope);
-      if (type === 'doorbell') {
-        if (isPlainObject(trig.doorbell)) {
-          if (Number.isFinite(trig.doorbell.reason_code)) doorbell_rules.trigger_reason_code = trig.doorbell.reason_code;
-          if (isPlainObject(trig.doorbell.viewer_to_group)) Object.assign(doorbell_rules.viewer_to_group, trig.doorbell.viewer_to_group);
+      for (const u of actionsList) {
+        if (type === 'doorbell') {
+          if (isPlainObject(trig.doorbell)) {
+            if (Number.isFinite(trig.doorbell.reason_code)) doorbell_rules.trigger_reason_code = trig.doorbell.reason_code;
+            if (isPlainObject(trig.doorbell.viewer_to_group)) Object.assign(doorbell_rules.viewer_to_group, trig.doorbell.viewer_to_group);
+          }
+          if (scope && scope.any_group) unionInto(doorbell_rules.default_action.unlock, u.doors);
+          else if (scope && scope.groups) for (const g of scope.groups) doorbell_rules.rules.push({ group: g, trigger: door, unlock: [...u.doors], delay: u.delay_seconds || 0 });
+        } else {
+          if (scope == null) continue; // everyone entry = cascade, projected below
+          if (scope.any_group) unionInto(unlock_rules.default_action.unlock, u.doors);
+          else if (scope.groups) for (const g of scope.groups) unlock_rules.rules.push({ group: g, trigger: door, unlock: [...u.doors], delay: u.delay_seconds || 0 });
         }
-        if (scope && scope.any_group) unionInto(doorbell_rules.default_action.unlock, u.doors);
-        else if (scope && scope.groups) for (const g of scope.groups) doorbell_rules.rules.push({ group: g, trigger: door, unlock: [...u.doors], delay: u.delay_seconds || 0 });
-      } else {
-        if (scope == null) continue; // everyone entry = cascade, projected below
-        if (scope.any_group) unionInto(unlock_rules.default_action.unlock, u.doors);
-        else if (scope.groups) for (const g of scope.groups) unlock_rules.rules.push({ group: g, trigger: door, unlock: [...u.doors], delay: u.delay_seconds || 0 });
       }
     }
   }
@@ -824,6 +868,7 @@ module.exports = {
   normName,
   scopeMatches,
   triggersOf,
+  unlockActionsOf,
   migrateToFlows,
   migrateToTriggers,
   automatedLockIdsFromFlows,

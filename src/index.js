@@ -3250,12 +3250,12 @@ app.put('/api/config', async (req, res) => {
           if (!flow.cascade || !Array.isArray(flow.cascade.unlock) || !flow.cascade.unlock.length) continue;
           const t = everyoneEntry(door);
           if (flow.door_id && !flows[door].door_id) flows[door].door_id = flow.door_id;
-          t.actions.unlock = {
+          t.actions.unlock = [{
             doors: [...flow.cascade.unlock],
             door_ids: Array.isArray(flow.cascade.unlock_ids) ? [...flow.cascade.unlock_ids] : undefined,
             debounce_seconds: flow.cascade.debounce_seconds == null ? 8 : flow.cascade.debounce_seconds,
             delay_seconds: 0,
-          };
+          }];
         }
       }
 
@@ -3288,7 +3288,7 @@ app.put('/api/config', async (req, res) => {
       // Drop empty triggers / doors.
       for (const door of Object.keys(flows)) {
         flows[door].triggers = (flows[door].triggers || []).filter((t) => {
-          const hasUnlock = t.actions && t.actions.unlock && Array.isArray(t.actions.unlock.doors) && t.actions.unlock.doors.length;
+          const hasUnlock = doorFlows.unlockActionsOf(t).length > 0;
           const hasRetract = t.actions && Array.isArray(t.actions.retract) && t.actions.retract.length;
           return hasUnlock || hasRetract;
         });
@@ -3476,15 +3476,17 @@ function cleanDoorFlowTrigger(trig) {
     mirror_unlock: !!e.mirror_unlock,
     relock_cooldown_seconds: e.relock_cooldown_seconds == null ? 10 : e.relock_cooldown_seconds,
   })).filter((e) => typeof e.lock_id === 'string' && e.lock_id);
-  let unlock = null;
-  if (actions.unlock && Array.isArray(actions.unlock.doors) && actions.unlock.doors.filter((d) => typeof d === 'string' && d).length) {
-    unlock = {
-      doors: actions.unlock.doors.filter((d) => typeof d === 'string' && d),
-      door_ids: Array.isArray(actions.unlock.door_ids) ? [...actions.unlock.door_ids] : undefined,
-      debounce_seconds: actions.unlock.debounce_seconds == null ? 8 : actions.unlock.debounce_seconds,
-      delay_seconds: actions.unlock.delay_seconds == null ? 0 : actions.unlock.delay_seconds,
-    };
-  }
+  // unlock is an ARRAY of actions; a legacy single object normalizes to [obj].
+  const rawUnlock = Array.isArray(actions.unlock) ? actions.unlock
+    : (actions.unlock ? [actions.unlock] : []);
+  const unlock = rawUnlock
+    .filter((u) => u && Array.isArray(u.doors) && u.doors.some((d) => typeof d === 'string' && d))
+    .map((u) => ({
+      doors: u.doors.filter((d) => typeof d === 'string' && d),
+      door_ids: Array.isArray(u.door_ids) ? [...u.door_ids] : undefined,
+      debounce_seconds: u.debounce_seconds == null ? 8 : u.debounce_seconds,
+      delay_seconds: u.delay_seconds == null ? 0 : u.delay_seconds,
+    }));
   const out = { type, scope, actions: { unlock, retract } };
   if (type === 'doorbell') {
     const db = (trig && trig.doorbell) || {};
@@ -3509,7 +3511,7 @@ app.put('/api/door-flows', async (req, res) => {
   const clean = {};
   for (const [door, flow] of Object.entries(flows)) {
     const triggers = doorFlows.triggersOf(flow).map(cleanDoorFlowTrigger).filter((t) => {
-      const hasUnlock = t.actions.unlock && t.actions.unlock.doors.length;
+      const hasUnlock = Array.isArray(t.actions.unlock) && t.actions.unlock.length;
       return hasUnlock || t.actions.retract.length;
     });
     if (triggers.length) clean[door] = { door_id: flow.door_id || null, triggers };

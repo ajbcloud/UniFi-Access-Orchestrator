@@ -140,7 +140,7 @@ test('both actions in use: the chooser marks each done, and retract + unlock sti
   const maxed = flow({ triggers: [{
     type: 'entry', scope: null,
     actions: {
-      unlock: { doors: ['Interior Door'] },
+      unlock: [{ doors: ['Interior Door'] }],
       retract: [
         { lock_id: 'front_deadbolt', after_unlock: 'stay_unlocked' },
         { lock_id: 'side_deadbolt', after_unlock: 'stay_unlocked' },
@@ -149,7 +149,7 @@ test('both actions in use: the chooser marks each done, and retract + unlock sti
   }] });
   const out = load()('Front Door', maxed, DATA);
   assert.match(out, /\+ add action/, 'the control stays present');
-  assert.match(out, /added below/, 'unlock is shown as already added');
+  assert.match(out, /Add another/, 'unlock actions stack: another one is always addable');
   assert.match(out, /every paired deadbolt is already retracting/, 'retract is shown as exhausted');
   // multiple actions genuinely coexist in one trigger
   assert.match(out, /Retract deadbolt/);
@@ -179,7 +179,7 @@ test('a door can hold multiple triggers of the same type, each scoped', () => {
   const out = load(['Staff', 'Visitors'])('Front Door', two, DATA);
   assert.match(out, /data-df-trig="0"/, 'first doorbell trigger renders');
   assert.match(out, /data-df-trig="1"/, 'second doorbell trigger renders');
-  assert.match(out, /addTrigger\(&quot;Front Door&quot;, 'entry'\)/, 'badge-in trigger always addable');
+  assert.ok(!/addTrigger\(&quot;Front Door&quot;, 'entry'\)/.test(out), 'no badge-in add button (every flow starts with one)');
   assert.match(out, /addTrigger\(&quot;Front Door&quot;, 'doorbell'\)/, 'doorbell trigger always addable');
   assert.match(out, /more than one doorbell rule/, 'the scope hint appears when a type repeats and groups exist');
 });

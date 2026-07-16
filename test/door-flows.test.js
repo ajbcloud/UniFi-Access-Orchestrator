@@ -292,8 +292,8 @@ test('migrateToTriggers: a flat door_flows becomes one everyone entry trigger', 
   assert.equal(trigs[0].type, 'entry');
   assert.equal(trigs[0].scope, null, 'everyone');
   assert.equal(trigs[0].actions.retract[0].lock_id, 'l1');
-  assert.deepEqual(trigs[0].actions.unlock.doors, ['Interior']);
-  assert.equal(trigs[0].actions.unlock.debounce_seconds, 8);
+  assert.deepEqual(trigs[0].actions.unlock[0].doors, ['Interior']);
+  assert.equal(trigs[0].actions.unlock[0].debounce_seconds, 8);
 });
 
 test('migrateToTriggers: unlock_rules become a group-scoped entry trigger on the trigger door', () => {
@@ -303,8 +303,8 @@ test('migrateToTriggers: unlock_rules become a group-scoped entry trigger on the
   const t = out.flows['Main Entrance'].triggers[0];
   assert.equal(t.type, 'entry');
   assert.deepEqual(t.scope, { groups: ['Staff'] });
-  assert.deepEqual(t.actions.unlock.doors, ['Elevator', 'Stairwell']);
-  assert.equal(t.actions.unlock.delay_seconds, 5);
+  assert.deepEqual(t.actions.unlock[0].doors, ['Elevator', 'Stairwell']);
+  assert.equal(t.actions.unlock[0].delay_seconds, 5);
 });
 
 test('migrateToTriggers: two unlock_rules on one door+group union unlock lists and keep one (max) delay', () => {
@@ -316,8 +316,8 @@ test('migrateToTriggers: two unlock_rules on one door+group union unlock lists a
   }, {});
   const t = out.flows['Main'].triggers.filter((x) => x.scope && x.scope.groups);
   assert.equal(t.length, 1, 'merged into one trigger');
-  assert.deepEqual(t[0].actions.unlock.doors, ['A', 'B']);
-  assert.equal(t[0].actions.unlock.delay_seconds, 7);
+  assert.deepEqual(t[0].actions.unlock[0].doors, ['A', 'B']);
+  assert.equal(t[0].actions.unlock[0].delay_seconds, 7);
 });
 
 test('migrateToTriggers: default_action becomes an any_group trigger (not everyone)', () => {
@@ -329,7 +329,7 @@ test('migrateToTriggers: default_action becomes an any_group trigger (not everyo
   }, {});
   const anyG = out.flows['Main'].triggers.find((t) => t.scope && t.scope.any_group);
   assert.ok(anyG, 'an any_group trigger exists on the candidate door');
-  assert.deepEqual(anyG.actions.unlock.doors, ['Lobby']);
+  assert.deepEqual(anyG.actions.unlock[0].doors, ['Lobby']);
   // and the resolved-group vs unresolved semantics hold:
   assert.equal(scopeMatches(anyG.scope, 'Visitors'), true, 'any resolved group matches');
   assert.equal(scopeMatches(anyG.scope, null), false, 'an unresolved user is skipped');
@@ -424,6 +424,50 @@ test('unlockRulesFromFlows: one scoped rule per unlock-bearing trigger, incl doo
   const bell = rules.find((r) => r.type === 'doorbell');
   assert.equal(bell.doorbell.reason_code, 107);
   assert.deepEqual(bell.unlock, ['Lobby']);
+});
+
+test('unlockRulesFromFlows: STACKED unlock actions emit one rule each with its own delay + debounce', () => {
+  const flows = {
+    'Front Door': {
+      door_id: 'd-f',
+      triggers: [{
+        type: 'entry',
+        scope: null,
+        actions: {
+          unlock: [
+            { doors: ['Interior'], debounce_seconds: 8, delay_seconds: 0 },
+            { doors: ['Elevator'], debounce_seconds: 3, delay_seconds: 10 },
+          ],
+          retract: [],
+        },
+      }],
+    },
+  };
+  const rules = unlockRulesFromFlows(flows);
+  assert.equal(rules.length, 2, 'one controller rule per unlock action');
+  assert.deepEqual(rules[0].unlock, ['Interior']);
+  assert.equal(rules[0].delay_seconds, 0);
+  assert.deepEqual(rules[1].unlock, ['Elevator']);
+  assert.equal(rules[1].delay_seconds, 10);
+  assert.equal(rules[1].debounce_seconds, 3);
+  // and the legacy cascade projection carries both
+  const cas = cascadeRulesFromFlows(flows);
+  assert.equal(cas.length, 2);
+});
+
+test('migrateToTriggers: a legacy single unlock OBJECT normalizes to the array shape', () => {
+  const out = migrateToTriggers({
+    door_flows: {
+      'Front Door': {
+        door_id: 'd-f',
+        triggers: [{ type: 'entry', scope: null, actions: { unlock: { doors: ['Interior'], debounce_seconds: 8, delay_seconds: 0 }, retract: [] } }],
+      },
+    },
+  }, {});
+  assert.equal(out.changed, true, 'the object->array upgrade counts as changed so it persists');
+  const u = out.flows['Front Door'].triggers[0].actions.unlock;
+  assert.ok(Array.isArray(u), 'unlock is an array after migration');
+  assert.deepEqual(u[0].doors, ['Interior']);
 });
 
 test('cascadeRulesFromFlows: only the everyone entry cascade, not scoped/doorbell unlocks', () => {
