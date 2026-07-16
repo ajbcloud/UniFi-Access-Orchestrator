@@ -10,13 +10,17 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   migrateToFlows,
+  migrateToTriggers,
   automatedLockIdsFromFlows,
   edgesForLock,
   cascadeRulesFromFlows,
+  unlockRulesFromFlows,
   gatingDoorsForLock,
   backfillFlowDoorIds,
   validateFlows,
   legacyProjection,
+  scopeMatches,
+  triggersOf,
 } = require('../src/door-flows');
 
 // ---------------------------------------------------------------------------
@@ -270,4 +274,199 @@ test('legacyProjection: multi-door lock projects its FIRST edge (legacy cannot e
   const proj = legacyProjection(twoDoorFlows());
   assert.equal(proj.deadbolt_rules.l1.trigger_door, 'Door A');
   assert.equal(proj.deadbolt_rules.l2.trigger_door, 'Door A');
+});
+
+// ---------------------------------------------------------------------------
+// migrateToTriggers: the door-flow spine migration (trigger shape)
+// ---------------------------------------------------------------------------
+
+test('migrateToTriggers: a flat door_flows becomes one everyone entry trigger', () => {
+  const { flows } = migrateToFlows({
+    deadbolt_rules: { l1: { trigger_door: 'Front Door', trigger_door_id: 'd-f' } },
+    cascade_rules: { rules: [{ trigger_door: 'Front Door', unlock: ['Interior'], debounce_seconds: 8 }] },
+  }, {});
+  const out = migrateToTriggers({ door_flows: flows }, {});
+  assert.equal(out.changed, true, 'a flat flow upgrade counts as changed');
+  const trigs = out.flows['Front Door'].triggers;
+  assert.equal(trigs.length, 1);
+  assert.equal(trigs[0].type, 'entry');
+  assert.equal(trigs[0].scope, null, 'everyone');
+  assert.equal(trigs[0].actions.retract[0].lock_id, 'l1');
+  assert.deepEqual(trigs[0].actions.unlock.doors, ['Interior']);
+  assert.equal(trigs[0].actions.unlock.debounce_seconds, 8);
+});
+
+test('migrateToTriggers: unlock_rules become a group-scoped entry trigger on the trigger door', () => {
+  const out = migrateToTriggers({
+    unlock_rules: { rules: [{ group: 'Staff', trigger: 'Main Entrance', unlock: ['Elevator', 'Stairwell'], delay: 5 }] },
+  }, {});
+  const t = out.flows['Main Entrance'].triggers[0];
+  assert.equal(t.type, 'entry');
+  assert.deepEqual(t.scope, { groups: ['Staff'] });
+  assert.deepEqual(t.actions.unlock.doors, ['Elevator', 'Stairwell']);
+  assert.equal(t.actions.unlock.delay_seconds, 5);
+});
+
+test('migrateToTriggers: two unlock_rules on one door+group union unlock lists and keep one (max) delay', () => {
+  const out = migrateToTriggers({
+    unlock_rules: { rules: [
+      { group: 'Staff', trigger: 'Main', unlock: ['A'], delay: 0 },
+      { group: 'Staff', trigger: 'Main', unlock: ['A', 'B'], delay: 7 },
+    ] },
+  }, {});
+  const t = out.flows['Main'].triggers.filter((x) => x.scope && x.scope.groups);
+  assert.equal(t.length, 1, 'merged into one trigger');
+  assert.deepEqual(t[0].actions.unlock.doors, ['A', 'B']);
+  assert.equal(t[0].actions.unlock.delay_seconds, 7);
+});
+
+test('migrateToTriggers: default_action becomes an any_group trigger (not everyone)', () => {
+  const out = migrateToTriggers({
+    unlock_rules: {
+      rules: [{ group: 'Staff', trigger: 'Main', unlock: ['Elevator'] }],
+      default_action: { unlock: ['Lobby'] },
+    },
+  }, {});
+  const anyG = out.flows['Main'].triggers.find((t) => t.scope && t.scope.any_group);
+  assert.ok(anyG, 'an any_group trigger exists on the candidate door');
+  assert.deepEqual(anyG.actions.unlock.doors, ['Lobby']);
+  // and the resolved-group vs unresolved semantics hold:
+  assert.equal(scopeMatches(anyG.scope, 'Visitors'), true, 'any resolved group matches');
+  assert.equal(scopeMatches(anyG.scope, null), false, 'an unresolved user is skipped');
+});
+
+test('migrateToTriggers: doorbell_rules become a doorbell trigger with reason + viewer map', () => {
+  const out = migrateToTriggers({
+    doorbell_rules: {
+      rules: [{ group: 'Royal Palm', trigger: 'Front Gate', unlock: ['Lobby'] }],
+      trigger_reason_code: 107,
+      viewer_to_group: { 'RP Concierge': 'Royal Palm' },
+    },
+  }, {});
+  const t = out.flows['Front Gate'].triggers[0];
+  assert.equal(t.type, 'doorbell');
+  assert.deepEqual(t.scope, { groups: ['Royal Palm'] });
+  assert.equal(t.doorbell.reason_code, 107);
+  assert.deepEqual(t.doorbell.viewer_to_group, { 'RP Concierge': 'Royal Palm' });
+});
+
+test('migrateToTriggers step 5: lock_default converts by the lock hardware state', () => {
+  const flat = {
+    'Front Door': { door_id: 'd-f', retract: [{ lock_id: 'lockOn', after_unlock: 'lock_default' }], cascade: null },
+    'Side Door': { door_id: 'd-s', retract: [{ lock_id: 'lockOff', after_unlock: 'lock_default' }], cascade: null },
+  };
+  const locks = { lockOn: { auto_relock: true, auto_relock_seconds: 45 }, lockOff: { auto_relock: false } };
+  const out = migrateToTriggers({ door_flows: flat }, locks);
+  const on = out.flows['Front Door'].triggers[0].actions.retract[0];
+  const off = out.flows['Side Door'].triggers[0].actions.retract[0];
+  assert.equal(on.after_unlock, 'relock_after');
+  assert.equal(on.relock_seconds, 45, 'timer from the saved lock entry');
+  assert.equal(off.after_unlock, 'stay_unlocked', 'app owns relock when hardware relock was off');
+  assert.ok(out.logs.some((l) => /relock_after 45s/.test(l)));
+});
+
+test('migrateToTriggers: lock_default with no hardware info defaults to stay_unlocked and 30s when on', () => {
+  const out = migrateToTriggers({
+    door_flows: { 'A': { retract: [{ lock_id: 'l', after_unlock: 'lock_default' }], cascade: null } },
+  }, { l: { auto_relock: true } });
+  assert.equal(out.flows['A'].triggers[0].actions.retract[0].relock_seconds, 30);
+});
+
+test('migrateToTriggers: idempotent on an already-migrated config', () => {
+  const first = migrateToTriggers({
+    unlock_rules: { rules: [{ group: 'Staff', trigger: 'Main', unlock: ['Elevator'] }] },
+    door_flows: { 'Main': { door_id: 'd', retract: [{ lock_id: 'l1', after_unlock: 'stay_unlocked' }], cascade: null } },
+  }, {});
+  const second = migrateToTriggers({ door_flows: first.flows }, {});
+  assert.equal(second.changed, false, 'nothing left to convert');
+  assert.deepEqual(second.flows, first.flows);
+});
+
+test('migrateToTriggers: drops prototype-polluting door keys', () => {
+  const cfg = JSON.parse('{"unlock_rules":{"rules":[{"group":"g","trigger":"__proto__","unlock":["X"]}]}}');
+  const out = migrateToTriggers(cfg, {});
+  assert.ok(!('__proto__' in out.flows) || !Object.prototype.hasOwnProperty.call(out.flows, '__proto__'));
+});
+
+// ---------------------------------------------------------------------------
+// trigger-shape helpers
+// ---------------------------------------------------------------------------
+
+function triggerFlows() {
+  return {
+    'Main Entrance': {
+      door_id: 'd-main',
+      triggers: [
+        { type: 'entry', scope: null, actions: { unlock: { doors: ['Interior'], debounce_seconds: 8, delay_seconds: 0 }, retract: [{ lock_id: 'lockM', after_unlock: 'stay_unlocked' }] } },
+        { type: 'entry', scope: { groups: ['Staff'] }, actions: { unlock: { doors: ['Elevator'], debounce_seconds: 0, delay_seconds: 5 }, retract: [] } },
+        { type: 'doorbell', scope: { groups: ['Staff'] }, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: { doors: ['Lobby'], debounce_seconds: 0, delay_seconds: 0 }, retract: [] } },
+      ],
+    },
+  };
+}
+
+test('edgesForLock: carries trigger type + scope for the controller', () => {
+  const edges = edgesForLock(triggerFlows(), 'lockM');
+  assert.equal(edges.length, 1);
+  assert.equal(edges[0].type, 'entry');
+  assert.equal(edges[0].scope, null);
+  assert.equal(edges[0].after_unlock, 'stay_unlocked');
+});
+
+test('unlockRulesFromFlows: one scoped rule per unlock-bearing trigger, incl doorbell', () => {
+  const rules = unlockRulesFromFlows(triggerFlows());
+  assert.equal(rules.length, 3);
+  const cascade = rules.find((r) => r.type === 'entry' && r.scope == null);
+  assert.deepEqual(cascade.unlock, ['Interior']);
+  assert.equal(cascade.debounce_seconds, 8);
+  const scoped = rules.find((r) => r.type === 'entry' && r.scope && r.scope.groups);
+  assert.equal(scoped.delay_seconds, 5);
+  const bell = rules.find((r) => r.type === 'doorbell');
+  assert.equal(bell.doorbell.reason_code, 107);
+  assert.deepEqual(bell.unlock, ['Lobby']);
+});
+
+test('cascadeRulesFromFlows: only the everyone entry cascade, not scoped/doorbell unlocks', () => {
+  const rules = cascadeRulesFromFlows(triggerFlows());
+  assert.equal(rules.length, 1);
+  assert.equal(rules[0].trigger_door, 'Main Entrance');
+  assert.deepEqual(rules[0].unlock, ['Interior']);
+});
+
+test('gatingDoorsForLock over the trigger shape: the door that retracts the lock', () => {
+  assert.deepEqual(gatingDoorsForLock(triggerFlows(), 'lockM'), [{ name: 'Main Entrance', id: 'd-main' }]);
+});
+
+test('scopeMatches: null=everyone, any_group=resolved only, groups=listed', () => {
+  assert.equal(scopeMatches(null, null), true);
+  assert.equal(scopeMatches(null, 'Anyone'), true);
+  assert.equal(scopeMatches({ any_group: true }, 'Staff'), true);
+  assert.equal(scopeMatches({ any_group: true }, null), false);
+  assert.equal(scopeMatches({ groups: ['Staff'] }, 'staff'), true, 'case-insensitive');
+  assert.equal(scopeMatches({ groups: ['Staff'] }, 'Visitors'), false);
+  assert.equal(scopeMatches({ groups: ['Staff'] }, null), false);
+});
+
+test('legacyProjection: projects unlock_rules and doorbell_rules back from triggers', () => {
+  const proj = legacyProjection(triggerFlows());
+  assert.deepEqual(proj.unlock_rules.rules, [{ group: 'Staff', trigger: 'Main Entrance', unlock: ['Elevator'], delay: 5 }]);
+  assert.equal(proj.doorbell_rules.rules[0].group, 'Staff');
+  assert.equal(proj.doorbell_rules.rules[0].trigger, 'Main Entrance');
+  assert.deepEqual(proj.doorbell_rules.rules[0].unlock, ['Lobby']);
+  assert.deepEqual(proj.cascade_rules.rules[0].unlock, ['Interior']);
+});
+
+test('validateFlows: accepts the trigger shape and rejects a bad trigger', () => {
+  assert.deepEqual(validateFlows(triggerFlows()), []);
+  assert.ok(validateFlows({ 'A': { triggers: [{ type: 'nope', actions: {} }] } }).some((e) => /type must be one of/.test(e)));
+  assert.ok(validateFlows({ 'A': { triggers: [{ type: 'entry', actions: { retract: [{ lock_id: 'l', after_unlock: 'relock_after' }] } }] } }).some((e) => /relock_seconds > 0/.test(e)));
+  assert.ok(validateFlows({ 'A': { triggers: [{ type: 'entry', scope: { groups: [42] }, actions: {} }] } }).some((e) => /scope.groups must be an array/.test(e)));
+});
+
+test('triggersOf: a flat flow yields one everyone entry trigger; a trigger flow passes through', () => {
+  const flat = triggersOf({ retract: [{ lock_id: 'l' }], cascade: { unlock: ['X'], debounce_seconds: 8 } });
+  assert.equal(flat.length, 1);
+  assert.equal(flat[0].type, 'entry');
+  assert.equal(flat[0].scope, null);
+  assert.equal(triggersOf(triggerFlows()['Main Entrance']).length, 3);
 });
