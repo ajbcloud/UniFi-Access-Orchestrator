@@ -1,13 +1,17 @@
 # UniFi Access Orchestrator: Smart-Deadbolt and Cascade Add-on Plan
 
+> _Historical design record. Kept for transparency; version numbers and
+> status reflect the state at the time of writing and may differ from the
+> current release._
+
 Status: planning only. No implementation code beyond illustrative interfaces and pseudocode.
 Target repo: `ajbcloud/UniFi-Access-Orchestrator` (canonical root tree, v5.1.0).
-Target site: QIT Solutions HQ, 400 Columbia Dr, Suite 105, West Palm Beach FL (two doors).
+Target site: a two-door commercial suite.
 
-Authoritative site design: "Access Control Design and Implementation Plan, UniFi Access with
-Smart-Deadbolt Integration" (QIT AC2, Draft 1.9, Jul 8 2026). That document owns the site design,
-hardware and BOM, the daily schedule (Configuration 1), life-safety and AHJ requirements, and the
-BTS/QIT responsibility split. This plan is the middleware-implementation companion to it: it covers
+Authoritative site design: a separate "Access Control Design and Implementation Plan" (the site
+design document). That document owns the site design, hardware and BOM, the daily schedule
+(Configuration 1), life-safety and AHJ requirements, and the integrator responsibility split.
+This plan is the middleware-implementation companion to it: it covers
 only the Orchestrator's slice (the Z-Wave lock driver, the event-to-action logic, the interior
 cascade, config, and resilience), and it corrects one thing the middleware must code against, the
 event model (see section 4.1).
@@ -174,7 +178,7 @@ drift check, because aggressive polling drains a battery lock. **[confirmed as b
   `data.location` / a `target[]` entry. **[confirmed]**
 
 > Note for implementers (two clarifications that shape the build):
-> 1. The QIT AC2 site design uses shorthand event names `access.entry` / `access.exit` in its
+> 1. The site design document uses shorthand event names `access.entry` / `access.exit` in its
 >    illustrative config. Those are not real UniFi event types. The wire reality is a single
 >    `access.door.unlock` event; direction, when present, lives in the log/WebSocket `_source.target[]`
 >    as `door_entry_method: entry|exit`. Do not code to `access.entry`/`access.exit`.
@@ -571,4 +575,4 @@ behavior; driver lifecycle events and the destroy-and-recreate reconnect pattern
 
 Repo files reviewed for grounding: `src/index.js`, `src/unifi-client.js`, `src/rules-engine.js`,
 `src/resolver.js`, `src/config-sync.js`, `src/backup.js`, `src/logger.js`, `electron/main.js`,
-`config/config.example.json`, `scripts/setup-pi.sh`, `README.md`, `replit.md`.
+`config/config.example.json`, `scripts/setup-pi.sh`, `README.md`.

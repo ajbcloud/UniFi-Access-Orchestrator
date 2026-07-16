@@ -1,4 +1,8 @@
-name: Auto-delete merged Codex branches
+name: Auto-delete merged automation branches
+
+# Cleans up short-lived branches created by automated coding agents once their
+# pull request is merged into main. Matches common agent branch prefixes so the
+# Actions tab and branch list stay tidy.
 
 on:
   pull_request:
@@ -13,7 +17,11 @@ jobs:
   delete-branch:
     if: >-
       github.event.pull_request.merged == true &&
-      startsWith(github.event.pull_request.head.ref, 'codex/')
+      (
+        startsWith(github.event.pull_request.head.ref, 'claude/') ||
+        startsWith(github.event.pull_request.head.ref, 'codex/') ||
+        startsWith(github.event.pull_request.head.ref, 'copilot/')
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Delete merged branch

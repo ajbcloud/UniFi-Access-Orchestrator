@@ -1,5 +1,9 @@
 # Full application review and self-healing plan (July 2026, baseline v7.8.0)
 
+> _Historical engineering record. Kept for design transparency; version
+> numbers and status reflect the app as of this review and may differ from
+> the current release._
+
 This review was triggered by a field failure: a deadbolt unlock failed with
 the lock sitting less than a foot from the Z-Wave stick, on a box that will
 ultimately live unattended in a network rack. It covers why the unlock most

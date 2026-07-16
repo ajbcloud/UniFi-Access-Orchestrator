@@ -22,6 +22,7 @@ Built for multi-tenant commercial buildings where different tenants need differe
 - [Troubleshooting](#troubleshooting)
 - [Building from Source](#building-from-source)
 - [API Reference](#api-reference)
+- [Project Structure](#project-structure)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -54,7 +55,7 @@ Before you start, you need:
 1. **A UniFi Access system** running on a supported gateway (CloudKey G2+, Dream Machine Pro, or self-hosted UniFi controller)
    - Access application firmware 2.2.6 or later
 2. **An API token** from your UniFi Access portal
-   - Go to **Access > Settings > General > scroll down to Advanced > API Token**
+   - Go to **Access > Settings > General**, then scroll down to **Advanced > API Token**
    - Click "Create Token" and copy it somewhere safe
 3. **Your controller's IP address** (the device running UniFi Access, not unifi.ui.com)
 4. **Doors and user groups already configured** in UniFi Access
@@ -210,7 +211,7 @@ sudo apt install -y git
 git clone https://github.com/ajbcloud/UniFi-Access-Orchestrator.git
 
 # Enter the project directory
-cd unifi-access-orchestrator
+cd UniFi-Access-Orchestrator
 ```
 
 ### Step 5: Run the Setup Script
@@ -399,7 +400,7 @@ If you prefer to see your automation as a diagram instead of a list of cards, op
 - Click any node to list the flows that touch it, or click an edge to see its details.
 - Every detail panel deep-links to the door's card so you can make the change in the one place that owns it.
 
-Use the on-canvas controls to zoom, **Fit** the whole graph to the view, or **Arrange** to auto-lay-out the nodes. Node positions you drag are remembered on that machine.
+Use the on-canvas controls to zoom, **Fit** the whole graph to the view, or **Arrange** to auto-arrange the nodes. Node positions you drag are remembered on that machine.
 
 ---
 
@@ -580,7 +581,7 @@ If you want to build the installers yourself instead of downloading from Release
 
 ```bash
 git clone https://github.com/ajbcloud/UniFi-Access-Orchestrator.git
-cd unifi-access-orchestrator
+cd UniFi-Access-Orchestrator
 npm install
 ```
 
@@ -635,6 +636,7 @@ The orchestrator exposes these HTTP endpoints on its configured port (default 30
 | GET | `/api/doors` | All discovered doors with IDs |
 | GET | `/api/users` | All cached users with group mappings |
 | POST | `/api/sync` | Force re-sync of user groups from the UniFi API |
+| GET | `/api/discover` | Scan the local network for UniFi controllers (rate-limited; keep behind `admin_api_key` in production) |
 
 ### API Security
 
@@ -649,7 +651,7 @@ If these values are blank, the routes remain unauthenticated for local/lab setup
 
 ## Project Structure
 
-```
+```text
 unifi-access-orchestrator/
   assets/
     icon.svg                App icon
@@ -692,4 +694,4 @@ Contributions welcome. This project was built for a specific multi-tenant buildi
 
 Source Available License. See [LICENSE](LICENSE) for details.
 
-Built by [AJBCloud](https://qitsolutions.com).
+Built by [AJBCloud](https://github.com/ajbcloud).
