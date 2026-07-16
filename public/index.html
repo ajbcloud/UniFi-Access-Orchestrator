@@ -1567,7 +1567,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         <div><span style="color:var(--text-muted)">Event Source:</span> <span id="infoEventSource">-</span> <span id="infoWsStatus"></span></div>
         <div><span style="color:var(--text-muted)">Memory:</span> <span id="infoMemory">-</span></div>
         <div><span style="color:var(--text-muted)">Uptime:</span> <span id="infoUptime">-</span></div>
-        <div><span style="color:var(--text-muted)">Access Gateway:</span> <span id="infoHost">-</span> <span id="infoConnState"></span></div>
+        <div><span style="color:var(--text-muted)">UniFi controller:</span> <span id="infoHost">-</span> <span id="infoConnState"></span></div>
         <div id="infoLastEvent" style="display:none"><span style="color:var(--text-muted)">Last Event:</span> <span id="infoLastEventAge">-</span></div>
         <div id="infoLastRule" style="display:none;grid-column:1 / -1"><span style="color:var(--text-muted)">Last Rule Triggered:</span> <span id="infoLastRuleText">-</span></div>
         <div id="infoWsFilter" style="display:none"><span style="color:var(--text-muted)">WS Events:</span> <span id="infoWsFilterStats">-</span></div>
@@ -1625,8 +1625,8 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <div style="font-size:15px;font-weight:600">Configuration</div>
       <div style="display:flex;gap:8px;align-items:center">
         <span id="autoSyncPill" class="badge info" title="Background config sync status" style="font-size:11px">Auto-sync: …</span>
-        <button class="btn btn-sm btn-secondary" onclick="loadConfig()">Refresh</button>
-        <button class="btn btn-sm btn-secondary" onclick="reloadService()">Reload Service</button>
+        <button class="btn btn-sm btn-secondary" onclick="loadConfig()">Refresh automations</button>
+        <button class="btn btn-sm btn-secondary" onclick="reloadService()">Reload service</button>
       </div>
     </div>
 
@@ -1680,7 +1680,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         <div style="font-size:15px;font-weight:600">Visual Designer</div>
         <div style="font-size:12px;color:var(--text-muted)">Build cascading door rules and the deadbolt add-on visually. Changes here fill in the Configuration tab, and vice versa.</div>
       </div>
-      <button class="btn btn-sm btn-secondary" onclick="if(window.openDesigner)window.openDesigner()">Refresh</button>
+      <button class="btn btn-sm btn-secondary" onclick="if(window.openDesigner)window.openDesigner()">Refresh designer</button>
     </div>
     <div class="fd-wrap">
       <div class="fd-canvas" id="fdCanvas">
@@ -1706,7 +1706,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <div style="font-size:15px;font-weight:600">Settings</div>
         <div style="display:flex;gap:8px">
-          <button class="btn btn-sm btn-secondary" onclick="loadSettings()">Refresh</button>
+          <button class="btn btn-sm btn-secondary" onclick="loadSettings()">Refresh settings</button>
           <button class="btn btn-sm btn-primary" id="saveSettingsBtn" onclick="saveSettings()">Save</button>
         </div>
       </div>
@@ -1724,7 +1724,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       </div>
 
       <div class="card" style="margin-top:16px">
-        <div class="card-title">UniFi Controller</div>
+        <div class="card-title">UniFi controller</div>
         <div class="form-group">
           <label class="form-label">Controller Host / IP</label>
           <input type="text" id="settingUnifiHost" placeholder="192.168.1.1">
@@ -1777,7 +1777,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         </p>
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
           <button class="btn btn-secondary" onclick="createManualBackup()">Create Backup Now</button>
-          <button class="btn btn-secondary" onclick="loadBackups()">Refresh</button>
+          <button class="btn btn-secondary" onclick="loadBackups()">Refresh backups</button>
         </div>
         <div id="backupInfo" style="font-size:12px;color:var(--text-muted);margin-bottom:12px"></div>
         <div id="backupsList"></div>
@@ -1867,7 +1867,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <div class="card-title">Quick Actions</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-secondary" onclick="forceSync()">Force User Sync</button>
-        <button class="btn btn-secondary" onclick="reloadService()">Reload Config</button>
+        <button class="btn btn-secondary" onclick="reloadService()">Reload service</button>
         <button class="btn btn-secondary" onclick="fetchHealth()">Refresh Health</button>
       </div>
     </div>
@@ -1875,7 +1875,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <div class="card" style="margin-top:16px">
       <div class="card-title">Connectivity Test</div>
       <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
-        Test the connection to your Access Gateway without leaving the app.
+        Test the connection to your UniFi controller without leaving the app.
       </div>
       <button class="btn btn-secondary" onclick="runConnectivityTest()" id="connTestBtn">Test Connection</button>
       <div id="connTestResults" style="margin-top:16px"></div>
@@ -4219,7 +4219,7 @@ async function saveGroupMappings(scopeSelector) {
     const configured = doorsData?.configured || {};
     const doors = { ...configured, ...discovered };
     await api('PUT', '/api/config', { resolver, doors });
-    toast('Group mappings saved!', 'success');
+    toast('Group mappings saved', 'success');
     await loadConfig();
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
@@ -4389,7 +4389,7 @@ async function saveNfcRuleFromForm() {
 
     await _saveAccessRules(rules);
     _editingNfcIndex = null;
-    toast(`Access rule for "${group}" saved!`, 'success');
+    toast(`Access rule for "${group}" saved`, 'success');
     await loadConfig();
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
@@ -4533,7 +4533,7 @@ async function saveDoorbellRuleFromForm() {
 
     await _saveVisitorRules(rules);
     _editingDbIndex = null;
-    toast(`Visitor rule for "${group}" saved!`, 'success');
+    toast(`Visitor rule for "${group}" saved`, 'success');
     await loadConfig();
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
@@ -4582,7 +4582,7 @@ async function saveViewerMappings() {
       default_action: configData?.doorbell_rules?.default_action || { unlock: [] }
     };
     await api('PUT', '/api/config', { doorbell_rules, doors: _getDoorsCfg() });
-    toast('Viewer mappings saved!', 'success');
+    toast('Viewer mappings saved', 'success');
     await loadConfig();
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
@@ -4600,7 +4600,7 @@ async function saveEventSource() {
     }
 
     await api('PUT', '/api/config', { event_source });
-    toast('Event source saved!', 'success');
+    toast('Event source saved', 'success');
     await loadConfig();
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
@@ -5082,7 +5082,7 @@ async function runConnectivityTest() {
 
     const allOk = steps.every(s => s.status === 'ok');
     if (allOk && steps.length > 2) {
-      html += '<div style="margin-top:12px;font-size:13px;color:var(--green);font-weight:600">All checks passed. Your Access Gateway is connected and responding.</div>';
+      html += '<div style="margin-top:12px;font-size:13px;color:var(--green);font-weight:600">All checks passed. Your UniFi controller is connected and responding.</div>';
     }
 
     resultsEl.innerHTML = html;
@@ -5922,7 +5922,7 @@ async function testConnection() {
     if (doorsCount > 0 || usersCount > 0) {
       if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">Connected! Found ${doorsCount} doors and ${usersCount} users. Click Next to continue.</span>`;
     } else {
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--yellow)">Connected, but no doors or users were found yet. Check the Access Gateway IP and token, and that you can reach port ${escapeHtml(port)} from this machine. You can still continue.</span>`;
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--yellow)">Connected, but no doors or users were found yet. Check the UniFi controller IP and token, and that you can reach port ${escapeHtml(port)} from this machine. You can still continue.</span>`;
     }
     // Test passed: satisfy the connect gate so Next becomes available.
     if (typeof wizardOnConnectTested === 'function') wizardOnConnectTested();

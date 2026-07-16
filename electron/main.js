@@ -369,13 +369,23 @@ function createAppMenu() {
           click: () => navigateTo('events')
         },
         {
-          label: 'Configuration',
+          label: 'Automations',
           accelerator: 'CmdOrCtrl+3',
           click: () => navigateTo('config')
         },
         {
-          label: 'Test Tools',
+          label: 'Visual Designer',
           accelerator: 'CmdOrCtrl+4',
+          click: () => navigateTo('designer')
+        },
+        {
+          label: 'Settings',
+          accelerator: 'CmdOrCtrl+5',
+          click: () => navigateTo('settings')
+        },
+        {
+          label: 'Test Tools',
+          accelerator: 'CmdOrCtrl+6',
           click: () => navigateTo('tools')
         },
         { type: 'separator' },
@@ -400,7 +410,7 @@ function createAppMenu() {
           }); }
         },
         {
-          label: 'Reload Service',
+          label: 'Reload service',
           click: () => { menuApiCall('/reload', 'POST', () => {
             dialog.showMessageBox(mainWindow, { type: 'info', message: 'Service reloaded.' });
             if (mainWindow) mainWindow.webContents.reload();

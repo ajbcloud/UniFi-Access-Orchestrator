@@ -33,6 +33,14 @@ test('the theme toggle static label matches the light-default state', () => {
   assert.ok(!/&#127769; Theme<\/button>/.test(html), 'the dead "Theme" label is gone');
 });
 
+test('terminology: one canonical controller name, no "Access Gateway"', () => {
+  assert.ok(!/Access Gateway/.test(html), 'the controller is called "UniFi controller" everywhere');
+});
+
+test('terminology: no exclamation points in save confirmations', () => {
+  assert.ok(!/saved!/.test(html), 'system confirmations do not shout');
+});
+
 test('decorative stat icons are hidden from assistive tech', () => {
   // Every dashboard stat icon should be aria-hidden so a screen reader does
   // not read the emoji glyph as content.
