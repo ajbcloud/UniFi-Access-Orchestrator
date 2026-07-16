@@ -421,6 +421,13 @@ body {
   border-bottom: 2px solid transparent;
   transition: all 0.15s;
   user-select: none;
+  /* the tabs are real buttons now (keyboard operable); strip the UA chrome */
+  background: none;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  font-family: inherit;
+  line-height: normal;
 }
 
 .tab:hover { color: var(--banner-fg); }
@@ -1316,13 +1323,13 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   </div>
 </div>
 
-<div class="tabs" id="tabBar">
-  <div class="tab active" data-page="dashboard">Dashboard</div>
-  <div class="tab" data-page="events">Live Events</div>
-  <div class="tab" data-page="config">Automations</div>
-  <div class="tab" data-page="designer">Visual Designer</div>
-  <div class="tab" data-page="settings">Settings</div>
-  <div class="tab" data-page="tools">Test Tools</div>
+<div class="tabs" id="tabBar" role="tablist" aria-label="Main sections">
+  <button class="tab active" role="tab" data-page="dashboard" aria-selected="true" tabindex="0">Dashboard</button>
+  <button class="tab" role="tab" data-page="events" aria-selected="false" tabindex="-1">Live Events</button>
+  <button class="tab" role="tab" data-page="config" aria-selected="false" tabindex="-1">Automations</button>
+  <button class="tab" role="tab" data-page="designer" aria-selected="false" tabindex="-1">Visual Designer</button>
+  <button class="tab" role="tab" data-page="settings" aria-selected="false" tabindex="-1">Settings</button>
+  <button class="tab" role="tab" data-page="tools" aria-selected="false" tabindex="-1">Test Tools</button>
 </div>
 
 <div class="main">
@@ -1976,22 +1983,47 @@ applyThemeButton();
 // ============================================================
 // Tab navigation
 // ============================================================
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById(tab.dataset.page).classList.add('active');
-    // Load settings when user opens the Settings tab
-    if (tab.dataset.page === 'settings') {
-      loadSettings();
-      loadBackups();
-    }
-    // (Re)draw the visual designer when its tab is opened
-    if (tab.dataset.page === 'designer' && window.openDesigner) {
-      window.openDesigner();
-    }
-  });
+// Pure: the tab index to move focus to for a given key, or null to ignore.
+function nextTabIndex(key, current, count) {
+  switch (key) {
+    case 'ArrowRight': return (current + 1) % count;
+    case 'ArrowLeft': return (current - 1 + count) % count;
+    case 'Home': return 0;
+    case 'End': return count - 1;
+    default: return null;
+  }
+}
+
+// Activate a tab: shared by mouse, keyboard, and the native menu. Manages the
+// active class, aria-selected, and roving tabindex so keyboard users always
+// have exactly one tab in the focus order.
+function activateTab(tabEl) {
+  if (!tabEl) return;
+  const tabs = Array.from(document.querySelectorAll('#tabBar [role="tab"]'));
+  tabs.forEach((t) => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); t.tabIndex = -1; });
+  document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
+  tabEl.classList.add('active');
+  tabEl.setAttribute('aria-selected', 'true');
+  tabEl.tabIndex = 0;
+  const page = document.getElementById(tabEl.dataset.page);
+  if (page) page.classList.add('active');
+  if (tabEl.dataset.page === 'settings') { loadSettings(); loadBackups(); }
+  if (tabEl.dataset.page === 'designer' && window.openDesigner) window.openDesigner();
+}
+window.activateTab = activateTab;
+
+function handleTabKeydown(e) {
+  const tabs = Array.from(document.querySelectorAll('#tabBar [role="tab"]'));
+  const idx = nextTabIndex(e.key, tabs.indexOf(e.currentTarget), tabs.length);
+  if (idx === null) return;
+  e.preventDefault();
+  tabs[idx].focus();
+  activateTab(tabs[idx]);
+}
+
+document.querySelectorAll('#tabBar [role="tab"]').forEach((tab) => {
+  tab.addEventListener('click', () => activateTab(tab));
+  tab.addEventListener('keydown', handleTabKeydown);
 });
 
 // ============================================================
@@ -5230,10 +5262,7 @@ async function showDocs() {
 
 function hideDocs() {
   document.getElementById('docs').style.display = 'none';
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.getElementById('dashboard').classList.add('active');
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab')[0].classList.add('active');
+  activateTab(document.querySelector('#tabBar [role="tab"]'));
 }
 
 function renderMarkdown(md) {
@@ -5512,12 +5541,7 @@ function hideSetupWizard(skipPersist) {
   const setup = document.getElementById('setup');
   if (setup) { setup.style.display = 'none'; setup.classList.remove('active'); }
   document.getElementById('tabBar').style.display = 'flex';
-  document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
-  const dashboard = document.getElementById('dashboard');
-  if (dashboard) dashboard.classList.add('active');
-  document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
-  const firstTab = document.querySelectorAll('.tab')[0];
-  if (firstTab) firstTab.classList.add('active');
+  activateTab(document.querySelector('#tabBar [role="tab"]'));
 }
 
 function skipSetup() {
@@ -5794,12 +5818,7 @@ async function renderWizardFinish() {
 function wizardGoToConfig(section) {
   persistWizardState({ last_step: wizardState.step });
   hideSetupWizard(true);
-  document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
-  document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
-  const configTab = document.querySelector('[data-page="config"]');
-  if (configTab) configTab.classList.add('active');
-  const configPage = document.getElementById('config');
-  if (configPage) configPage.classList.add('active');
+  activateTab(document.querySelector('#tabBar [data-page="config"]'));
   loadConfig();
   const anchorId = section === 'groups' ? 'configUsers' : 'configNfcRules';
   setTimeout(() => {

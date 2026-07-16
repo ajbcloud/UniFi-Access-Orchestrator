@@ -520,12 +520,18 @@ function navigateTo(page) {
     mainWindow.show();
     mainWindow.focus();
     mainWindow.webContents.executeJavaScript(`
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-      document.querySelector('[data-page="${page}"]').classList.add('active');
-      document.getElementById('${page}').classList.add('active');
       document.getElementById('setup').style.display = 'none';
       document.getElementById('tabBar').style.display = 'flex';
+      // Route through the page's own activator so the active class, aria-selected,
+      // and roving tabindex all stay coherent when the menu drives navigation.
+      if (window.activateTab) {
+        window.activateTab(document.querySelector('#tabBar [data-page="${page}"]'));
+      } else {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+        document.querySelector('[data-page="${page}"]').classList.add('active');
+        document.getElementById('${page}').classList.add('active');
+      }
     `);
   }
 }
