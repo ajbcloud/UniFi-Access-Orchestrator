@@ -53,7 +53,7 @@ const DATA = {
 test('the section renders a card per flow and an add picker for free doors only', () => {
   const out = loadSection()(DATA);
   assert.match(out, /Front Door/, 'existing flow gets its card');
-  assert.match(out, /taps in/, 'the tap-in trigger renders');
+  assert.match(out, /badges in/, 'the badge-in trigger renders');
   assert.match(out, /id="dfAddDoor"/, 'add-flow picker present');
   assert.match(out, /value="Interior Door"/, 'unconfigured door offered');
   const picker = out.match(/<select id="dfAddDoor"[\s\S]*?<\/select>/)[0];
@@ -104,7 +104,7 @@ test('saves PUT the WHOLE flows map so removals stick (replace, not merge)', () 
     'the full map is sent every time');
   const remove = extractFn('removeDoorFlow');
   assert.match(remove, /delete doorFlowsData\.flows\[door\]/, 'removal deletes locally then PUTs the rest');
-  assert.match(remove, /confirm\(/, 'destructive removal confirms first');
+  assert.match(remove, /await confirmInApp\(/, 'destructive removal confirms first via the in-app modal (native confirm broke Electron focus)');
 });
 
 test('add/remove edge are local edits that mark the card dirty (Save commits)', () => {

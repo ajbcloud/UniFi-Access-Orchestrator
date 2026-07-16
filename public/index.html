@@ -1387,7 +1387,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <button class="tab" role="tab" data-page="events" aria-selected="false" tabindex="-1">Live Events</button>
   <button class="tab" role="tab" data-page="config" aria-selected="false" tabindex="-1">Automations</button>
   <button class="tab" role="tab" data-page="keypad" aria-selected="false" tabindex="-1">Keypad Users</button>
-  <button class="tab" role="tab" data-page="deadbolt" aria-selected="false" tabindex="-1">Deadbolt Devices</button>
+  <button class="tab" role="tab" data-page="deadbolt" aria-selected="false" tabindex="-1">Devices</button>
   <button class="tab" role="tab" data-page="designer" aria-selected="false" tabindex="-1">Visual Designer</button>
   <button class="tab" role="tab" data-page="settings" aria-selected="false" tabindex="-1">Settings</button>
   <button class="tab" role="tab" data-page="tools" aria-selected="false" tabindex="-1">Test Tools</button>
@@ -1710,19 +1710,6 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 
     <div class="config-section">
       <div class="config-header">
-        Door Mappings
-        <button class="btn btn-sm btn-secondary" onclick="syncDoors()">Rediscover Doors</button>
-      </div>
-      <div class="config-body" id="configDoors"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
-    </div>
-
-    <div class="config-section">
-      <div class="config-header">User Groups</div>
-      <div class="config-body" id="configUsers"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
-    </div>
-
-    <div class="config-section">
-      <div class="config-header">
         Door Flows
         <span style="font-weight:400;font-size:12px;color:var(--text-muted)">everything starts at the door: pick a door, choose who and what triggers it, then say what happens</span>
       </div>
@@ -1745,17 +1732,25 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     </div>
   </div>
 
-  <!-- DEADBOLT DEVICES -->
+  <!-- DEVICES (Z-Wave deadbolts + UniFi door mappings) -->
   <div id="deadbolt" class="page">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
       <div>
-        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Deadbolt Devices (Z-Wave)</div>
-        <div style="font-size:12px;color:var(--text-muted)">Pair and manage the Z-Wave smart deadbolts this app controls. Door flows on the Automations tab decide when they retract.</div>
+        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Devices</div>
+        <div style="font-size:12px;color:var(--text-muted)">The hardware this app talks to: Z-Wave smart deadbolts and the UniFi doors they map to. Door flows on the Automations tab decide when they act.</div>
       </div>
       <button class="btn btn-sm btn-secondary" onclick="loadSerialPorts()">Refresh Ports</button>
     </div>
     <div class="config-section">
+      <div class="config-header">Deadbolts (Z-Wave)</div>
       <div class="config-body" id="configZwave"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
+    </div>
+    <div class="config-section">
+      <div class="config-header">
+        Door Mappings
+        <button class="btn btn-sm btn-secondary" onclick="syncDoors()">Rediscover Doors</button>
+      </div>
+      <div class="config-body" id="configDoors"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
   </div>
 
@@ -1873,6 +1868,11 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         </div>
         <div id="backupInfo" style="font-size:12px;color:var(--text-muted);margin-bottom:12px"></div>
         <div id="backupsList"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-title" role="heading" aria-level="2">User Groups</div>
+        <div class="config-body" id="configUsers"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
       </div>
     </div>
 
@@ -2005,6 +2005,22 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <div class="modal-actions">
       <button class="btn btn-sm btn-secondary" id="apiKeyModalCancel">Cancel</button>
       <button class="btn btn-sm btn-primary" id="apiKeyModalSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- In-app confirm dialog: replaces window.confirm, which in Electron leaves
+     the renderer's form controls unresponsive after it returns until the
+     window regains focus (the door picker needed a page refresh after Remove
+     Flow to become selectable again). Shared by every destructive or
+     consequential action in the dashboard; confirmInApp() owns it. -->
+<div class="modal-overlay" id="confirmModal">
+  <div class="modal-card">
+    <h3 id="confirmModalTitle" style="display:none"></h3>
+    <p id="confirmModalMessage" style="white-space:pre-line"></p>
+    <div class="modal-actions">
+      <button class="btn btn-sm btn-secondary" id="confirmModalCancel">Cancel</button>
+      <button class="btn btn-sm btn-primary" id="confirmModalConfirm">OK</button>
     </div>
   </div>
 </div>
@@ -2248,6 +2264,61 @@ function promptForApiKey() {
   modal.style.display = 'flex';
   try { input.focus(); } catch (e) { /* mock DOM */ }
   return promise;
+}
+
+// In-page replacement for window.confirm, which in Electron leaves the
+// renderer's own form controls (selects, inputs) unresponsive after it
+// returns until the window regains focus. Message text is rendered with
+// textContent, never innerHTML, because these messages embed door and user
+// names. A confirm already showing turns away any concurrent call (resolves
+// false) rather than sharing or queuing an answer, since each call asks a
+// different question and a destructive action must never proceed on an
+// answer meant for a different prompt. Cancel holds focus so a bare Enter
+// declines; the confirm button is the deliberate click.
+let _confirmBusy = false;
+function confirmInApp(message, opts) {
+  if (_confirmBusy) return Promise.resolve(false);
+  const modal = document.getElementById('confirmModal');
+  const titleEl = document.getElementById('confirmModalTitle');
+  const msgEl = document.getElementById('confirmModalMessage');
+  const okBtn = document.getElementById('confirmModalConfirm');
+  const cancelBtn = document.getElementById('confirmModalCancel');
+  if (!modal || !msgEl || !okBtn || !cancelBtn) return Promise.resolve(false);
+  const o = opts || {};
+
+  _confirmBusy = true;
+  if (titleEl) {
+    if (o.title) { titleEl.textContent = o.title; titleEl.style.display = ''; }
+    else titleEl.style.display = 'none';
+  }
+  msgEl.textContent = message || '';
+  okBtn.textContent = o.confirmLabel || 'OK';
+  okBtn.className = 'btn btn-sm ' + (o.danger ? 'btn-danger' : 'btn-primary');
+  cancelBtn.textContent = o.cancelLabel || 'Cancel';
+
+  return new Promise((resolve) => {
+    const finish = (value) => {
+      modal.style.display = 'none';
+      okBtn.onclick = null;
+      cancelBtn.onclick = null;
+      modal.onkeydown = null;
+      _confirmBusy = false;
+      resolve(value);
+    };
+    okBtn.onclick = () => finish(true);
+    cancelBtn.onclick = () => finish(false);
+    // Escape cancels. Every key is stopped from bubbling further so a
+    // page-level shortcut (the flow designer's Escape-to-deselect and
+    // Delete-to-remove handling on document) never double-fires while this
+    // modal is open. The typeof guard keeps the extractFn test harness able
+    // to drive the handler with a plain object.
+    modal.onkeydown = (e) => {
+      if (e && e.key === 'Escape') finish(false);
+      if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+    };
+    modal.style.display = 'flex';
+    try { cancelBtn.focus(); } catch (e) { /* mock DOM */ }
+  });
 }
 
 // Hard ceiling on any single request. The slowest legitimate call is a
@@ -3031,7 +3102,7 @@ async function createManualBackup() {
 }
 
 async function restoreFromBackup(filename) {
-  const confirmed = confirm(`Restore configuration from backup?\n\n${filename}\n\nYour current config will be backed up first, then replaced with this backup. The service will reload automatically.`);
+  const confirmed = await confirmInApp(`Restore configuration from backup?\n\n${filename}\n\nYour current config will be backed up first, then replaced with this backup. The service will reload automatically.`, { confirmLabel: 'Restore', danger: true });
   if (!confirmed) return;
 
   try {
@@ -3045,8 +3116,19 @@ async function restoreFromBackup(filename) {
   }
 }
 
+// Door Mappings and User Groups were one renderConfig pass while both lived on
+// the Automations tab. They now live on different pages (Devices and Settings),
+// so each has its own owner; the thin renderConfig wrapper keeps every existing
+// loadConfig call site working unchanged.
 function renderConfig() {
-  // Doors
+  renderDoorMappings();
+  renderUserGroups();
+}
+
+// Owner of #configDoors (Devices tab): the discovered/configured door table.
+function renderDoorMappings() {
+  const el = document.getElementById('configDoors');
+  if (!el) return;
   const discovered = doorsData?.discovered || {};
   const configured = doorsData?.configured || {};
   const hasDoors = Object.keys(discovered).length > 0 || Object.keys(configured).filter(k => !k.startsWith('_')).length > 0;
@@ -3063,15 +3145,20 @@ function renderConfig() {
       }
     }
     doorsHtml += '</tbody></table>';
-    document.getElementById('configDoors').innerHTML = doorsHtml;
+    el.innerHTML = doorsHtml;
   } else {
-    document.getElementById('configDoors').innerHTML = '<div style="color:var(--text-muted)">No doors configured. Connect to your controller and click Rediscover Doors.</div>';
+    el.innerHTML = '<div style="color:var(--text-muted)">No doors configured. Connect to your controller and click Rediscover Doors.</div>';
   }
+}
 
-  // Users & Group Mappings
+// Owner of #configUsers (Settings tab): users grouped by logical group plus
+// the Group Mappings form.
+function renderUserGroups() {
+  const el = document.getElementById('configUsers');
+  if (!el) return;
   const users = usersData?.users || [];
   if (users.length === 0) {
-    document.getElementById('configUsers').innerHTML = '<div style="color:var(--text-muted)">No users synced yet. Connect to your controller, then click Force User Sync in Test Tools to import users and their groups.</div>';
+    el.innerHTML = '<div style="color:var(--text-muted)">No users synced yet. Connect to your controller, then click Force User Sync in Test Tools to import users and their groups.</div>';
     return;
   }
 
@@ -3086,10 +3173,8 @@ function renderConfig() {
     usersHtml += `<div style="margin-bottom:12px"><div style="font-weight:600;color:var(--accent);margin-bottom:4px">${escapeHtml(group)} (${members.length})</div><div style="font-size:13px;color:var(--text-secondary)">${escapeHtml(members.join(', '))}</div></div>`;
   }
   usersHtml += '</div>';
-  document.getElementById('configUsers').innerHTML = usersHtml;
+  el.innerHTML = usersHtml;
 
-  // Get all doors for checkboxes
-  const allDoors = Object.keys({ ...discovered, ...configured }).filter(d => !d.startsWith('_'));
   const currentResolver = configData?.resolver?.unifi_group_to_group || {};
 
   // Mapping table source of truth = RAW UniFi group names from
@@ -3106,11 +3191,6 @@ function renderConfig() {
   // Also include any UniFi keys already present in the saved resolver map
   // so an admin can fix a mapping even if the controller is offline.
   Object.keys(currentResolver).forEach(k => rawUnifiGroups.add(k));
-
-  // Logical names (post-mapping) — used by viewer-mapping dropdowns and
-  // anywhere we need the labels rules actually reference.
-  const discoveredGroupNames = new Set();
-  users.forEach(u => { if (u.group) discoveredGroupNames.add(u.group); });
 
   // Group Mappings Form (after rendering users). Rows come from the shared
   // buildGroupMappingRows helper, which emits data-mapping-group attributes
@@ -3137,11 +3217,7 @@ function renderConfig() {
   `;
 
   // Append group mappings to users section
-  document.getElementById('configUsers').innerHTML += groupMappingsHtml;
-
-  // Access Rules and Visitor Rules retired: who-and-what now lives as trigger
-  // scope and trigger type on the door's card (Door Flows section). The group
-  // mapping editor above still applies since scopes reference logical groups.
+  el.innerHTML += groupMappingsHtml;
 
   // Save buttons hide until their section actually changes (and hide again
   // when a successful save re-renders the section through loadConfig).
@@ -3364,7 +3440,7 @@ function createZwRefreshGate(delayMs) {
     kick(retryFn) { if (this.pending) retryFn(); },
   };
 }
-// One gate per OWNED SECTION: Deadbolt Devices (#configZwave), Door Flows
+// One gate per OWNED SECTION: Devices deadbolts (#configZwave), Door Flows
 // (#configDoorFlows), and the Keypad Users tab (#kuPanel). Each guard tests
 // only its own container, so typing in one section never starves another.
 const _devicesGate = createZwRefreshGate();
@@ -3627,7 +3703,7 @@ function buildLockCard(l) {
 }
 // After-unlock behavior is no longer a device-card control: it lives per edge
 // on the door's card (decision 2), and the app forces the lock's own hardware
-// auto-relock off so it owns relock in software. The Deadbolt Devices card is
+// auto-relock off so it owns relock in software. The Devices tab lock card is
 // hardware only now.
 
 // Honest wording for a blocked lock, driven by the server's per-lock flags
@@ -3792,7 +3868,7 @@ async function renderKeypadUsers(force) {
     const pairingActive = !!(devices && devices.zwave && devices.zwave.pairing_active);
     const html = buildKeypadUsersPanel(agg, usersData?.users || [], pairingActive);
     el.innerHTML = html
-      || emptyStateHtml('No deadbolt with a keypad is paired yet. Pair one on the Deadbolt Devices tab, then manage PINs here.', '🔢');
+      || emptyStateHtml('No deadbolt with a keypad is paired yet. Pair one on the Devices tab, then manage PINs here.', '🔢');
   } catch (e) {
     el.innerHTML = `<div style="font-size:12px;color:var(--text-muted)">Could not load keypad users: ${escapeHtml(e.message)}</div>`;
   }
@@ -3847,7 +3923,7 @@ async function saveKeypadUser() {
 }
 
 async function removeKeypadUser(userId) {
-  if (!confirm('Remove this user\'s keypad code from every lock?\n\nTheir UniFi PIN is not touched.')) return;
+  if (!(await confirmInApp('Remove this user\'s keypad code from every lock?\n\nTheir UniFi PIN is not touched.', { confirmLabel: 'Remove', danger: true }))) return;
   try {
     const r = await api('DELETE', `/api/deadbolt/keypad-users/${encodeURIComponent(userId)}`);
     if (r.error) { toast(r.error, 'error'); return; }
@@ -3860,7 +3936,7 @@ async function removeKeypadUser(userId) {
 
 // After a re-pair the lock is factory-fresh: send every saved code again.
 async function rewriteUserCodesToLock(lockId) {
-  if (!confirm('Rewrite all saved keypad codes to the lock?\n\nUse this after re-pairing the lock. It sends one write per saved code.')) return;
+  if (!(await confirmInApp('Rewrite all saved keypad codes to the lock?\n\nUse this after re-pairing the lock. It sends one write per saved code.', { confirmLabel: 'Rewrite' }))) return;
   toast('Rewriting codes to the lock...', 'info');
   try {
     const r = await api('POST', '/api/deadbolt/user-codes/rewrite', lockId ? { lock_id: lockId } : undefined);
@@ -4051,7 +4127,7 @@ async function downloadDiagnostics() {
 // FAILED is removed directly (no exclusion sequence is possible on a dead
 // device); a live node falls back to a normal exclusion session.
 async function startUnpairNode(nodeId) {
-  const ok = confirm(`Unpair node ${nodeId}?\n\nIf the device is dead it is removed immediately; otherwise the exclusion sequence must be run on that lock.`);
+  const ok = await confirmInApp(`Unpair node ${nodeId}?\n\nIf the device is dead it is removed immediately; otherwise the exclusion sequence must be run on that lock.`, { confirmLabel: 'Unpair', danger: true });
   if (!ok) return;
   _setDeadboltButtonsBusy(true);
   try {
@@ -4078,7 +4154,7 @@ async function startUnpairNode(nodeId) {
 // Delete a saved-but-unpaired lock entry (a ghost). Paired locks go through
 // Unpair instead; the server enforces that with a 409.
 async function removeSavedLock(lockId) {
-  const ok = confirm(`Remove the saved entry for "${lockId}"?\n\nIt is not paired, so only the stored settings (and any automation rule) are deleted.`);
+  const ok = await confirmInApp(`Remove the saved entry for "${lockId}"?\n\nIt is not paired, so only the stored settings (and any automation rule) are deleted.`, { confirmLabel: 'Remove', danger: true });
   if (!ok) return;
   try {
     const r = await api('DELETE', '/api/deadbolt/locks/' + encodeURIComponent(lockId));
@@ -4139,7 +4215,7 @@ async function startHealthCheck(lockId) {
 }
 
 async function startUnpair() {
-  const ok = confirm('Unpair the deadbolt?\n\nThe lock will be removed from the Z-Wave network and the app will stop controlling it until it is paired again.');
+  const ok = await confirmInApp('Unpair the deadbolt?\n\nThe lock will be removed from the Z-Wave network and the app will stop controlling it until it is paired again.', { confirmLabel: 'Unpair', danger: true });
   if (!ok) return;
   // Immediate feedback before the controller responds.
   _setDeadboltButtonsBusy(true);
@@ -4159,7 +4235,7 @@ async function startUnpair() {
 }
 
 async function deadboltControl(action, lockId) {
-  const ok = confirm(`Send a real ${action.toUpperCase()} command to the deadbolt?\n\nThe physical bolt will move.`);
+  const ok = await confirmInApp(`Send a real ${action.toUpperCase()} command to the deadbolt?\n\nThe physical bolt will move.`, { confirmLabel: action === 'lock' ? 'Lock' : 'Unlock', danger: true });
   if (!ok) return;
   _setDeadboltButtonsBusy(true);
   toast(`Sending ${action} to the deadbolt...`, 'info'); // immediate feedback
@@ -4275,6 +4351,7 @@ function buildRetractEdgeRow(door, tIdx, edge, eIdx, locks) {
     <hr class="df-divider">
     <details>
       <summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">advanced</summary>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:8px">Require result only retracts when the entry result matches; ACCESS is a normal granted entry. Mirror door unlocks also retracts when UniFi unlocks this door for a schedule or a manual unlock. Relock cooldown gives a normal entry a few seconds before the door's own re-secure can relock the bolt again.</div>
       <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:12px;margin-top:8px">
         <label style="display:flex;align-items:center;gap:6px" title="Only entry events whose result matches trigger the retract. ACCESS is the normal granted-entry result.">
           require result <input type="text" id="dfReq_${sfx}" value="${escapeHtml(edge.require_result || 'ACCESS')}" style="width:110px;font-size:12px;padding:5px">
@@ -4344,16 +4421,23 @@ function buildTriggerBlock(door, tIdx, trigger, data) {
     const cur = _scopeToValue(trigger.scope);
     const opt = (v, label) => `<option value="${escapeHtml(v)}"${cur === v ? ' selected' : ''}>${escapeHtml(label)}</option>`;
     let opts = '';
-    opts += opt('', type === 'doorbell' ? 'anyone who answers' : 'everyone');
+    opts += opt('', type === 'doorbell' ? 'anyone' : 'everyone');
     opts += opt('*', 'any group');
     for (const g of groups) opts += opt('g:' + g, g);
     if (cur.slice(0, 2) === 'g:' && !groups.includes(cur.slice(2))) opts += opt(cur, cur.slice(2));
     scopeControl = `<select id="dfScope_${sfx2}" class="df-scope df-inline" data-df-door="${cssD}" data-df-trig="${tIdx}">${opts}</select>`;
   }
-  const typeChip = `<span class="chip active" style="cursor:default">${type === 'doorbell' ? 'doorbell' : 'tap in'}</span>`;
+  // The type chip carries the whole trigger identity so no extra sentence is
+  // needed: "When [Everyone] [badges in]" / "When [doorbell] rings and
+  // [anyone] answers". A no-groups site shows static text where the scope
+  // dropdown would be.
+  const typeChip = `<span class="chip active" style="cursor:default">${type === 'doorbell' ? 'doorbell' : 'badges in'}</span>`;
+  const scopeOrStatic = groups.length
+    ? scopeControl
+    : `<span class="df-step-hint">${type === 'doorbell' ? 'anyone' : 'everyone'}</span>`;
   const when = type === 'doorbell'
-    ? `<span class="df-step-hint">when someone rings the doorbell</span>${groups.length ? `<span class="df-step-hint">and</span>${scopeControl}<span class="df-step-hint">answers</span>` : ''}`
-    : `<span class="df-step-hint">when</span>${groups.length ? scopeControl : '<span class="df-step-hint">someone</span>'}<span class="df-step-hint">taps in</span>`;
+    ? `${typeChip}<span class="df-step-hint">rings and</span>${scopeOrStatic}<span class="df-step-hint">answers</span>`
+    : `${scopeOrStatic}${typeChip}`;
 
   const retractCards = edges.map((e, i) => buildRetractEdgeRow(door, tIdx, e, i, locks)).join('');
   const unlockCard = buildUnlockAction(door, tIdx, actions.unlock, doors);
@@ -4364,31 +4448,52 @@ function buildTriggerBlock(door, tIdx, trigger, data) {
   if (canAddRetract || canAddUnlock) {
     const bits = [];
     if (canAddRetract) {
-      bits.push(`<span style="display:inline-flex;gap:6px;align-items:center">
+      bits.push(`<span style="display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <span class="df-step-hint">Retract a deadbolt</span>
         <select id="dfAddLock_${sfx2}" class="df-inline" style="min-width:160px">
           ${freeLocks.map((l) => `<option value="${escapeHtml(l.lock_id)}">${escapeHtml(l.name || l.lock_id)}</option>`).join('')}
         </select>
-        <button class="btn btn-sm btn-secondary" onclick="addRetractEdge(${doorArg}, ${tIdx})">retract this deadbolt</button>
+        <button class="btn btn-sm btn-secondary" onclick="addRetractEdge(${doorArg}, ${tIdx})">Add</button>
       </span>`);
     }
     if (canAddUnlock) {
-      bits.push(`<button class="btn btn-sm btn-secondary" onclick="addUnlockAction(${doorArg}, ${tIdx})">unlock other doors</button>`);
+      bits.push(`<span style="display:inline-flex;gap:6px;align-items:center">
+        <span class="df-step-hint">Unlock other doors</span>
+        <button class="btn btn-sm btn-secondary" onclick="addUnlockAction(${doorArg}, ${tIdx})">Add</button>
+      </span>`);
     }
     addAction = `<button type="button" class="df-add" onclick="toggleAddAction(${doorArg}, ${tIdx})">+ add action</button>
       <div id="dfAddMenu_${sfx2}" class="df-action-card" style="display:none;margin-top:8px">
         <div class="df-chiprow" style="margin-top:0">${bits.join('')}</div>
       </div>`;
+  } else {
+    // Never vanish silently: say exactly why nothing more can be added, so
+    // "one action" never reads as a limit of the app.
+    const why = [];
+    if (usableLocks.length) {
+      why.push('Every paired deadbolt already has a retract action on this trigger.');
+    } else {
+      why.push('No deadbolt is paired yet. Pair one on the <a href="#" onclick="openDeadboltTab();return false;" style="color:var(--accent)">Devices tab</a> to retract it from this door.');
+    }
+    if (hasUnlock) {
+      why.push('Unlock other doors is already added.');
+    } else if (!others.length) {
+      why.push('No other doors are discovered to unlock.');
+    }
+    addAction = `<div class="df-note"><span aria-hidden="true">&#8505;</span><span>Nothing left to add here. ${why.join(' ')}</span></div>`;
   }
-  // When no deadbolt is paired, say so (retract needs a paired bolt) even if an
-  // unlock-other-doors action is still available above.
-  const pairHint = (!usableLocks.length && !edges.length)
-    ? `<div class="df-note"><span aria-hidden="true">&#128274;</span><span>No deadbolt is paired yet. Pair one on the <a href="#" onclick="openDeadboltTab();return false;" style="color:var(--accent)">Deadbolt Devices tab</a> to retract it from this door.</span></div>`
+  // When no deadbolt is paired, say so (retract needs a paired bolt) even
+  // while the add-action chooser still offers unlock. Suppressed when the
+  // nothing-left note above already explains the missing deadbolt.
+  const pairHint = (!usableLocks.length && !edges.length && canAddUnlock)
+    ? `<div class="df-note"><span aria-hidden="true">&#128274;</span><span>No deadbolt is paired yet. Pair one on the <a href="#" onclick="openDeadboltTab();return false;" style="color:var(--accent)">Devices tab</a> to retract it from this door.</span></div>`
     : '';
 
   let doorbellAdvanced = '';
   if (type === 'doorbell') {
     const reason = (trigger.doorbell && Number.isFinite(trigger.doorbell.reason_code)) ? trigger.doorbell.reason_code : 107;
     doorbellAdvanced = `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">advanced</summary>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:8px">Reason code is the event code UniFi sends when someone answers the doorbell. The default, 107, means an admin unlocked the door.</div>
       <div style="font-size:12px;margin-top:8px"><label style="display:inline-flex;align-items:center;gap:6px" title="The doorbell reason code that counts as answered. 107 is admin unlocked the door.">
         reason code <input type="number" id="dfReason_${sfx2}" value="${escapeHtml(reason)}" min="0" max="999" style="width:80px;font-size:12px;padding:5px">
       </label></div>
@@ -4399,7 +4504,6 @@ function buildTriggerBlock(door, tIdx, trigger, data) {
     <div class="df-step" style="margin-top:0">
       <span class="df-step-num">2</span>
       <span class="df-step-label">When</span>
-      ${typeChip}
       ${when}
       <span class="df-action-spacer"></span>
       <button class="btn btn-sm btn-secondary" onclick="removeTrigger(${doorArg}, ${tIdx})" title="Remove this trigger">Remove trigger</button>
@@ -4445,7 +4549,7 @@ function buildDoorFlowCard(door, flow, data) {
   const hasDoorbell = triggers.some((t) => t.type === 'doorbell');
   const addBtns = [];
   if (!hasDoorbell) addBtns.push(`<button type="button" class="df-add" onclick="addTrigger(${doorArg}, 'doorbell')">+ add doorbell trigger</button>`);
-  if (!hasEntry) addBtns.push(`<button type="button" class="df-add" onclick="addTrigger(${doorArg}, 'entry')">+ add tap in trigger</button>`);
+  if (!hasEntry) addBtns.push(`<button type="button" class="df-add" onclick="addTrigger(${doorArg}, 'entry')">+ add badge in trigger</button>`);
   const addTriggerRow = addBtns.length ? `<div class="df-addrow">${addBtns.join('')}</div>` : '';
 
   return `<div class="rule-card" id="dfCard_${cssD}" style="margin-bottom:12px">
@@ -4667,7 +4771,7 @@ function _triggersOf(flow) {
   return flow.triggers;
 }
 
-// Add a trigger of the given type. Both tap in (entry) and doorbell are first
+// Add a trigger of the given type. Both badge in (entry) and doorbell are first
 // class; the card offers whichever type is not present yet.
 function addTrigger(door, type) {
   const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
@@ -4784,7 +4888,7 @@ async function saveDoorFlow(door) {
 
 async function removeDoorFlow(door) {
   if (!doorFlowsData || !doorFlowsData.flows || !doorFlowsData.flows[door]) return;
-  if (!confirm(`Remove the door flow for "${door}"?\n\nIts deadbolts stop retracting from this door and any cascade from it is removed.`)) return;
+  if (!(await confirmInApp(`Remove the door flow for "${door}"?\n\nIts deadbolts stop retracting from this door and any cascade from it is removed.`, { confirmLabel: 'Remove', danger: true }))) return;
   delete doorFlowsData.flows[door];
   const r = await putDoorFlows();
   if (!r) return;
@@ -4817,7 +4921,7 @@ function openKeypadTab() {
 }
 window.openKeypadTab = openKeypadTab;
 
-// Jump to the Deadbolt Devices tab (from a door card's "no deadbolt paired" hint).
+// Jump to the Devices tab (from a door card's "no deadbolt paired" hint).
 function openDeadboltTab() {
   const t = document.querySelector('#tabBar [role="tab"][data-page="deadbolt"]');
   if (t) activateTab(t);
@@ -5048,7 +5152,7 @@ async function deleteNfcRule(idx) {
   const rules = _getAccessRules();
   const rule = rules[idx];
   if (!rule) return;
-  if (!confirm(`Remove access rule for "${rule.group}" at "${rule.trigger}"?`)) return;
+  if (!(await confirmInApp(`Remove access rule for "${rule.group}" at "${rule.trigger}"?`, { confirmLabel: 'Remove', danger: true }))) return;
   try {
     rules.splice(idx, 1);
     await _saveAccessRules(rules);
@@ -5180,7 +5284,7 @@ async function deleteDoorbellRule(idx) {
   const rules = _getVisitorRules();
   const rule = rules[idx];
   if (!rule) return;
-  if (!confirm(`Remove visitor rule for "${rule.group}" at "${rule.trigger}"?`)) return;
+  if (!(await confirmInApp(`Remove visitor rule for "${rule.group}" at "${rule.trigger}"?`, { confirmLabel: 'Remove', danger: true }))) return;
   try {
     rules.splice(idx, 1);
     await _saveVisitorRules(rules);
@@ -5475,9 +5579,9 @@ function _renderPreflight(checks, summary) {
   return `${hdr}<ul class="preflight-list">${items}</ul>`;
 }
 
-function confirmRealUnlock(checkbox) {
+async function confirmRealUnlock(checkbox) {
   if (checkbox.checked) {
-    const ok = confirm('This will issue a REAL unlock command to the controller. The selected door(s) will physically unlock.\n\nProceed?');
+    const ok = await confirmInApp('This will issue a REAL unlock command to the controller. The selected door(s) will physically unlock.\n\nProceed?', { confirmLabel: 'Unlock', danger: true });
     if (!ok) checkbox.checked = false;
   }
 }
@@ -6067,7 +6171,7 @@ function buildWizardFinishHtml(summary) {
     + '<ul>'
     + '<li>Fine-tune doors, triggers, and group names on the <strong>Automations</strong> tab.</li>'
     + '<li>Add a doorbell trigger on a door\'s card, plus backups and alerts under <strong>Settings</strong>.</li>'
-    + '<li>Pair a smart deadbolt on the <strong>Deadbolt Devices</strong> tab once the hardware is connected.</li>'
+    + '<li>Pair a smart deadbolt on the <strong>Devices</strong> tab once the hardware is connected.</li>'
     + '<li>Reopen this wizard any time from the <strong>Setup</strong> button in the top bar.</li>'
     + '</ul></div>'
     + '</div>';
@@ -6446,14 +6550,17 @@ async function renderWizardFinish() {
 function wizardGoToConfig(section) {
   persistWizardState({ last_step: wizardState.step });
   hideSetupWizard(true);
-  activateTab(document.querySelector('#tabBar [data-page="config"]'));
+  // User Groups lives on the Settings tab now; everything else lands on the
+  // Automations tab's Door Flows editor.
+  const page = section === 'groups' ? 'settings' : 'config';
+  activateTab(document.querySelector(`#tabBar [data-page="${page}"]`));
   loadConfig();
   const anchorId = section === 'groups' ? 'configUsers' : 'configDoorFlows';
   setTimeout(() => {
     const anchor = document.getElementById(anchorId);
     if (anchor && anchor.scrollIntoView) anchor.scrollIntoView({ block: 'start' });
   }, 400);
-  toast('Opening the Automations tab. Use the Setup button any time to return here.', 'info');
+  toast(`Opening the ${page === 'settings' ? 'Settings' : 'Automations'} tab. Use the Setup button any time to return here.`, 'info');
 }
 
 // ============================================================
@@ -7407,7 +7514,7 @@ setInterval(fetchHealth, 10000);
     if (type === 'cascade' || type === 'retract') {
       return notify('Deadbolt and cascade wiring is edited under Door Flows on the Automations tab.', 'info');
     }
-    if (!confirm('Delete this ' + labelFor(type) + '?')) return;
+    if (!(await confirmInApp('Delete this ' + labelFor(type) + '?', { confirmLabel: 'Delete', danger: true }))) return;
     if (type === 'access') { const r = accessRules(); r.splice(idx, 1); return doSaveAccess(r, 'Rule deleted'); }
     if (type === 'visitor') { const r = visitorRules(); r.splice(idx, 1); return doSaveVisitor(r, 'Rule deleted'); }
   }

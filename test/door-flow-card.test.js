@@ -25,8 +25,12 @@ function extractFn(name) {
   throw new Error('unbalanced braces for ' + name);
 }
 
-function load() {
-  const src = extractFn('escapeHtml') + '\n' + extractFn('cssId') + '\n' + extractFn('_dfGroups')
+// groupNames stubs _getDiscoveredGroupNames so the scope-dropdown path is
+// exercisable; the default keeps every no-groups call site unchanged.
+function load(groupNames) {
+  const src = 'function _getDiscoveredGroupNames() { return ' + JSON.stringify(groupNames || []) + '; }\n'
+    + extractFn('escapeHtml') + '\n' + extractFn('cssId') + '\n' + extractFn('_dfGroups')
+    + '\n' + extractFn('_scopeToValue')
     + '\n' + extractFn('buildRetractEdgeRow') + '\n' + extractFn('buildUnlockAction')
     + '\n' + extractFn('buildTriggerBlock') + '\n' + extractFn('buildDoorFlowCard');
   return new Function(src + '; return buildDoorFlowCard;')();
@@ -57,7 +61,8 @@ function flow(overrides = {}) {
 test('a card carries the door name, its trigger, edges, Save, and Remove Flow', () => {
   const out = load()('Front Door', flow(), DATA);
   assert.match(out, /Front Door/);
-  assert.match(out, /taps in/, 'a no-groups site shows the plain tap-in trigger');
+  assert.match(out, /badges in/, 'a no-groups site shows the plain badge-in trigger');
+  assert.match(out, /everyone/, 'no-groups scope shows static everyone text');
   assert.match(out, /Retract deadbolt/, 'the retract action is titled');
   assert.match(out, /Front Bolt/, 'the retracted lock is named');
   assert.match(out, /data-df-save/, 'Save button carries the dirty-save hook');
@@ -90,18 +95,68 @@ test('every usable lock wired -> no add picker; none usable -> pair-first hint',
   assert.ok(!wired.includes('dfAddLock_'), 'nothing left to add');
   const noLocks = load()('Front Door', flow({ triggers: [entryTrigger([])] }), { doors: DATA.doors, locks: [] });
   assert.match(noLocks, /No deadbolt is paired yet/, 'empty state names the missing hardware');
-  assert.match(noLocks, /Deadbolt Devices tab/, 'the hint points at the device tab');
-  assert.match(noLocks, /openDeadboltTab\(\)/, 'the hint links to the Deadbolt Devices tab');
+  assert.match(noLocks, /Devices tab/, 'the hint points at the Devices tab');
+  assert.match(noLocks, /openDeadboltTab\(\)/, 'the hint links to the Devices tab');
 });
 
 test('the unlock-other-doors action appears once added and is absent on a single-door site', () => {
   const withUnlock = flow({ triggers: [{ type: 'entry', scope: null, actions: { unlock: { doors: [] }, retract: [] } }] });
   const out = load()('Front Door', withUnlock, DATA);
-  assert.match(out, /Unlock other doors/, 'multi-door site sees the unlock action once added');
+  assert.match(out, /data-df-action="unlock"/, 'multi-door site sees the unlock action once added');
   const single = load()('Front Door', withUnlock, { doors: [DATA.doors[0]], locks: DATA.locks });
-  assert.ok(!/Unlock other doors/.test(single), 'single-door site sees no unlock action (nowhere to unlock to)');
+  assert.ok(!/data-df-action="unlock"/.test(single), 'single-door site sees no unlock action (nowhere to unlock to)');
   const notAdded = load()('Front Door', flow(), DATA);
-  assert.ok(!/Unlock other doors/.test(notAdded), 'the action is opt-in: not shown until added via + add action');
+  assert.ok(!/data-df-action="unlock"/.test(notAdded), 'the action is opt-in: not shown until added via + add action');
+});
+
+test('with groups, entry reads "[scope] badges in" and the doorbell scope option is "anyone"', () => {
+  const out = load(['Staff', 'Visitors'])('Front Door', flow(), DATA);
+  assert.match(out, /id="dfScope_/, 'the scope dropdown renders when groups exist');
+  assert.match(out, /badges in/, 'the type chip reads badges in');
+  assert.ok(!out.includes('taps in'), 'the redundant taps-in sentence is gone');
+  const doorbellFlow = flow({ triggers: [{ type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: null, retract: [] } }] });
+  const bell = load(['Staff'])('Front Door', doorbellFlow, DATA);
+  assert.match(bell, />anyone</, 'doorbell scope offers anyone');
+  assert.ok(!bell.includes('anyone who answers'), 'never reads "anyone who answers answers"');
+  assert.match(bell, /rings and/, 'doorbell reads: doorbell rings and [scope] answers');
+});
+
+test('the doorbell advanced expander explains the reason code in plain language', () => {
+  const doorbellFlow = flow({ triggers: [{ type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: null, retract: [] } }] });
+  const out = load()('Front Door', doorbellFlow, DATA);
+  assert.match(out, /Reason code is the event code UniFi sends/);
+  assert.match(out, /107, means an admin unlocked the door/);
+});
+
+test('single-door site with no deadbolt: the add-action control becomes a note, never a silent vanish', () => {
+  const single = load()('Front Door', flow({ triggers: [entryTrigger([])] }), { doors: [DATA.doors[0]], locks: [] });
+  assert.ok(!single.includes('+ add action'), 'nothing can be added');
+  assert.match(single, /Nothing left to add here/);
+  assert.match(single, /No deadbolt is paired yet/);
+  assert.match(single, /No other doors are discovered to unlock/);
+});
+
+test('both actions maxed out: the note explains why, and retract + unlock still render together', () => {
+  const maxed = flow({ triggers: [{
+    type: 'entry', scope: null,
+    actions: {
+      unlock: { doors: ['Interior Door'] },
+      retract: [
+        { lock_id: 'front_deadbolt', after_unlock: 'stay_unlocked' },
+        { lock_id: 'side_deadbolt', after_unlock: 'stay_unlocked' },
+      ],
+    },
+  }] });
+  const out = load()('Front Door', maxed, DATA);
+  assert.ok(!out.includes('+ add action'));
+  assert.match(out, /Nothing left to add here/);
+  assert.match(out, /Every paired deadbolt already has a retract action on this trigger/);
+  assert.match(out, /Unlock other doors is already added/);
+  // multiple actions genuinely coexist in one trigger
+  assert.match(out, /Retract deadbolt/);
+  assert.match(out, /data-df-action="unlock"/);
+  assert.match(out, /Front Bolt/);
+  assert.match(out, /Side Bolt/);
 });
 
 test('the inline gating note points at Keypad Users when a deadbolt retracts', () => {

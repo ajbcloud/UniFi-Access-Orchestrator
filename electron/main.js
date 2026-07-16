@@ -389,7 +389,7 @@ function createAppMenu() {
           click: () => navigateTo('tools')
         },
         {
-          label: 'Deadbolt Devices',
+          label: 'Devices',
           accelerator: 'CmdOrCtrl+7',
           click: () => navigateTo('deadbolt')
         },
