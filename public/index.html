@@ -1391,7 +1391,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
            runDiscovery / selectController / testConnection work unchanged) -->
       <section class="wizard-step" data-step="connect">
         <div class="card" id="setupStep1">
-          <div class="card-title" role="heading" aria-level="2">Find your controller
+          <div class="card-title" role="heading" aria-level="2">Step 1 of 3: find your controller
             <span class="tip" tabindex="0" data-tip="We scan your local subnets for devices answering on the UniFi Access API port. If yours is on another VLAN, type its IP below.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
@@ -1415,7 +1415,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         </div>
 
         <div class="card" style="margin-top:16px" id="setupStep2">
-          <div class="card-title" role="heading" aria-level="2">API token
+          <div class="card-title" role="heading" aria-level="2">Step 2 of 3: API token
             <span class="tip" tabindex="0" data-tip="The token authorizes this app to read doors and users and to trigger unlocks. Treat it like a password; it is stored locally and never shown again after saving.">?</span>
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
@@ -1429,7 +1429,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         </div>
 
         <div class="card" style="margin-top:16px">
-          <div class="card-title" role="heading" aria-level="2">Test the connection</div>
+          <div class="card-title" role="heading" aria-level="2">Step 3 of 3: test the connection</div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             We'll save these details and check that the controller responds and
             can see your doors and users. Once it succeeds you can continue.
@@ -3809,7 +3809,7 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
   // Which locks gate on a door vs. reach everyone (no door associated).
   const gated = usable.filter((l) => l.gating_door);
   const gatingLine = gated.length
-    ? `Access-gated: ${gated.map((l) => `${escapeHtml(l.name || l.lock_id)} → ${escapeHtml(l.gating_door)}`).join(', ')}. A user only gets a code on a lock whose UniFi door their access allows.`
+    ? `Access-gated: ${gated.map((l) => `${escapeHtml(l.name || l.lock_id)} → ${escapeHtml(l.gating_door)}`).join(', ')}. A user only gets a code on a lock whose UniFi door their access allows. Note that a deadbolt PIN works 24/7 and does not follow UniFi access schedules.`
     : '';
   // Warn when gating cannot be trusted: access policies not synced, a
   // door-groups read failed, or some users have unresolved policies (all
@@ -6127,6 +6127,32 @@ function selectController(ip, port) {
   toast(`Selected controller: ${ip}`, 'info');
 }
 
+// Permissive host/IP check: accept a dotted IPv4 (octets 0 to 255) or a
+// plausible hostname, reject only clearly malformed input so a valid
+// controller address is never blocked. Pure.
+function isLikelyHostOrIp(s) {
+  const v = String(s || '').trim();
+  if (!v) return false;
+  if (/^(\d{1,3})(\.\d{1,3}){3}$/.test(v)) return v.split('.').every((n) => Number(n) <= 255);
+  return /^[a-zA-Z0-9]([a-zA-Z0-9\-.]*[a-zA-Z0-9])?$/.test(v);
+}
+
+// Validate the connect-step inputs before hitting the network, so bad input is
+// flagged inline rather than after a failed request. Pure over the field
+// values. Returns { ok, errors }.
+function validateConnectInputs(f) {
+  f = f || {};
+  const errors = [];
+  const host = String(f.host || '').trim();
+  const token = String(f.token || '').trim();
+  const port = String(f.port == null ? '' : f.port).trim();
+  if (!host) errors.push('Enter the controller IP address or hostname.');
+  else if (!isLikelyHostOrIp(host)) errors.push('That does not look like a valid IP address or hostname.');
+  if (!token) errors.push('Paste the API token from the UniFi Access portal.');
+  if (port && !(Number(port) >= 1 && Number(port) <= 65535)) errors.push('The API port must be between 1 and 65535.');
+  return { ok: errors.length === 0, errors };
+}
+
 async function testConnection() {
   const hostEl = document.getElementById('setupHost');
   const portEl = document.getElementById('setupPort');
@@ -6137,8 +6163,9 @@ async function testConnection() {
   const port = portEl ? portEl.value.trim() : '';
   const token = tokenEl ? tokenEl.value.trim() : '';
 
-  if (!host || !token) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Please enter both the IP address and API token.</span>';
+  const check = validateConnectInputs({ host, token, port });
+  if (!check.ok) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">' + check.errors.map(escapeHtml).join('<br>') + '</span>';
     return;
   }
 
