@@ -384,6 +384,7 @@ body {
 .status-pill.online { background: var(--green-dim); color: var(--green); }
 .status-pill.offline { background: var(--red-dim); color: var(--red); }
 .status-pill.reconnecting { background: var(--yellow-dim); color: var(--yellow); }
+.status-pill.connecting { background: var(--sage-dim); color: var(--sage); }
 
 /* The status pill lives on the banner; keep its text bright enough to read on
    the dark-green (light mode) or near-black (dark mode) banner background. */
@@ -391,6 +392,7 @@ body {
 .header .status-pill.online { color: #7FD69A; }
 .header .status-pill.offline { color: #FF8F7C; }
 .header .status-pill.reconnecting { color: #F0C24A; }
+.header .status-pill.connecting { color: #B7CDBE; }
 
 .status-dot {
   width: 6px; height: 6px;
@@ -1270,8 +1272,6 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .fd-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
 .fd-check.on { color: var(--text-primary); }
 .fd-form-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-.btn.btn-danger { background: var(--red-dim); color: var(--red); border-color: transparent; }
-.btn.btn-danger:hover { background: var(--red); color: #fff; }
 .fd-rulechip {
   display: flex; align-items: center; gap: 8px; width: 100%;
   background: var(--bg-input); border: 1px solid var(--border);
@@ -1304,14 +1304,14 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 <div class="header">
   <div class="header-left">
     <div class="logo"><span>UniFi Access</span> Orchestrator</div>
-    <div id="statusPill" class="status-pill offline" title="UniFi controller link (not the Z-Wave lock)">
-      <div class="status-dot"></div>
-      <span>Connecting...</span>
+    <div id="statusPill" class="status-pill connecting" title="UniFi controller link (not the Z-Wave lock)">
+      <div class="status-dot" aria-hidden="true"></div>
+      <span>Connecting</span>
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:12px">
     <div style="font-size:12px;color:var(--banner-fg-dim)" id="uptimeDisplay"></div>
-    <button class="btn btn-sm btn-secondary" id="themeToggle" onclick="toggleTheme()" title="Switch color theme" aria-label="Switch color theme">&#127769; Theme</button>
+    <button class="btn btn-sm btn-secondary" id="themeToggle" onclick="toggleTheme()" title="Switch color theme" aria-label="Switch color theme">&#127769; Dark</button>
     <button class="btn btn-sm btn-secondary" id="headerSetupBtn" onclick="showSetupWizard()" title="Controller connection and setup">&#9881; Setup</button>
   </div>
 </div>
@@ -1332,7 +1332,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <div id="setup" class="page" style="display:none">
     <div class="wizard-shell">
       <div class="wizard-head">
-        <div class="wizard-emoji">&#x1F513;</div>
+        <div class="wizard-emoji" aria-hidden="true">&#x1F513;</div>
         <h1 id="wizardTitle">Welcome to UniFi Access Orchestrator</h1>
         <p id="wizardSubtitle">Let's find your controller and set up your first automation.</p>
       </div>
@@ -1397,7 +1397,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
           </div>
 
           <div class="form-group" style="margin-bottom:0">
-            <input type="text" id="setupToken" placeholder="Paste your API token here">
+            <input type="password" id="setupToken" placeholder="Paste your API token here" autocomplete="off">
           </div>
         </div>
 
@@ -1525,25 +1525,25 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <div id="dashboard" class="page active">
     <div class="grid grid-4" style="margin-bottom:16px">
       <div class="card">
-        <div class="stat-icon blue">&#x1F6AA;</div>
+        <div class="stat-icon blue" aria-hidden="true">&#x1F6AA;</div>
         <div class="card-title">Doors Discovered</div>
         <div class="card-value" id="statDoors">-</div>
         <div class="card-sub" id="statDoorsOnline"></div>
       </div>
       <div class="card">
-        <div class="stat-icon green">&#x1F465;</div>
+        <div class="stat-icon green" aria-hidden="true">&#x1F465;</div>
         <div class="card-title">Users Mapped</div>
         <div class="card-value" id="statUsers">-</div>
         <div class="card-sub" id="statUsersGroups"></div>
       </div>
       <div class="card">
-        <div class="stat-icon yellow">&#x26A1;</div>
+        <div class="stat-icon yellow" aria-hidden="true">&#x26A1;</div>
         <div class="card-title">Events Received</div>
         <div class="card-value" id="statEvents">-</div>
         <div class="card-sub" id="statEventsProcessed"></div>
       </div>
       <div class="card">
-        <div class="stat-icon green">&#x1F513;</div>
+        <div class="stat-icon green" aria-hidden="true">&#x1F513;</div>
         <div class="card-title">Unlocks Triggered</div>
         <div class="card-value" id="statUnlocks">-</div>
         <div class="card-sub" id="statUnlocksFailed"></div>
@@ -1735,7 +1735,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         </div>
         <div class="form-group">
           <label class="form-label">API Token (masked)</label>
-          <input type="text" id="settingUnifiToken" placeholder="********" autocomplete="new-password">
+          <input type="password" id="settingUnifiToken" placeholder="********" autocomplete="new-password">
           <div style="font-size:12px;color:var(--text-muted);margin-top:8px">For security, the token is masked. Re-enter to change.</div>
         </div>
       </div>
@@ -2796,7 +2796,7 @@ function renderConfig() {
 
   if (accessRules.length === 0) {
     nfcHtml += `<div class="rule-empty">
-      <div class="rule-empty-icon">&#x1F513;</div>
+      <div class="rule-empty-icon" aria-hidden="true">&#x1F513;</div>
       <div>No access rules configured yet.</div>
       <div style="margin-top:4px">Click <strong>Add Rule</strong> to define what happens when a group badges in at a door.</div>
     </div>`;
@@ -2833,7 +2833,7 @@ function renderConfig() {
 
   if (visitorRules.length === 0) {
     dbHtml += `<div class="rule-empty">
-      <div class="rule-empty-icon">&#x1F6CE;</div>
+      <div class="rule-empty-icon" aria-hidden="true">&#x1F6CE;</div>
       <div>No visitor rules configured yet.</div>
       <div style="margin-top:4px">Click <strong>Add Rule</strong> to define visitor door access, or set up Access Rules above first to auto-populate.</div>
     </div>`;
