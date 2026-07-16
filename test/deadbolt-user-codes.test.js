@@ -251,6 +251,26 @@ test('gating: banner notes incomplete users fail open', () => {
   assert.match(out, /fail open/, 'incomplete users are never blocked');
 });
 
+test('gating: a lock triggered by several doors lists them all (union rule)', () => {
+  const build = load();
+  const multiLocks = [
+    { lock_id: 'front_deadbolt', name: 'Front Door', supported: true, note: null, gating_door: 'Door A', gating_doors: ['Door A', 'Door B'] },
+  ];
+  const out = build({
+    locks: multiLocks,
+    pin_rule: RULE,
+    access_gating: { available: true, incomplete_users: 0 },
+    users: [{
+      user_id: 'u-1', name: 'Alice', pin_length: 4, in_unifi: true, user_missing: false,
+      locks: [{ lock_id: 'front_deadbolt', slot: null, status: 'blocked' }],
+    }],
+  }, USERS, false);
+  assert.match(out, /Front Door → Door A, Door B/, 'gating line names every trigger door');
+  assert.match(out, /at least one of its trigger doors/, 'copy states the union rule');
+  assert.match(out, /any of its trigger doors/, 'blocked badge covers the whole union');
+  assert.match(out, /Door B/, 'second door reaches the badge');
+});
+
 test('gating: no banner and no Access-gated line when no lock has a door', () => {
   const build = load();
   const ungatedLocks = LOCKS.map((l) => Object.assign({}, l, { gating_door: null }));

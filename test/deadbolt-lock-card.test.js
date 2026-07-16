@@ -47,6 +47,7 @@ function summary(overrides = {}) {
     bound: true,
     automated: true,
     trigger_door: 'Front Door',
+    trigger_doors: ['Front Door'],
     lock_state: { boltState: 'locked', battery: 90, batteryLow: false, linkState: 'online', model: 'Schlage BE469ZP Touchscreen Deadbolt', securityClass: 'S2 Access Control', name: 'Front Door' },
     auto_relock: false,
     auto_relock_support: { supported: true, note: null, configured: false },
@@ -59,12 +60,26 @@ test('a card carries identity, live badges, buttons, and the after-unlock contro
   assert.match(out, /id="zwaveLockCard_front_deadbolt_/);
   assert.match(out, /Front Door/);
   assert.match(out, /node 14/);
-  assert.match(out, /retracts on entry at <strong>Front Door<\/strong>/);
+  assert.match(out, /Triggered by: <strong>Front Door<\/strong>/, 'read-only trigger summary');
+  assert.match(out, /edit in Door Flows/, 'cross-link to the one editor for door wiring');
   assert.match(out, /Test Lock/);
   assert.match(out, /After unlock:/);
   assert.match(out, /id="zwaveAutoRelockSel_front_deadbolt_/, 'auto-relock select id is per-lock');
   assert.match(out, /applyAutoRelock\(&quot;front_deadbolt&quot;\)/, 'apply targets this lock');
-  assert.ok(!out.includes('zwaveUserCodes_'), 'no per-lock keypad-codes container (PINs live in the global Keypad users panel)');
+  assert.ok(!out.includes('zwaveUserCodes_'), 'no per-lock keypad-codes container (PINs live on the Keypad Users tab)');
+  assert.ok(!out.includes('deadboltTriggerDoor_'), 'no editable trigger control on the card');
+});
+
+test('a lock retracted by several doors lists every trigger door', () => {
+  const build = load();
+  const out = build(summary({ trigger_doors: ['Front Door', 'Side Door'] }));
+  assert.match(out, /Triggered by: <strong>Front Door<\/strong>, <strong>Side Door<\/strong>/);
+});
+
+test('a legacy summary with only trigger_door still shows its trigger', () => {
+  const build = load();
+  const out = build(summary({ trigger_doors: undefined }));
+  assert.match(out, /Triggered by: <strong>Front Door<\/strong>/);
 });
 
 test('Rewrite Codes to Lock shows only when the lock has saved codes', () => {
@@ -79,15 +94,16 @@ test('Rewrite Codes to Lock shows only when the lock has saved codes', () => {
 
 test('a manual-only (not automated) lock says so instead of claiming a trigger', () => {
   const build = load();
-  const out = build(summary({ automated: false, trigger_door: null }));
-  assert.match(out, /Not automated: manual control only/);
-  assert.ok(!out.includes('retracts on entry at'));
+  const out = build(summary({ automated: false, trigger_door: null, trigger_doors: [] }));
+  assert.match(out, /Manual control only/);
+  assert.match(out, /add this deadbolt to a door in Door Flows/, 'points at the editor');
+  assert.ok(!out.includes('Triggered by:'));
 });
 
 test('two locks render two independent cards with distinct ids and handlers', () => {
   const build = load();
   const a = build(summary());
-  const b = build(summary({ lock_id: 'side_deadbolt', name: 'Side Door', node_id: 17, trigger_door: 'Side Door' }));
+  const b = build(summary({ lock_id: 'side_deadbolt', name: 'Side Door', node_id: 17, trigger_door: 'Side Door', trigger_doors: ['Side Door'] }));
   assert.match(a, /zwaveLockCard_front_deadbolt/);
   assert.match(b, /zwaveLockCard_side_deadbolt/);
   assert.match(b, /deadboltControl\('unlock', &quot;side_deadbolt&quot;\)/);

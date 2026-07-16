@@ -110,7 +110,7 @@ test('reconciliation reuses the fail-open rule and is access-gated', () => {
 test('gating door ids are backfilled and the access model carries doorsById', () => {
   const body = fnBody(indexSrc, 'backfillTriggerDoorIds');
   assert.match(body, /zwavePairing\.isActive\(\)/, 'the migration never runs during a pairing session');
-  assert.match(body, /trigger_door_id/, 'the migration resolves and stores the door id');
+  assert.match(body, /backfillFlowDoorIds\(/, 'the migration resolves and stores door ids on the flows (door-centric shape)');
   const model = fnBody(indexSrc, 'currentAccessModel');
   assert.match(model, /doorsById/, 'the verdict layer receives the id->name map for rename-proof gating');
   assert.match(indexSrc, /backfillTriggerDoorIds\(\)/, 'the migration is invoked from the app wiring');

@@ -9,8 +9,10 @@
  */
 
 /**
- * Remove a lock's config entry AND its automation rule, in place.
- * Returns true when anything was actually removed.
+ * Remove a lock's config entry AND its automation, in place: the legacy
+ * deadbolt_rules entry (transitional) plus every door_flows retract edge
+ * pointing at the lock. A door key left with no retract and no cascade is
+ * dropped entirely. Returns true when anything was actually removed.
  */
 function removeLockEntry(cfg, lockId) {
   if (!cfg || !lockId) return false;
@@ -23,6 +25,17 @@ function removeLockEntry(cfg, lockId) {
   if (cfg.deadbolt_rules && Object.prototype.hasOwnProperty.call(cfg.deadbolt_rules, lockId)) {
     delete cfg.deadbolt_rules[lockId];
     removed = true;
+  }
+  if (cfg.door_flows && typeof cfg.door_flows === 'object') {
+    for (const door of Object.keys(cfg.door_flows)) {
+      const flow = cfg.door_flows[door];
+      if (!flow || !Array.isArray(flow.retract)) continue;
+      const before = flow.retract.length;
+      flow.retract = flow.retract.filter((e) => !e || e.lock_id !== lockId);
+      if (flow.retract.length !== before) removed = true;
+      const hasCascade = flow.cascade && Array.isArray(flow.cascade.unlock) && flow.cascade.unlock.length;
+      if (!flow.retract.length && !hasCascade) delete cfg.door_flows[door];
+    }
   }
   return removed;
 }

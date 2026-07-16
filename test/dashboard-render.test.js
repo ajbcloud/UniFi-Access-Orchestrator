@@ -32,7 +32,7 @@ function loadRenderer() {
     + '\n' + extractFn('setCardState')
     + '\n' + extractFn('renderDeadbolt');
   const els = {};
-  for (const id of ['deadboltCard', 'deadboltState', 'deadboltModel', 'deadboltSecurity', 'deadboltBattery', 'deadboltLink', 'deadboltDoor', 'deadboltLastAction', 'deadboltStats']) {
+  for (const id of ['deadboltCard', 'deadboltState', 'deadboltModel', 'deadboltSecurity', 'deadboltBattery', 'deadboltLink', 'deadboltDoor', 'deadboltLastAction', 'deadboltStats', 'deadboltLocksList']) {
     els[id] = { textContent: '', innerHTML: '', className: '', style: {} };
   }
   const document = { getElementById: (id) => els[id] || null };
@@ -82,6 +82,25 @@ test('deadbolt card hides when the add-on is disabled', () => {
   const { renderDeadbolt, els } = loadRenderer();
   renderDeadbolt({ deadbolt: { enabled: false } });
   assert.strictEqual(els.deadboltCard.style.display, 'none');
+});
+
+test('deadbolt card lists EVERY door that retracts the lock (multi-door)', () => {
+  const { renderDeadbolt, els } = loadRenderer();
+  renderDeadbolt({ deadbolt: { enabled: true, trigger_door: 'Front Door', trigger_doors: ['Front Door', 'Side Door'],
+    lock: { boltState: 'locked', battery: 90, online: true }, stats: {} } });
+  assert.strictEqual(els.deadboltDoor.textContent, 'Front Door, Side Door');
+});
+
+test('the per-lock lines carry each lock\'s own trigger doors', () => {
+  const { renderDeadbolt, els } = loadRenderer();
+  renderDeadbolt({ deadbolt: { enabled: true, trigger_door: 'Front Door',
+    lock: { boltState: 'locked', online: true }, stats: {},
+    locks: [
+      { lock_id: 'a', name: 'Front Bolt', trigger_doors: ['Front Door', 'Side Door'], lock: { boltState: 'locked', linkState: 'online' } },
+      { lock_id: 'b', name: 'Side Bolt', trigger_doors: [], lock: { boltState: 'unlocked', linkState: 'online' } },
+    ] } });
+  assert.ok(els.deadboltLocksList.innerHTML.includes('triggered by Front Door, Side Door'), 'multi-door lock lists both doors');
+  assert.ok(els.deadboltLocksList.innerHTML.includes('manual only'), 'unwired lock reads manual only');
 });
 
 // ---------------------------------------------------------------------------
