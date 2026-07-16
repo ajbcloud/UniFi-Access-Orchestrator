@@ -28,7 +28,7 @@ class UniFiClient {
   constructor(config) {
     this.host = config.unifi.host;
     this.port = config.unifi.port;
-    this.token = config.unifi.token;
+    this.token = config.unifi.token || process.env.UNIFI_API_TOKEN || '';
     this.verifySsl = config.unifi.verify_ssl;
     this.baseUrl = `https://${this.host}:${this.port}/api/v1/developer`;
 
