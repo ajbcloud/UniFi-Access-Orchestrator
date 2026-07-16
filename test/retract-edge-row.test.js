@@ -79,6 +79,13 @@ test('advanced fields live under a details expander with their stored values', (
   assert.match(out, /value="25"/, 'cooldown editable');
 });
 
+test('advanced carries a plain-language explainer alongside the fields', () => {
+  const out = load()('Front Door', 0, edge(), 0, LOCKS);
+  assert.match(out, /Require result only retracts/, 'require_result explained in visible text, not just a tooltip');
+  assert.match(out, /Mirror door unlocks also retracts/);
+  assert.match(out, /Relock cooldown gives a normal entry/);
+});
+
 test('a hardware auto-relock conflict is called out inline', () => {
   const quiet = load()('Front Door', 0, edge({ after_unlock: 'stay_unlocked' }), 0, LOCKS);
   assert.ok(!quiet.includes('notice-warn'), 'no warning without the conflict flag');
