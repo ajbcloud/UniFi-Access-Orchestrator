@@ -549,6 +549,16 @@ body {
 .notice-warn { background: var(--yellow); color: var(--on-warning); }
 .notice-danger { background: var(--red); color: var(--on-danger); }
 
+/* Live Events filter controls */
+.event-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.filter-chips { display: inline-flex; gap: 4px; }
+.chip { font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: transparent; color: var(--text-secondary); cursor: pointer; }
+.chip:hover { border-color: var(--border-light); }
+.chip.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.event-filters select, .event-filters input { font-size: 12px; padding: 5px 8px; }
+.event-filters input { min-width: 160px; }
+
 /* Event log container */
 .event-log {
   max-height: 600px;
@@ -1615,6 +1625,16 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         <button class="btn btn-sm btn-secondary" onclick="clearEvents()">Clear</button>
       </div>
     </div>
+    <div class="event-filters" id="eventFilters">
+      <div class="filter-chips" role="group" aria-label="Filter events by outcome">
+        <button class="chip" data-kind="all" aria-pressed="false" onclick="setEventFilterKind('all')">All</button>
+        <button class="chip" data-kind="actioned" aria-pressed="false" onclick="setEventFilterKind('actioned')">Actioned</button>
+        <button class="chip" data-kind="skipped" aria-pressed="false" onclick="setEventFilterKind('skipped')">Skipped</button>
+        <button class="chip" data-kind="failed" aria-pressed="false" onclick="setEventFilterKind('failed')">Failed</button>
+      </div>
+      <select id="eventDoorFilter" aria-label="Filter events by door" onchange="setEventFilterDoor(this.value)"><option value="">All doors</option></select>
+      <input id="eventSearch" type="text" placeholder="Search events" aria-label="Search events" oninput="setEventFilterText(this.value)">
+    </div>
     <div class="card" style="padding:0">
       <div class="event-log" id="eventLog">
         <table class="event-table">
@@ -1948,6 +1968,9 @@ let groupsData = null;
 let autoscroll = true;
 let eventSource = null;
 let eventsReceived = false;
+let eventBuffer = [];      // raw events, newest first, capped, so a filter change re-renders without waiting
+let eventFilters = null;   // { kind, door, text }, session-persisted
+const expandedSkips = new Set(); // collapsed skipped-run keys the user opened
 
 // ============================================================
 // Theme (light = Chrome background, dark = Haunted Forest)
@@ -2560,46 +2583,180 @@ function connectSSE() {
   };
 }
 
-function addEventRow(evt) {
-  const tbody = document.getElementById('eventTableBody');
-  if (!eventsReceived) {
-    tbody.innerHTML = '';
-    eventsReceived = true;
-  }
+// ---- event narration and filtering (pure, testable) ----------------------
 
-  const tr = document.createElement('tr');
+// Plain-language sentence for one event: who, where, and what happened. Falls
+// back gracefully when the actor or location is unknown so a non-technical
+// viewer can still read the feed.
+function narrateEvent(evt) {
+  const e = evt || {};
+  const who = (e.actor && String(e.actor).trim()) ? String(e.actor).trim() : null;
+  const where = (e.location && String(e.location).trim()) ? String(e.location).trim() : null;
+  const type = String(e.type || '');
+  let subject; let verb;
+  if (type.includes('doorbell')) { subject = who || 'A visitor'; verb = 'rang the doorbell'; }
+  else if (type.includes('unlock') || type.includes('door')) { subject = who || 'Someone'; verb = 'badged in'; }
+  else if (type.includes('system')) { subject = 'The orchestrator'; verb = 'ran a background task'; }
+  else if (type.includes('deadbolt')) { subject = who || 'The deadbolt controller'; verb = 'acted on the deadbolt'; }
+  else { subject = who || 'Someone'; verb = 'triggered an event'; }
+  const place = where ? (' at ' + where) : '';
+  const did = (e.action && String(e.action).trim()) ? (', ' + String(e.action).trim()) : '';
+  const tail = e.success === false ? '. It failed.' : '.';
+  return subject + ' ' + verb + place + did + tail;
+}
+
+// Outcome bucket for one event, lifting the old inline noise regex.
+function classifyEventRow(evt) {
+  const e = evt || {};
+  if (e.success === false) return 'failed';
+  const a = String(e.action || '');
+  return /Skipped|No action|No group|No rules|not an admin/.test(a) ? 'skipped' : 'actioned';
+}
+
+function skippedGroupLabel(n) {
+  return n + ' skipped event' + (n === 1 ? '' : 's') + ', show';
+}
+
+function loadEventFilters() {
+  try { const s = sessionStorage.getItem('uao-event-filters'); if (s) return JSON.parse(s); } catch (e) { /* ignore */ }
+  return { kind: 'actioned', door: '', text: '' };
+}
+function saveEventFilters(f) {
+  try { sessionStorage.setItem('uao-event-filters', JSON.stringify(f)); } catch (e) { /* ignore */ }
+}
+
+// Does an event pass the active filters? Pure over (evt, filters).
+function eventMatchesFilters(evt, f) {
+  f = f || {};
+  const kind = classifyEventRow(evt);
+  if (f.kind && f.kind !== 'all' && kind !== f.kind) return false;
+  if (f.door && String((evt && evt.location) || '') !== f.door) return false;
+  if (f.text) {
+    const hay = (narrateEvent(evt) + ' ' + ((evt && evt.type) || '') + ' ' + ((evt && evt.actor) || '')).toLowerCase();
+    if (!hay.includes(String(f.text).toLowerCase())) return false;
+  }
+  return true;
+}
+
+// ---- event feed rendering (DOM) -------------------------------------------
+
+function eventRowHtml(evt) {
   const _d = new Date(evt.timestamp);
   const time = _d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + _d.toLocaleTimeString();
-  const typeBadge = evt.type?.includes('doorbell') ? 'info'
-    : evt.type?.includes('unlock') ? 'success'
-    : evt.type?.includes('system') ? 'warning' : 'info';
-
-  const isWarning = evt.action?.includes('Skipped') || evt.action?.includes('No action') || evt.action?.includes('No group') || evt.action?.includes('No rules') || evt.action?.includes('not an admin');
-  const statusBadge = evt.success === false ? 'error'
-    : isWarning ? 'warning'
-    : 'success';
-
-  const statusText = evt.success === false ? 'Failed'
-    : isWarning ? 'Skipped'
-    : 'OK';
-
-  tr.innerHTML = `
+  const kind = classifyEventRow(evt);
+  const typeBadge = (evt.type || '').includes('doorbell') ? 'info'
+    : (evt.type || '').includes('unlock') ? 'success'
+    : (evt.type || '').includes('system') ? 'warning' : 'info';
+  const statusBadge = kind === 'failed' ? 'error' : kind === 'skipped' ? 'warning' : 'success';
+  const statusText = kind === 'failed' ? 'Failed' : kind === 'skipped' ? 'Skipped' : 'OK';
+  const rawType = escapeHtml((evt.type || '').replace('access.', '').replace('test.', 'test:'));
+  const fullType = escapeHtml(evt.type || '');
+  const dim = kind === 'skipped' ? ' style="opacity:0.6"' : '';
+  return `<tr data-kind="${kind}"${dim}>
     <td class="time">${time}</td>
-    <td><span class="badge ${typeBadge}">${escapeHtml((evt.type || '').replace('access.', '').replace('test.', 'test:'))}</span></td>
+    <td><span class="badge ${typeBadge}" title="${fullType}">${rawType}</span></td>
     <td style="color:var(--text-primary)">${escapeHtml(evt.actor || '-')}</td>
     <td>${escapeHtml(evt.location || '-')}</td>
-    <td>${escapeHtml(evt.action || '-')}</td>
+    <td title="${fullType}">${escapeHtml(narrateEvent(evt))}</td>
     <td><span class="badge ${statusBadge}">${statusText}</span></td>
-  `;
+  </tr>`;
+}
 
-  tbody.insertBefore(tr, tbody.firstChild);
+function skipKey(run) { return 'skip:' + ((run[0] && run[0].timestamp) || run.length); }
 
-  // Limit to 200 rows
-  while (tbody.children.length > 200) tbody.removeChild(tbody.lastChild);
+function skippedGroupRowHtml(run) {
+  const key = skipKey(run);
+  return `<tr class="skip-group" data-kind="skipped"><td colspan="6" style="text-align:center;padding:6px">`
+    + `<button class="btn btn-sm btn-ghost" onclick="toggleSkipGroup('${key}')">${escapeHtml(skippedGroupLabel(run.length))}</button></td></tr>`;
+}
 
-  if (autoscroll) {
-    document.getElementById('eventLog').scrollTop = 0;
+function toggleSkipGroup(key) {
+  if (expandedSkips.has(key)) expandedSkips.delete(key); else expandedSkips.add(key);
+  renderEventFeed();
+}
+
+function renderEventFeed() {
+  const tbody = document.getElementById('eventTableBody');
+  if (!tbody) return;
+  const f = eventFilters || (eventFilters = loadEventFilters());
+  const rows = eventBuffer.filter((e) => eventMatchesFilters(e, f));
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6">'
+      + (eventBuffer.length ? emptyStateHtml('No events match the current filters.')
+        : '<div class="empty-state">Waiting for events</div>')
+      + '</td></tr>';
+    return;
   }
+  let html = '';
+  let i = 0;
+  while (i < rows.length) {
+    // Collapse a run of consecutive skipped rows into one expandable line,
+    // unless the user is explicitly filtering for skipped events.
+    if (classifyEventRow(rows[i]) === 'skipped' && f.kind !== 'skipped') {
+      let j = i;
+      while (j < rows.length && classifyEventRow(rows[j]) === 'skipped') j++;
+      const run = rows.slice(i, j);
+      if (run.length > 1 && !expandedSkips.has(skipKey(run))) {
+        html += skippedGroupRowHtml(run);
+      } else {
+        html += run.map(eventRowHtml).join('');
+      }
+      i = j;
+    } else {
+      html += eventRowHtml(rows[i]);
+      i++;
+    }
+  }
+  tbody.innerHTML = html;
+  if (autoscroll) { const log = document.getElementById('eventLog'); if (log) log.scrollTop = 0; }
+}
+
+function populateEventDoorFilter() {
+  const sel = document.getElementById('eventDoorFilter');
+  if (!sel) return;
+  const doors = [...new Set(eventBuffer.map((e) => (e && e.location) || '').filter(Boolean))].sort();
+  const current = (eventFilters && eventFilters.door) || '';
+  sel.innerHTML = '<option value="">All doors</option>'
+    + doors.map((d) => `<option value="${escapeHtml(d)}"${d === current ? ' selected' : ''}>${escapeHtml(d)}</option>`).join('');
+}
+
+function syncEventFilterControls() {
+  const f = eventFilters || (eventFilters = loadEventFilters());
+  document.querySelectorAll('#eventFilters .chip').forEach((c) => {
+    c.classList.toggle('active', c.dataset.kind === f.kind);
+    c.setAttribute('aria-pressed', c.dataset.kind === f.kind ? 'true' : 'false');
+  });
+  const search = document.getElementById('eventSearch');
+  if (search && search.value !== f.text) search.value = f.text || '';
+  populateEventDoorFilter();
+}
+
+function setEventFilterKind(kind) {
+  eventFilters = eventFilters || loadEventFilters();
+  eventFilters.kind = kind;
+  saveEventFilters(eventFilters);
+  syncEventFilterControls();
+  renderEventFeed();
+}
+function setEventFilterDoor(door) {
+  eventFilters = eventFilters || loadEventFilters();
+  eventFilters.door = door;
+  saveEventFilters(eventFilters);
+  renderEventFeed();
+}
+function setEventFilterText(text) {
+  eventFilters = eventFilters || loadEventFilters();
+  eventFilters.text = text;
+  saveEventFilters(eventFilters);
+  renderEventFeed();
+}
+
+function addEventRow(evt) {
+  eventsReceived = true;
+  eventBuffer.unshift(evt);
+  while (eventBuffer.length > 200) eventBuffer.pop();
+  syncEventFilterControls();
+  renderEventFeed();
 }
 
 function toggleAutoscroll() {
@@ -2608,9 +2765,10 @@ function toggleAutoscroll() {
 }
 
 function clearEvents() {
-  document.getElementById('eventTableBody').innerHTML =
-    '<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-muted)">Waiting for events...</td></tr>';
+  eventBuffer = [];
   eventsReceived = false;
+  expandedSkips.clear();
+  renderEventFeed();
 }
 
 // ============================================================
@@ -6039,6 +6197,11 @@ async function saveSetup() {
 // Init
 // ============================================================
 (async () => {
+  // Reflect the persisted event filters in the controls and the empty feed
+  // before any event arrives.
+  eventFilters = loadEventFilters();
+  syncEventFilterControls();
+  renderEventFeed();
   const isFirstRun = await checkFirstRun();
   if (!isFirstRun) {
     fetchHealth();
