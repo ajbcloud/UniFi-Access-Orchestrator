@@ -4367,22 +4367,26 @@ function buildRetractEdgeRow(door, tIdx, edge, eIdx, locks) {
   </div>`;
 }
 
-// The unlock action of a trigger: which OTHER doors momentarily unlock, plus
-// debounce and delay. Offered only when the site has 2+ doors. Pure builder.
-function buildUnlockAction(door, tIdx, unlock, doors) {
-  const others = (doors || []).filter((d) => d.name !== door);
-  if (!others.length || !unlock) return ''; // only shown once added as an action
+// The unlock action of a trigger: which doors momentarily unlock, plus debounce
+// and delay. `includeSelf` adds the trigger door itself to the candidates (a
+// doorbell buzzing open the door it is on); entry leaves it out since badging
+// already unlocks that door. Pure builder.
+function buildUnlockAction(door, tIdx, unlock, doors, includeSelf) {
+  const cands = (doors || []).filter((d) => includeSelf || d.name !== door);
+  if (!cands.length || !unlock) return ''; // only shown once added as an action
   const cssD = cssId(door);
   const doorArg = escapeHtml(JSON.stringify(String(door)));
   const sel = new Set(Array.isArray(unlock.doors) ? unlock.doors : []);
-  const chips = others.map((d) =>
-    `<label class="chip df-unlock-chip"><input type="checkbox" class="df-unlock-door" data-df-door="${cssD}" data-df-trig="${tIdx}" value="${escapeHtml(d.name)}"${sel.has(d.name) ? ' checked' : ''} style="position:absolute;opacity:0;width:1px;height:1px"> ${escapeHtml(d.name)}</label>`).join('');
+  const chips = cands.map((d) => {
+    const label = d.name === door ? `${escapeHtml(d.name)} (this door)` : escapeHtml(d.name);
+    return `<label class="chip df-unlock-chip"><input type="checkbox" class="df-unlock-door" data-df-door="${cssD}" data-df-trig="${tIdx}" value="${escapeHtml(d.name)}"${sel.has(d.name) ? ' checked' : ''} style="position:absolute;opacity:0;width:1px;height:1px"> ${label}</label>`;
+  }).join('');
   const deb = unlock.debounce_seconds != null ? unlock.debounce_seconds : 8;
   const delay = unlock.delay_seconds != null ? unlock.delay_seconds : 0;
   return `<div class="df-action-card" data-df-action="unlock">
     <div class="df-action-head">
       <span aria-hidden="true">&#9193;</span>
-      <span class="df-action-title">Unlock other doors</span>
+      <span class="df-action-title">Unlock doors</span>
       <span class="df-action-spacer"></span>
       <button class="btn btn-sm btn-secondary" onclick="removeUnlockAction(${doorArg}, ${tIdx})">Remove</button>
     </div>
@@ -4400,8 +4404,10 @@ function buildUnlockAction(door, tIdx, unlock, doors) {
 }
 
 // One trigger block: step 2 "When" (type + scope) and step 3 "Do this" (the
-// action cards + an add-action chooser). Pure builder.
-function buildTriggerBlock(door, tIdx, trigger, data) {
+// action cards + an add-action chooser). `hasSameTypeSiblings` is true when the
+// door has more than one trigger of this same type, which adds a scope hint.
+// Pure builder.
+function buildTriggerBlock(door, tIdx, trigger, data, hasSameTypeSiblings) {
   const doors = (data && data.doors) || [];
   const locks = (data && data.locks) || [];
   const cssD = cssId(door);
@@ -4440,53 +4446,44 @@ function buildTriggerBlock(door, tIdx, trigger, data) {
     : `${scopeOrStatic}${typeChip}`;
 
   const retractCards = edges.map((e, i) => buildRetractEdgeRow(door, tIdx, e, i, locks)).join('');
-  const unlockCard = buildUnlockAction(door, tIdx, actions.unlock, doors);
+  // A doorbell can unlock the door it is on (buzz someone in); entry leaves the
+  // trigger door out since badging already unlocks it.
+  const includeSelf = type === 'doorbell';
+  const candidateDoors = doors.filter((d) => includeSelf || d.name !== door);
+  const unlockCard = buildUnlockAction(door, tIdx, actions.unlock, doors, includeSelf);
 
+  const hasAnyAction = edges.length > 0 || hasUnlock;
   const canAddRetract = freeLocks.length > 0;
-  const canAddUnlock = others.length > 0 && !hasUnlock;
-  let addAction = '';
-  if (canAddRetract || canAddUnlock) {
-    const bits = [];
-    if (canAddRetract) {
-      bits.push(`<span style="display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <span class="df-step-hint">Retract a deadbolt</span>
+  const canAddUnlock = candidateDoors.length > 0 && !hasUnlock;
+
+  // The chooser ALWAYS lists both action types with their current state, so the
+  // full palette is visible and a single action never reads as a hard limit. It
+  // starts open on a fresh trigger and tucks behind the button once the trigger
+  // has an action.
+  const choiceRow = (inner) => `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px">${inner}</div>`;
+  const muted = (html) => `<span style="color:var(--text-muted)">${html}</span>`;
+  const unlockRow = canAddUnlock
+    ? choiceRow(`<span style="font-weight:600">Unlock a door</span><button class="btn btn-sm btn-secondary" onclick="addUnlockAction(${doorArg}, ${tIdx})">Add</button>`)
+    : hasUnlock
+      ? choiceRow(muted('Unlock a door: added below'))
+      : choiceRow(muted('Unlock a door: no other doors are set up in UniFi yet'));
+  const retractRow = canAddRetract
+    ? choiceRow(`<span style="font-weight:600">Retract a deadbolt</span>
         <select id="dfAddLock_${sfx2}" class="df-inline" style="min-width:160px">
           ${freeLocks.map((l) => `<option value="${escapeHtml(l.lock_id)}">${escapeHtml(l.name || l.lock_id)}</option>`).join('')}
         </select>
-        <button class="btn btn-sm btn-secondary" onclick="addRetractEdge(${doorArg}, ${tIdx})">Add</button>
-      </span>`);
-    }
-    if (canAddUnlock) {
-      bits.push(`<span style="display:inline-flex;gap:6px;align-items:center">
-        <span class="df-step-hint">Unlock other doors</span>
-        <button class="btn btn-sm btn-secondary" onclick="addUnlockAction(${doorArg}, ${tIdx})">Add</button>
-      </span>`);
-    }
-    addAction = `<button type="button" class="df-add" onclick="toggleAddAction(${doorArg}, ${tIdx})">+ add action</button>
-      <div id="dfAddMenu_${sfx2}" class="df-action-card" style="display:none;margin-top:8px">
-        <div class="df-chiprow" style="margin-top:0">${bits.join('')}</div>
-      </div>`;
-  } else {
-    // Never vanish silently: say exactly why nothing more can be added, so
-    // "one action" never reads as a limit of the app.
-    const why = [];
-    if (usableLocks.length) {
-      why.push('Every paired deadbolt already has a retract action on this trigger.');
-    } else {
-      why.push('No deadbolt is paired yet. Pair one on the <a href="#" onclick="openDeadboltTab();return false;" style="color:var(--accent)">Devices tab</a> to retract it from this door.');
-    }
-    if (hasUnlock) {
-      why.push('Unlock other doors is already added.');
-    } else if (!others.length) {
-      why.push('No other doors are discovered to unlock.');
-    }
-    addAction = `<div class="df-note"><span aria-hidden="true">&#8505;</span><span>Nothing left to add here. ${why.join(' ')}</span></div>`;
-  }
-  // When no deadbolt is paired, say so (retract needs a paired bolt) even
-  // while the add-action chooser still offers unlock. Suppressed when the
-  // nothing-left note above already explains the missing deadbolt.
-  const pairHint = (!usableLocks.length && !edges.length && canAddUnlock)
-    ? `<div class="df-note"><span aria-hidden="true">&#128274;</span><span>No deadbolt is paired yet. Pair one on the <a href="#" onclick="openDeadboltTab();return false;" style="color:var(--accent)">Devices tab</a> to retract it from this door.</span></div>`
+        <button class="btn btn-sm btn-secondary" onclick="addRetractEdge(${doorArg}, ${tIdx})">Add</button>`)
+    : usableLocks.length
+      ? choiceRow(muted('Retract a deadbolt: every paired deadbolt is already retracting on this trigger'))
+      : choiceRow(muted('Retract a deadbolt: no deadbolt is paired yet, pair one on the <a href="#" onclick="openDeadboltTab();return false;" style="color:var(--accent)">Devices tab</a>'));
+  const addAction = `<button type="button" class="df-add" onclick="toggleAddAction(${doorArg}, ${tIdx})">+ add action</button>
+    <div id="dfAddMenu_${sfx2}" class="df-action-card" style="${hasAnyAction ? 'display:none;' : ''}margin-top:8px">
+      <div style="display:flex;flex-direction:column;gap:10px">${unlockRow}${retractRow}</div>
+    </div>`;
+  // When a door carries more than one rule of the same type, remind the user
+  // that scope decides which one runs (an everyone rule always runs too).
+  const scopeNote = (hasSameTypeSiblings && groups.length)
+    ? `<div class="df-note"><span aria-hidden="true">&#8505;</span><span>This door has more than one ${type === 'doorbell' ? 'doorbell' : 'badge in'} rule. Scope each one to a group so the right rule runs; an everyone rule always runs in addition.</span></div>`
     : '';
 
   let doorbellAdvanced = '';
@@ -4514,7 +4511,7 @@ function buildTriggerBlock(door, tIdx, trigger, data) {
     </div>
     <div class="df-actions">${retractCards}${unlockCard}</div>
     ${addAction}
-    ${pairHint}
+    ${scopeNote}
     ${doorbellAdvanced}
   </div>`;
 }
@@ -4541,16 +4538,23 @@ function buildDoorFlowCard(door, flow, data) {
   if (unlockCount) chipParts.push(`${unlockCount} door${unlockCount > 1 ? 's' : ''}`);
   const chip = chipParts.length ? ` <span class="badge" style="font-weight:500">${escapeHtml(chipParts.join(', '))}</span>` : '';
 
-  const blocks = triggers.map((t, i) => buildTriggerBlock(door, i, t, data)).join('');
+  // A door can hold several triggers of the same type, each scoped to a group
+  // ("depending on who answers"), so flag same-type siblings for the scope hint.
+  const typeCounts = {};
+  for (const t of triggers) { const ty = t.type === 'doorbell' ? 'doorbell' : 'entry'; typeCounts[ty] = (typeCounts[ty] || 0) + 1; }
+  const blocks = triggers.map((t, i) => {
+    const ty = t.type === 'doorbell' ? 'doorbell' : 'entry';
+    return buildTriggerBlock(door, i, t, data, typeCounts[ty] > 1);
+  }).join('');
   const gate = lockSet.size
     ? `<div class="df-note"><span aria-hidden="true">&#128273;</span><span>Keypad PINs on ${lockSet.size > 1 ? 'these deadbolts' : 'this deadbolt'} follow UniFi access to <strong>${escapeHtml(door)}</strong>. <a href="#" onclick="openKeypadTab();return false;" style="color:var(--accent)">Manage keypad users</a></span></div>`
     : '';
-  const hasEntry = triggers.some((t) => t.type !== 'doorbell');
-  const hasDoorbell = triggers.some((t) => t.type === 'doorbell');
-  const addBtns = [];
-  if (!hasDoorbell) addBtns.push(`<button type="button" class="df-add" onclick="addTrigger(${doorArg}, 'doorbell')">+ add doorbell trigger</button>`);
-  if (!hasEntry) addBtns.push(`<button type="button" class="df-add" onclick="addTrigger(${doorArg}, 'entry')">+ add badge in trigger</button>`);
-  const addTriggerRow = addBtns.length ? `<div class="df-addrow">${addBtns.join('')}</div>` : '';
+  // Both trigger types are always addable: a door can have several badge-in and
+  // several doorbell rules, each scoped differently.
+  const addTriggerRow = `<div class="df-addrow">
+    <button type="button" class="df-add" onclick="addTrigger(${doorArg}, 'entry')">+ add badge in trigger</button>
+    <button type="button" class="df-add" onclick="addTrigger(${doorArg}, 'doorbell')">+ add doorbell trigger</button>
+  </div>`;
 
   return `<div class="rule-card" id="dfCard_${cssD}" style="margin-bottom:12px">
     <div class="df-step" style="margin-top:0">

@@ -630,6 +630,34 @@ test('doorbell: a viewer device resolves the group when there is no actor id', a
   assert.equal(unifi.calls[0].name, 'RP Lobby', 'viewer-device fallback resolved the group');
 });
 
+test('two named-group triggers on one door fire independently, each for its own group', async () => {
+  // "depending on who answers": two rules at the same door, different named
+  // groups, different unlock targets, each firing only for its own actor.
+  const { ctl, unifi } = makeScopedController({
+    cascade: [
+      { trigger_door: 'Front', type: 'entry', scope: { groups: ['Staff'] }, unlock: ['Elevator'], debounce_seconds: 0 },
+      { trigger_door: 'Front', type: 'entry', scope: { groups: ['Delivery'] }, unlock: ['Dock'], debounce_seconds: 0 },
+    ],
+    groups: { 'u-staff': 'Staff', 'u-delivery': 'Delivery' },
+  });
+  ctl.observe(scopedGrant('Front', { actorId: 'u-staff' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Elevator'], 'Staff gets only the Staff rule');
+  unifi.calls.length = 0;
+  ctl.observe(scopedGrant('Front', { actorId: 'u-delivery' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Dock'], 'Delivery gets only the Delivery rule');
+});
+
+test('a doorbell can unlock its own trigger door (buzz-in): no self-exclusion', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [{ trigger_door: 'Front', type: 'doorbell', scope: null, doorbell: { reason_code: 107 }, unlock: ['Front'], debounce_seconds: 0 }],
+  });
+  ctl.observe(doorbellEvent('Front', { reason: 107 }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Front'], 'the doorbell unlocks the very door it is on');
+});
+
 test('delay: a cascade with delay_seconds fires after the delay, and destroy cancels a pending one', async () => {
   const { ctl, unifi } = makeScopedController({
     cascade: [{ trigger_door: 'Main', type: 'entry', scope: null, unlock: ['Elevator'], debounce_seconds: 0, delay_seconds: 0.05 }],

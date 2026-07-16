@@ -1,11 +1,13 @@
 'use strict';
 
-// Guards buildUnlockAction: the "unlock other doors" action of a trigger on a
-// door card. It momentarily unlocks OTHER UniFi doors (never a lock command),
-// so the checklist must exclude the door itself. The action is opt-in: it only
-// renders once the trigger has an unlock object (added via "+ add action"), and
-// it vanishes when there is nowhere to unlock to. It also carries a debounce and
-// a delay. Extracts the REAL function from public/index.html.
+// Guards buildUnlockAction: the "unlock doors" action of a trigger on a door
+// card. It momentarily unlocks UniFi doors (never a lock command). By default
+// the trigger door itself is excluded (entry/badge-in already unlocks it); with
+// includeSelf true (doorbell buzz-in) the trigger door is offered and labeled
+// "(this door)". The action is opt-in: it only renders once the trigger has an
+// unlock object (added via "+ add action"), and it vanishes when there is
+// nowhere to unlock to. It also carries a debounce and a delay. Extracts the
+// REAL function from public/index.html.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -53,6 +55,18 @@ test('the checklist offers every OTHER door, never the trigger itself', () => {
   assert.match(out, /value="Interior Door"/);
   assert.match(out, /value="Elevator"/, 'the elevator is just another door in the list');
   assert.ok(!out.includes('value="Front Door"'), 'a door cannot unlock itself');
+});
+
+test('includeSelf offers the trigger door too, labeled this door (doorbell buzz-in)', () => {
+  const out = load()('Front Door', 0, { doors: [] }, DOORS, true);
+  assert.match(out, /value="Front Door"/, 'the trigger door is a real unlock target');
+  assert.match(out, /Front Door \(this door\)/, 'and is labeled so buzz-in is obvious');
+});
+
+test('a single-door doorbell site can still unlock its own door', () => {
+  const out = load()('Front Door', 0, { doors: [] }, [DOORS[0]], true);
+  assert.notEqual(out, '', 'includeSelf makes the one door a candidate');
+  assert.match(out, /Front Door \(this door\)/);
 });
 
 test('an existing unlock action pre-checks its doors and shows its debounce + delay', () => {
