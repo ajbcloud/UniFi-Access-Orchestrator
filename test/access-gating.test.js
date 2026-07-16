@@ -59,6 +59,24 @@ test('parseAccessPolicies: Map doorGroups and empty input are tolerated', () => 
   assert.equal(r.allowedDoorsByUser.size, 0);
 });
 
+test('parseAccessPolicies: groupsReferenced is true when any user grants via a door_group', () => {
+  const users = [{ id: 'u1', access_policies: [{ resources: [{ type: 'door_group', id: 'g-1' }] }] }];
+  const { groupsReferenced } = parseAccessPolicies(users, { 'g-1': ['d-b'] });
+  assert.equal(groupsReferenced, true);
+});
+
+test('parseAccessPolicies: groupsReferenced is false for door-only and unknown types', () => {
+  const users = [{
+    id: 'u1',
+    access_policies: [
+      { resources: [{ type: 'door', id: 'd-a' }] },
+      { resources: [{ type: 'all_doors', id: '*' }] },
+    ],
+  }];
+  const { groupsReferenced } = parseAccessPolicies(users, {});
+  assert.equal(groupsReferenced, false, 'no door_group resource means the door-groups banner never fires');
+});
+
 // ---- doorAccessVerdict ----------------------------------------------------
 
 function access({ available = true, doors = { 'Door A': 'd-a', 'Door B': 'd-b' }, allowed = {}, complete = {} } = {}) {

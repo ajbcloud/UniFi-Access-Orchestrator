@@ -2138,6 +2138,8 @@ function accessGatingStatus() {
     synced_at: st.synced_at,
     incomplete_users: st.incomplete_users,
     error: st.error,
+    door_groups_error: st.door_groups_error || null,
+    groups_referenced: !!st.groups_referenced,
   };
 }
 

@@ -35,6 +35,7 @@ function parseAccessPolicies(users, doorGroups) {
   const groupToDoors = doorGroups instanceof Map ? doorGroups : new Map(Object.entries(doorGroups || {}));
   const allowedDoorsByUser = new Map();
   const completeByUser = new Map();
+  let groupsReferenced = false; // any user grants access through a door_group
   for (const user of users || []) {
     if (!user || !user.id) continue;
     const doors = new Set();
@@ -48,6 +49,7 @@ function parseAccessPolicies(users, doorGroups) {
           if (res.id) doors.add(String(res.id));
           else complete = false;
         } else if (res.type === 'door_group') {
+          groupsReferenced = true;
           const members = groupToDoors.get(String(res.id));
           if (members) for (const d of members) doors.add(String(d));
           else complete = false; // group we could not expand -> fail open
@@ -61,7 +63,7 @@ function parseAccessPolicies(users, doorGroups) {
     allowedDoorsByUser.set(String(user.id), doors);
     completeByUser.set(String(user.id), complete);
   }
-  return { allowedDoorsByUser, completeByUser };
+  return { allowedDoorsByUser, completeByUser, groupsReferenced };
 }
 
 /**

@@ -3429,6 +3429,27 @@ function keypadLockBadge(s, lockName, doorName) {
   return `<span class="badge warning" title="This lock has no code for the user; save the PIN again to add it${unk}">${nm}: missing</span>`;
 }
 
+// Warning banner for the keypad panel when gating cannot be fully trusted.
+// Pure and testable. Order matters: an unsynced model is the broadest problem,
+// then a specific door-groups read failure (the reason group users fail open),
+// then the generic incomplete-users note. Returns '' when there is nothing to
+// warn about or no lock is gated.
+function accessGatingBanner(ag, gatedCount) {
+  const a = ag || {};
+  if (!gatedCount) return '';
+  const box = (msg) => `<div class="badge warning" style="display:block;margin-bottom:6px;padding:6px 8px">${msg}</div>`;
+  if (!a.available) {
+    return box(`Access policies not synced yet${a.error ? ` (${escapeHtml(a.error)})` : ''}: gating can't be enforced, so no codes are blocked or removed. Codes still write to every lock until access data loads.`);
+  }
+  if (a.door_groups_error && a.groups_referenced) {
+    return box("Group access could not be read, so users who rely on group based access are not gated right now. Everyone else is gated normally.");
+  }
+  if (a.incomplete_users) {
+    return box(`${a.incomplete_users} user(s) have UniFi access policies this app can't fully read; those users are never blocked (they fail open). Everyone else is gated normally.`);
+  }
+  return '';
+}
+
 // Pure builder for the GLOBAL Keypad users panel. One PIN per user: the code
 // is written to every paired lock and always kept in sync with the user's
 // UniFi PIN. `agg` is the server's /api/deadbolt/keypad-users report (digits
@@ -3488,15 +3509,10 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
   const gatingLine = gated.length
     ? `Access-gated: ${gated.map((l) => `${escapeHtml(l.name || l.lock_id)} → ${escapeHtml(l.gating_door)}`).join(', ')}. A user only gets a code on a lock whose UniFi door their access allows.`
     : '';
-  // Warn when gating cannot be trusted: access policies not synced, or some
-  // users have unresolved policies (they are treated as ungated, never blocked).
-  const ag = a.access_gating || {};
-  let banner = '';
-  if (gated.length && !ag.available) {
-    banner = `<div class="badge warning" style="display:block;margin-bottom:6px;padding:6px 8px">Access policies not synced yet${ag.error ? ` (${escapeHtml(ag.error)})` : ''}: gating can't be enforced, so no codes are blocked or removed. Codes still write to every lock until access data loads.</div>`;
-  } else if (gated.length && ag.incomplete_users) {
-    banner = `<div class="badge warning" style="display:block;margin-bottom:6px;padding:6px 8px">${ag.incomplete_users} user(s) have UniFi access policies this app can't fully read; those users are never blocked (they fail open). Everyone else is gated normally.</div>`;
-  }
+  // Warn when gating cannot be trusted: access policies not synced, a
+  // door-groups read failed, or some users have unresolved policies (all
+  // treated as ungated, never blocked).
+  const banner = accessGatingBanner(a.access_gating, gated.length);
   return `<div style="font-size:12px">`
     + `<div style="font-weight:600;margin-bottom:2px">Keypad users</div>`
     + `<div style="color:var(--text-muted);margin-bottom:6px">One PIN per user. Saving writes the code to every paired lock the user may access (${usable.map((l) => escapeHtml(l.name || l.lock_id)).join(', ')}) and updates the user's UniFi Access PIN to match. ${escapeHtml(lenRule)}.${gatingLine ? ' ' + gatingLine : ''}</div>`

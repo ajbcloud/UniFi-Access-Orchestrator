@@ -32,8 +32,15 @@ function load() {
   const src = extractFn('escapeHtml')
     + '\n' + extractFn('keypadBlockedLabel')
     + '\n' + extractFn('keypadLockBadge')
+    + '\n' + extractFn('accessGatingBanner')
     + '\n' + extractFn('buildKeypadUsersPanel');
   return new Function(src + '; return buildKeypadUsersPanel;')();
+}
+
+// accessGatingBanner is pure and worth testing on its own.
+function loadBanner() {
+  const src = extractFn('escapeHtml') + '\n' + extractFn('accessGatingBanner');
+  return new Function(src + '; return accessGatingBanner;')();
 }
 
 const LOCKS = [
@@ -212,6 +219,25 @@ test('gating: warning banner when access policies are unavailable', () => {
     users: [],
   }, USERS, false);
   assert.match(out, /Access policies not synced/, 'banner warns gating is not enforced');
+});
+
+test('gating: banner warns when door groups could not be read', () => {
+  const banner = loadBanner();
+  const out = banner({ available: true, incomplete_users: 3, door_groups_error: 'timeout', groups_referenced: true }, 2);
+  assert.match(out, /Group access could not be read/, 'the door-groups failure is called out specifically');
+  // The specific door-groups message wins over the generic incomplete-users note.
+  assert.ok(!/can't fully read/.test(out), 'does not fall through to the generic incomplete message');
+});
+
+test('gating: door-groups error is silent when no user relies on a group', () => {
+  const banner = loadBanner();
+  const out = banner({ available: true, incomplete_users: 0, door_groups_error: 'timeout', groups_referenced: false }, 2);
+  assert.equal(out, '', 'a groups read failure that affects nobody shows no banner');
+});
+
+test('gating: no banner when nothing is gated', () => {
+  const banner = loadBanner();
+  assert.equal(banner({ available: false }, 0), '', 'ungated setups never warn');
 });
 
 test('gating: banner notes incomplete users fail open', () => {

@@ -56,6 +56,11 @@ class UniFiClient {
     // not the 15-second config-sync tick that also refreshes this cache.
     this.onAccessPoliciesChanged = null;
     this._lastAccessHash = null;
+    // Distinct signal for a failed /door_groups read (vs a healthy sync). When
+    // set and any user grants access through a group, those users cannot be
+    // gated and fail open, so the UI surfaces it instead of a silent debug log.
+    this.doorGroupsError = null;
+    this.accessPolicyGroupsReferenced = false;
 
     // WebSocket
     this.ws = null;
@@ -495,7 +500,9 @@ class UniFiClient {
         }
         map.set(String(g.id), doors);
       }
+      this.doorGroupsError = null; // a successful read (even zero groups) clears the flag
     } catch (err) {
+      this.doorGroupsError = err.message;
       logger.debug(`Door-group fetch failed (${err.message}); door_group access resources will be treated as unexpandable`);
     }
     return map;
@@ -506,7 +513,8 @@ class UniFiClient {
     try {
       const doorGroups = await this.fetchDoorGroups();
       const users = await this.requestAllPages('/users?expand[]=access_policy');
-      const { allowedDoorsByUser, completeByUser } = accessGating.parseAccessPolicies(users, doorGroups);
+      const { allowedDoorsByUser, completeByUser, groupsReferenced } = accessGating.parseAccessPolicies(users, doorGroups);
+      this.accessPolicyGroupsReferenced = !!groupsReferenced;
 
       // Atomic swap on success.
       this.userDoorAccess = allowedDoorsByUser;
@@ -567,6 +575,8 @@ class UniFiClient {
       users: this.userDoorAccess.size,
       incomplete_users: incomplete,
       error: this.accessPolicyError,
+      door_groups_error: this.doorGroupsError,
+      groups_referenced: this.accessPolicyGroupsReferenced,
     };
   }
 
