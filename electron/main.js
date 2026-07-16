@@ -727,7 +727,9 @@ app.on('ready', async () => {
 app.on('before-quit', () => { isQuitting = true; });
 
 app.on('window-all-closed', () => {
-  if (process.platform === 'darwin') { /* stay in dock */ }
+  // Intentionally do not quit: the orchestrator keeps running in the tray
+  // on every platform so events continue to be processed after the window
+  // is closed.
 });
 
 app.on('activate', () => {

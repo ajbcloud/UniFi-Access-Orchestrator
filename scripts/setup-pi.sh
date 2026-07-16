@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================
 # UniFi Access Orchestrator - Raspberry Pi Setup Script
 # ============================================================
@@ -84,7 +84,7 @@ fi
 
 # Install dependencies
 cd "$APP_DIR"
-npm install --production
+npm install --omit=dev
 echo "  Dependencies installed"
 
 # Set ownership
