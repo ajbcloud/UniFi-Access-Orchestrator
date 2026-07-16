@@ -107,6 +107,15 @@ test('reconciliation reuses the fail-open rule and is access-gated', () => {
   assert.match(body, /classifyLocksForUser\(/, 'reconcile derives verdicts from the same gating layer');
 });
 
+test('gating door ids are backfilled and the access model carries doorsById', () => {
+  const body = fnBody(indexSrc, 'backfillTriggerDoorIds');
+  assert.match(body, /zwavePairing\.isActive\(\)/, 'the migration never runs during a pairing session');
+  assert.match(body, /trigger_door_id/, 'the migration resolves and stores the door id');
+  const model = fnBody(indexSrc, 'currentAccessModel');
+  assert.match(model, /doorsById/, 'the verdict layer receives the id->name map for rename-proof gating');
+  assert.match(indexSrc, /backfillTriggerDoorIds\(\)/, 'the migration is invoked from the app wiring');
+});
+
 test('reconcile is debounced and wired to real access changes only', () => {
   const sched = fnBody(indexSrc, 'scheduleReconcile');
   assert.match(sched, /setTimeout/, 'reconcile is trailing-debounced');

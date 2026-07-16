@@ -79,10 +79,11 @@ test('parseAccessPolicies: groupsReferenced is false for door-only and unknown t
 
 // ---- doorAccessVerdict ----------------------------------------------------
 
-function access({ available = true, doors = { 'Door A': 'd-a', 'Door B': 'd-b' }, allowed = {}, complete = {} } = {}) {
+function access({ available = true, doors = { 'Door A': 'd-a', 'Door B': 'd-b' }, doorsById, allowed = {}, complete = {} } = {}) {
   return buildAccess({
     available,
     doorsByName: doors,
+    doorsById: doorsById || Object.fromEntries(Object.entries(doors).map(([name, id]) => [id, name])),
     allowedDoorsByUser: new Map(Object.entries(allowed).map(([u, ids]) => [u, new Set(ids)])),
     completeByUser: new Map(Object.entries(complete)),
   });
@@ -118,6 +119,30 @@ test('doorAccessVerdict: undiscovered / renamed door -> unknown', () => {
   assert.equal(doorAccessVerdict(a, 'u1', 'Ghost Door'), 'unknown');
 });
 
+test('doorAccessVerdict: a bare name string still resolves (back-compat)', () => {
+  const a = access({ allowed: { u1: ['d-a'] }, complete: { u1: true } });
+  assert.equal(doorAccessVerdict(a, 'u1', 'Door A'), 'allowed');
+  assert.equal(doorAccessVerdict(a, 'u1', 'Door B'), 'denied');
+});
+
+test('doorAccessVerdict: a stored door id survives a rename the name lookup would miss', () => {
+  // The controller renamed "Door A" to "Front Entrance", so doorsByName no
+  // longer has the old name, but the id d-a is unchanged and still allowed.
+  const a = access({
+    doors: { 'Front Entrance': 'd-a' },
+    allowed: { u1: ['d-a'] },
+    complete: { u1: true },
+  });
+  assert.equal(doorAccessVerdict(a, 'u1', { id: 'd-a', name: 'Door A' }), 'allowed',
+    'the id keeps gating working after a rename');
+});
+
+test('doorAccessVerdict: a configured id absent from the registry with no resolvable name is unknown', () => {
+  const a = access({ doors: {}, doorsById: {}, allowed: { u1: ['d-a'] }, complete: { u1: true } });
+  assert.equal(doorAccessVerdict(a, 'u1', { id: 'd-x', name: 'Ghost' }), 'unknown',
+    'an unresolvable door never denies (fail open)');
+});
+
 // ---- classifyLocksForUser -------------------------------------------------
 
 test('classifyLocksForUser: per-lock verdict off each lock trigger_door', () => {
@@ -140,6 +165,15 @@ test('classifyLocksForUser: two locks on ONE door gate identically', () => {
   const a = access({ allowed: { u1: ['d-a'] }, complete: { u1: true } });
   const out = classifyLocksForUser('u1', [{ lock_id: 'lock1' }, { lock_id: 'lock2' }], rules, a);
   assert.ok(out.every((r) => r.verdict === 'allowed'), 'many locks -> one door, same verdict');
+});
+
+test('classifyLocksForUser: uses trigger_door_id and keeps trigger_door for display', () => {
+  // The rule stored the id d-a and the old display name; the door was renamed.
+  const rules = { lockA: { trigger_door: 'Door A', trigger_door_id: 'd-a' } };
+  const a = access({ doors: { 'Front Entrance': 'd-a' }, allowed: { u1: ['d-a'] }, complete: { u1: true } });
+  const out = classifyLocksForUser('u1', [{ lock_id: 'lockA' }], rules, a);
+  assert.equal(out[0].verdict, 'allowed', 'the id keeps the verdict correct after a rename');
+  assert.equal(out[0].door, 'Door A', 'the stored name is kept for display');
 });
 
 // ---- policy sets (the caller contract) ------------------------------------

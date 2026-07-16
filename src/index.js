@@ -1098,6 +1098,7 @@ function onUnifiStateChange(state) {
 // session owns the controller.
 async function reconcileAccessRevocations(trigger) {
   if (zwavePairing.isActive()) return;
+  backfillTriggerDoorIds(); // keep rule door ids current before classifying
   const access = currentAccessModel();
   if (!access.available) return; // fail open: uncertainty does nothing
   return withKeypadLock(async () => {
@@ -1167,6 +1168,47 @@ function wireUnifiClientCallbacks(client) {
   client.onAccessPoliciesChanged = ({ reason, changed }) => {
     if (changed) scheduleReconcile(reason || 'access_sync');
   };
+}
+
+// Resolve each gating rule's trigger_door name to a stable door id once the
+// controller is connected, and refresh the display name if an id's door was
+// renamed. Keying gating and the unlock automation by id (name kept for
+// display) means a UniFi rename no longer silently un-gates a lock. Idempotent
+// and guarded: only the map shape is touched (flat configs are migrated on
+// load), and it rebuilds controllers only when something actually changed,
+// against the running drivers (never reconnects the Z-Wave stick).
+function backfillTriggerDoorIds() {
+  if (zwavePairing.isActive()) return;
+  if (!unifiClient || !unifiClient.doors || !unifiClient.doors.size) return;
+  const byName = unifiClient.doors;   // name -> id
+  const byId = unifiClient.doorsById; // id -> name
+  let changed = false;
+  const resolveEntry = (entry) => {
+    if (!entry || typeof entry !== 'object') return;
+    if (!entry.trigger_door_id && entry.trigger_door) {
+      const id = byName.get(entry.trigger_door);
+      if (id) { entry.trigger_door_id = String(id); changed = true; }
+    } else if (entry.trigger_door_id && byId && byId.has(String(entry.trigger_door_id))) {
+      const freshName = byId.get(String(entry.trigger_door_id));
+      if (freshName && freshName !== entry.trigger_door) { entry.trigger_door = freshName; changed = true; }
+    }
+  };
+  persistZwaveMutation((cfg) => {
+    const db = cfg.deadbolt_rules;
+    if (db && typeof db === 'object' && !deadboltRules.isFlatShape(db)) {
+      for (const lockId of Object.keys(db)) {
+        if (deadboltRules.FLAT_KEYS.includes(lockId)) continue;
+        resolveEntry(db[lockId]);
+      }
+    }
+    const casc = cfg.cascade_rules;
+    if (casc && Array.isArray(casc.rules)) for (const r of casc.rules) resolveEntry(r);
+  });
+  if (changed) {
+    logger.info('Deadbolt: backfilled trigger_door_id from the door registry (rename-proof gating)');
+    buildDeadboltControllers();
+    applyEventTaps();
+  }
 }
 
 // True only when the request carries the configured admin key (header, or the
@@ -2123,6 +2165,7 @@ function currentAccessModel() {
   return accessGating.buildAccess({
     available: !!(unifiClient && unifiClient.accessPolicyAvailable),
     doorsByName: (unifiClient && unifiClient.doors) || new Map(),
+    doorsById: (unifiClient && unifiClient.doorsById) || new Map(),
     allowedDoorsByUser: (unifiClient && unifiClient.userDoorAccess) || new Map(),
     completeByUser: (unifiClient && unifiClient.userAccessComplete) || new Map(),
   });
@@ -3805,10 +3848,12 @@ async function start() {
   const initialized = await unifiClient.initialize();
   if (initialized) {
     unifiClient.startHealthMonitor(onUnifiStateChange);
+    backfillTriggerDoorIds();
   } else {
     logger.warn('Initial connection failed. Retrying in background...');
     unifiClient.initializeWithRetry().then(() => {
       unifiClient.startHealthMonitor(onUnifiStateChange);
+      backfillTriggerDoorIds();
     });
   }
 
@@ -3900,6 +3945,7 @@ function initConfigSync() {
         success: true,
         reason
       });
+      backfillTriggerDoorIds(); // a rename may have changed a door id or name
       scheduleReconcile('doors_changed');
     },
     onControllerUsersChanged: async ({ reason }) => {
