@@ -22,7 +22,7 @@
   "build": {
     "appId": "io.github.ajbcloud.unifi-access-orchestrator",
     "productName": "UniFi Access Orchestrator",
-    "copyright": "Copyright (c) 2026 Atticus Brind",
+    "copyright": "Copyright (c) 2026 AJBCloud",
     "directories": {
       "output": "dist"
     },
@@ -68,7 +68,7 @@
       ],
       "icon": "assets/icon.png",
       "category": "Utility",
-      "maintainer": "Atticus Brind (AJBCloud)"
+      "maintainer": "AJBCloud"
     },
     "mac": {
       "target": [
@@ -89,7 +89,7 @@
     "raspberry-pi"
   ],
   "author": {
-    "name": "Atticus Brind",
+    "name": "AJBCloud",
     "url": "https://github.com/ajbcloud"
   },
   "license": "SEE LICENSE IN LICENSE",
