@@ -99,14 +99,13 @@ test('every usable lock wired -> no add picker; none usable -> pair-first hint',
   assert.match(noLocks, /openDeadboltTab\(\)/, 'the hint links to the Devices tab');
 });
 
-test('the unlock-other-doors action appears once added and is absent on a single-door site', () => {
-  const withUnlock = flow({ triggers: [{ type: 'entry', scope: null, actions: { unlock: { doors: [] }, retract: [] } }] });
+test('the unlock-a-door action renders once a door is added (one card per door)', () => {
+  const withUnlock = flow({ triggers: [{ type: 'entry', scope: null, actions: { unlock: [{ doors: ['Interior Door'] }], retract: [] } }] });
   const out = load()('Front Door', withUnlock, DATA);
-  assert.match(out, /data-df-action="unlock"/, 'multi-door site sees the unlock action once added');
-  const single = load()('Front Door', withUnlock, { doors: [DATA.doors[0]], locks: DATA.locks });
-  assert.ok(!/data-df-action="unlock"/.test(single), 'single-door site sees no unlock action (nowhere to unlock to)');
+  assert.match(out, /data-df-action="unlock"/, 'the unlock card renders once a door is added');
+  assert.match(out, /Interior Door/, 'and names the target door');
   const notAdded = load()('Front Door', flow(), DATA);
-  assert.ok(!/data-df-action="unlock"/.test(notAdded), 'the action is opt-in: not shown until added via + add action');
+  assert.ok(!/data-df-action="unlock"/.test(notAdded), 'the action is opt-in: not shown until a door is added via + add action');
 });
 
 test('with groups, entry reads "[scope] badges in" and the doorbell scope option is "anyone"', () => {
@@ -150,26 +149,33 @@ test('both actions in use: the chooser marks each done, and retract + unlock sti
   }] });
   const out = load()('Front Door', maxed, DATA);
   assert.match(out, /\+ add action/, 'the control stays present');
-  assert.match(out, /addUnlockAction\(/, 'unlock actions still stack: + add action offers Unlock other doors > Add again');
+  assert.match(out, /every other door already added/, 'unlock picker is exhausted (only Interior Door, already added)');
   assert.match(out, /every paired deadbolt is already retracting/, 'retract is shown as exhausted');
   // multiple actions genuinely coexist in one trigger
   assert.match(out, /Retract deadbolt/);
   assert.match(out, /data-df-action="unlock"/);
+  assert.match(out, /Interior Door/, 'the added unlock door is named on its card');
   assert.match(out, /Front Bolt/);
   assert.match(out, /Side Bolt/);
 });
 
 test('a doorbell trigger can unlock its own door (buzz-in), labeled this door', () => {
-  const bell = flow({ triggers: [{ type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: { doors: [] }, retract: [] } }] });
+  // The trigger door is a valid buzz-in target for a doorbell; an added unlock
+  // action for it renders labeled "(this door)".
+  const bell = flow({ triggers: [{ type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: [{ doors: ['Front Door'] }], retract: [] } }] });
   const out = load()('Front Door', bell, { doors: [DATA.doors[0]], locks: DATA.locks });
   assert.match(out, /data-df-action="unlock"/, 'the unlock card renders on a single-door doorbell site');
-  assert.match(out, /Front Door \(this door\)/, 'the trigger door is offered and labeled');
+  assert.match(out, /Front Door \(this door\)/, 'the trigger door is a valid unlock target, labeled');
+  // and a fresh doorbell offers its own door in the picker
+  const fresh = load()('Front Door', flow({ triggers: [{ type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: [], retract: [] } }] }), { doors: [DATA.doors[0]], locks: DATA.locks });
+  assert.match(fresh, /value="Front Door">Front Door \(this door\)/, 'the picker offers this door for buzz-in');
 });
 
 test('an entry trigger never offers its own door to unlock', () => {
-  const withUnlock = flow({ triggers: [{ type: 'entry', scope: null, actions: { unlock: { doors: [] }, retract: [] } }] });
-  const single = load()('Front Door', withUnlock, { doors: [DATA.doors[0]], locks: DATA.locks });
-  assert.ok(!/data-df-action="unlock"/.test(single), 'entry on a single-door site has nothing to unlock');
+  const fresh = load()('Front Door', flow({ triggers: [entryTrigger([])] }), { doors: [DATA.doors[0]], locks: DATA.locks });
+  assert.ok(!/data-df-action="unlock"/.test(fresh), 'no unlock action added yet on a single-door entry');
+  assert.ok(!/value="Front Door"/.test(fresh), 'entry never offers its own door as an unlock target');
+  assert.match(fresh, /no other doors are set up in UniFi yet/, 'nothing else to unlock on a single-door entry');
 });
 
 test('a door can hold multiple triggers of the same type, each scoped', () => {
@@ -194,7 +200,7 @@ test('the action chooser stays collapsed by default; + add action reveals both c
   assert.ok(/display:none/.test(closedMenu), 'an action present -> chooser also collapsed behind the button');
   // both action choices are always present inside the (collapsed) chooser
   assert.match(empty, /Retract a deadbolt/, 'deadbolt choice offered');
-  assert.match(empty, /Unlock other doors/, 'unlock choice offered');
+  assert.match(empty, /Unlock a door/, 'unlock choice offered');
 });
 
 test('the inline gating note points at Keypad Users when a deadbolt retracts', () => {
