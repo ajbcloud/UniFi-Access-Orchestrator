@@ -3,20 +3,22 @@
 /**
  * Access gating for keypad-PIN sync, kept pure so it is testable without the
  * app. Product rule: a user only gets a keypad code on a deadbolt whose
- * associated UniFi door their UniFi access allows them to open. The door a
- * deadbolt is gated on is its existing deadbolt_rules[lockId].trigger_door;
- * "who may open which door" comes from each user's UniFi access policies
+ * triggering UniFi door(s) their UniFi access allows them to open. A lock's
+ * gating doors are the doors with a retract edge to it in door_flows
+ * (door-centric model; a lock may be triggered by SEVERAL doors, and being
+ * allowed on ANY of them grants keypad eligibility - the union rule). "Who
+ * may open which door" comes from each user's UniFi access policies
  * (GET /users?expand[]=access_policy).
  *
  * SAFETY KEYSTONE: revocation must never fire on uncertainty. When access
  * data is unavailable or a user's policy references a door group we could not
  * expand, the verdict is 'unknown', and 'unknown' never denies. Only a
- * confirmed denial (data present AND complete for that user AND the lock's
- * door not in their allowed set) blocks or revokes. An API hiccup must never
- * mass-wipe keypad codes.
+ * confirmed denial (data present AND complete for that user AND the user
+ * denied on EVERY known gating door) blocks or revokes. An API hiccup must
+ * never mass-wipe keypad codes.
  */
 
-const deadboltRules = require('./deadbolt-rules');
+const doorFlows = require('./door-flows');
 
 /**
  * Parse UniFi access-policy data into per-user allowed door-id sets.
@@ -120,20 +122,52 @@ function doorAccessVerdict(access, userId, door) {
 }
 
 /**
- * Classify a user's access to each lock in lockList.
- * @param {string} userId
- * @param {Array}  lockList        [{lock_id, ...}]
- * @param {object} deadboltRulesCfg config.deadbolt_rules
- * @param {object} access          from buildAccess()
- * @returns {Array<{lock_id, verdict, door}>}
+ * UNION verdict for one user against a lock's full set of gating doors.
+ * A lock triggered by several doors admits a user who is allowed on ANY of
+ * them. Collapse rules (in precedence order):
+ *   no doors            -> 'ungated'  (no trigger doors = serves everyone)
+ *   any door 'allowed'  -> 'allowed'
+ *   else any 'unknown'  -> 'unknown'  (fail OPEN - never deny on uncertainty)
+ *   else                -> 'denied'   (denied on EVERY known gating door)
+ *
+ * THE SAFETY-CRITICAL CONTRACT: every consumer - including the automatic
+ * reconcile-on-sync revoker - receives THIS collapsed verdict, never a
+ * per-door one. Feeding a single door's 'denied' into the revoke planner
+ * would silently wipe codes for users allowed through another door.
+ * For a single-door lock this is exactly doorAccessVerdict.
+ *
+ * @param {Array<{id,name}|string>} doors the lock's gating doors
+ * @returns {'allowed'|'denied'|'ungated'|'unknown'}
  */
-function classifyLocksForUser(userId, lockList, deadboltRulesCfg, access) {
+function doorAccessVerdictUnion(access, userId, doors) {
+  const list = Array.isArray(doors) ? doors : [];
+  if (!list.length) return 'ungated';
+  let sawUnknown = false;
+  for (const door of list) {
+    const v = doorAccessVerdict(access, userId, door);
+    if (v === 'allowed') return 'allowed';
+    if (v === 'unknown' || v === 'ungated') sawUnknown = true; // malformed spec fails open
+  }
+  return sawUnknown ? 'unknown' : 'denied';
+}
+
+/**
+ * Classify a user's access to each lock in lockList against door_flows.
+ * @param {string} userId
+ * @param {Array}  lockList     [{lock_id, ...}]
+ * @param {object} doorFlowsCfg config.door_flows
+ * @param {object} access       from buildAccess()
+ * @returns {Array<{lock_id, verdict, doors}>} doors = display names (may be
+ *   empty = ungated); verdict is the collapsed union verdict.
+ */
+function classifyLocksForUser(userId, lockList, doorFlowsCfg, access) {
   return (lockList || []).map((l) => {
-    const rule = deadboltRules.rulesForLock(deadboltRulesCfg, l.lock_id);
-    const name = (rule && rule.trigger_door) || null;
-    const id = (rule && rule.trigger_door_id) || null;
-    // Prefer the stored door id (rename-proof), keep the name for display.
-    return { lock_id: l.lock_id, verdict: doorAccessVerdict(access, userId, { id, name }), door: name };
+    const gatingDoors = doorFlows.gatingDoorsForLock(doorFlowsCfg, l.lock_id);
+    return {
+      lock_id: l.lock_id,
+      verdict: doorAccessVerdictUnion(access, userId, gatingDoors),
+      doors: gatingDoors.map((d) => d.name),
+    };
   });
 }
 
@@ -146,6 +180,7 @@ module.exports = {
   parseAccessPolicies,
   buildAccess,
   doorAccessVerdict,
+  doorAccessVerdictUnion,
   classifyLocksForUser,
   WRITE_VERDICTS,
   REVOKE_VERDICTS,

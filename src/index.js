@@ -42,6 +42,7 @@ const { ZwavePairing } = require('./drivers/zwave-pairing');
 const { loadSecurityKeys, ensureSecurityKeys } = require('./drivers/zwave-keys');
 const { SustainedFlagMonitor } = require('./alert-monitors');
 const deadboltRules = require('./deadbolt-rules');
+const doorFlows = require('./door-flows');
 const { planUnifiPinPush, markStaleAfterPush, recordUnifiPin } = require('./user-code-sync');
 const { removeLockEntry, pruneGhostLocks } = require('./lock-cleanup');
 const keypadUsers = require('./keypad-users');
@@ -72,6 +73,16 @@ function loadConfig() {
     parsed.devices && parsed.devices.zwave && parsed.devices.zwave.locks
   );
   if (migrated.changed) parsed.deadbolt_rules = migrated.rules;
+  // Door-centric canonical shape: fold {deadbolt_rules, cascade_rules} into
+  // door_flows on EVERY load. From here the live app reads ONLY door_flows;
+  // the legacy keys exist transitionally for old writers/readers (PUT still
+  // accepts them, GET projects them) and are deleted from disk at startup.
+  const flowsResult = doorFlows.migrateToFlows(parsed, parsed.devices && parsed.devices.zwave && parsed.devices.zwave.locks);
+  parsed.door_flows = flowsResult.flows;
+  // One source of truth in memory: the legacy keys are consumed above and
+  // must never be read again (GET /api/config serves a computed projection).
+  delete parsed.deadbolt_rules;
+  delete parsed.cascade_rules;
   return parsed;
 }
 
@@ -108,6 +119,35 @@ function migrateConfigFileOnDisk(markApplied) {
 
 // One-time at startup (configSync does not exist yet, so no markApplied).
 migrateConfigFileOnDisk(false);
+
+// Canonicalize the door-centric shape ON DISK: write door_flows and DELETE
+// the legacy deadbolt_rules / cascade_rules keys, so there is exactly ONE
+// persisted source of truth (the flat-vs-map era proved dual shapes drift).
+// Mirrors migrateConfigFileOnDisk: best-effort, runs at startup and after a
+// backup restore (a restored pre-redesign backup migrates forward here).
+function migrateDoorFlowsOnDisk(markApplied) {
+  try {
+    const disk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const hadLegacy = disk.deadbolt_rules !== undefined || disk.cascade_rules !== undefined;
+    const result = doorFlows.migrateToFlows(disk, disk.devices && disk.devices.zwave && disk.devices.zwave.locks);
+    if (!result.changed && !hadLegacy) return false;
+    disk.door_flows = result.flows;
+    delete disk.deadbolt_rules;
+    delete disk.cascade_rules;
+    writeConfigFile(disk);
+    if (markApplied && configSync && typeof configSync.markConfigApplied === 'function') {
+      configSync.markConfigApplied();
+    }
+    const merged = Object.values(result.flows).some((f) => f && f.cascade && f.cascade.merged);
+    logger.info(`Config: migrated deadbolt/cascade rules to door_flows (${Object.keys(result.flows).length} door(s))`
+      + (merged ? '; multiple cascade rules on one door were unioned under a single debounce' : ''));
+    return true;
+  } catch (e) {
+    logger.warn(`Config: door_flows migration skipped (${e.message}); continuing with the in-memory shape`);
+    return false;
+  }
+}
+migrateDoorFlowsOnDisk(false);
 
 // Remove lock entries an earlier version left behind after an unpair
 // (node_id 0): they render as un-actionable "not paired" ghosts and keep a
@@ -236,7 +276,7 @@ const zwavePairing = new ZwavePairing({
       const zw = cfg.devices.zwave = cfg.devices.zwave || {};
       zw.locks = zw.locks || {};
       let lockId = chosenId
-        || deadboltRules.automatedLockIds(cfg.deadbolt_rules)[0]
+        || doorFlows.automatedLockIdsFromFlows(cfg.door_flows)[0]
         || Object.keys(zw.locks)[0] || 'front_deadbolt';
       // Never overwrite a different, still-paired lock that happens to share
       // the requested id: pick a free suffix instead.
@@ -265,14 +305,10 @@ const zwavePairing = new ZwavePairing({
         }
       );
       zw.enabled = true;
-      // Seed an automation entry only for the FIRST lock (map stays empty of
-      // entries for later locks, which pair as manually-controllable but not
-      // automated). Adding a second lock therefore never repoints or dilutes
-      // the first door's automation.
-      cfg.deadbolt_rules = cfg.deadbolt_rules || {};
-      if (!deadboltRules.automatedLockIds(cfg.deadbolt_rules).length) {
-        cfg.deadbolt_rules[lockId] = cfg.deadbolt_rules[lockId] || {};
-      }
+      // Door-centric model: automation is a door's retract edge, created in
+      // the Door Flows editor. A freshly paired lock is manually controllable
+      // immediately (zw.enabled gates that) and gets wired to a door when the
+      // operator adds it to a flow - no empty placeholder entry to seed.
     });
     await bringDeadboltOnline();
     logger.info(`Z-Wave: lock paired as node ${nodeId} (${securityClass || 'class unknown'}) under "${resolvedId}" and brought online`);
@@ -444,28 +480,45 @@ function wireDriverEvents(lockId, driver) {
 // rules slice and NO cascade rules, plus one dedicated cascade controller so
 // cascades fire exactly once regardless of how many locks are automated.
 // Reused by the live rules-reload path, which must not touch the drivers.
-function buildDeadboltControllers() {
+// Controllers now hold timers (per-edge relock) and driver listeners, so the
+// OLD instances MUST be destroyed on every rebuild or they leak and can
+// double-fire a lock after a rules reload.
+function destroyDeadboltControllers() {
+  for (const [, ctl] of deadboltControllers) {
+    try { if (typeof ctl.destroy === 'function') ctl.destroy(); } catch (e) { /* teardown is best-effort */ }
+  }
+  if (cascadeController && typeof cascadeController.destroy === 'function') {
+    try { cascadeController.destroy(); } catch (e) { /* teardown is best-effort */ }
+  }
   deadboltControllers = new Map();
   cascadeController = null;
+}
+
+function buildDeadboltControllers() {
+  destroyDeadboltControllers();
   const deps = {
     getUnifiClient: () => unifiClient,
     broadcaster: broadcastEvent,
     logger,
     onAlert: (a) => { logger.warn(`ALERT ${a.type}: ${JSON.stringify(a)}`); notifier.notify(a); },
   };
-  for (const lockId of deadboltRules.automatedLockIds(config.deadbolt_rules)) {
-    const entry = deadboltRules.rulesForLock(config.deadbolt_rules, lockId) || {};
+  // One controller per lock referenced by any door's retract edges, fed the
+  // full list of door->lock edges so several doors can drive one deadbolt
+  // (each with its own after-unlock behavior).
+  for (const lockId of doorFlows.automatedLockIdsFromFlows(config.door_flows)) {
+    const edges = doorFlows.edgesForLock(config.door_flows, lockId);
     const controller = new DeadboltController(
-      Object.assign({}, config, { deadbolt_rules: entry, cascade_rules: { rules: [] } }),
+      Object.assign({}, config, { edges, cascade_rules: { rules: [] } }),
       Object.assign({ lockDriver: lockDrivers.get(lockId) || null }, deps)
     );
     if (controller.enabled) deadboltControllers.set(lockId, controller);
   }
-  const cascades = (config.cascade_rules && Array.isArray(config.cascade_rules.rules))
-    ? config.cascade_rules.rules.length : 0;
-  if (cascades) {
+  // Cascade stays on ONE dedicated controller (lockDriver: null, never a lock
+  // command), fed the exact legacy rule shape derived from the flows.
+  const cascadeRules = doorFlows.cascadeRulesFromFlows(config.door_flows);
+  if (cascadeRules.length) {
     cascadeController = new DeadboltController(
-      Object.assign({}, config, { deadbolt_rules: undefined }),
+      Object.assign({}, config, { deadbolt_rules: undefined, cascade_rules: { rules: cascadeRules } }),
       Object.assign({ lockDriver: null }, deps)
     );
   }
@@ -482,12 +535,11 @@ function buildDeadboltControllers() {
 // disable the self-heal retry for an enabled-but-rules-less config.
 function shouldRunDeadbolt() {
   const zw = config.devices && config.devices.zwave;
-  return !!(config.deadbolt_rules || config.cascade_rules || (zw && zw.enabled === true));
+  return !!((config.door_flows && Object.keys(config.door_flows).length) || (zw && zw.enabled === true));
 }
 
 function buildDeadbolt() {
-  const dbCfg = config.deadbolt_rules;
-  const cascCfg = config.cascade_rules;
+  const flowLockIds = doorFlows.automatedLockIdsFromFlows(config.door_flows);
   const zw = config.devices && config.devices.zwave;
   const zwEnabled = !!(zw && zw.enabled);
   // Inert unless something is configured: a paired/enabled Z-Wave setup,
@@ -522,18 +574,19 @@ function buildDeadbolt() {
       // error. The dashboard's Pair flow fills in node_id and reactivates.
       logger.info('Deadbolt: Z-Wave is enabled but no lock is paired yet. Use Pair New Lock in the dashboard (Configuration tab).');
     }
-  } else if (dbCfg && ((zw && zw.dev_fake_lock) || process.env.NODE_ENV === 'development')) {
+  } else if ((zw && zw.dev_fake_lock) || (flowLockIds.length && process.env.NODE_ENV === 'development')) {
     // Fake locks are OPT-IN only. They ALWAYS report success and drive no
     // hardware, so they must never be substituted silently in production.
-    // One instance per automated lock so dev-mode multi-lock testing is real.
-    const ids = deadboltRules.automatedLockIds(dbCfg);
-    for (const lockId of (ids.length ? ids : ['fake_deadbolt'])) {
+    // One instance per automated lock so dev-mode multi-lock testing is real;
+    // a dev config with no flows yet still gets one bootstrap fake so the
+    // Door Flows editor has a lock to wire.
+    for (const lockId of (flowLockIds.length ? flowLockIds : ['fake_deadbolt'])) {
       const driver = new FakeLock({ initial: 'locked' });
       lockDrivers.set(lockId, driver);
       wireDriverEvents(lockId, driver);
     }
     logger.warn('Deadbolt: using in-memory FakeLock(s) (dev/dry-run). They ALWAYS report success and drive no hardware. Never use in production.');
-  } else if (dbCfg && deadboltRules.automatedLockIds(dbCfg).length) {
+  } else if (flowLockIds.length) {
     // Configured but no real transport: fail loud, do NOT fake success.
     logger.error('Deadbolt configured but devices.zwave.enabled is not true and dev_fake_lock is not set. Deadbolt LOCK/RETRACT are DISABLED (cascade still active). Set devices.zwave.enabled for hardware, or devices.zwave.dev_fake_lock for dev.');
     notifier.notify({ type: 'deadbolt_no_transport', detail: 'deadbolt configured but no lock transport enabled' });
@@ -551,9 +604,8 @@ async function bringDeadboltOnline() {
   for (const [lockId, driver] of lockDrivers) {
     try { await driver.shutdown(); } catch (e) { logger.warn(`Deadbolt: old lock "${lockId}" shutdown failed: ${e.message}`); }
   }
+  destroyDeadboltControllers(); // clears relock timers + driver listeners
   lockDrivers = new Map();
-  deadboltControllers = new Map();
-  cascadeController = null;
   lockDriver = null;
   deadboltController = null;
   // A full rebuild is a fresh start: clear the failed/alerted tracking so a
@@ -620,19 +672,22 @@ async function provisionUserCodesOnNewLock(lockId) {
     await new Promise((r) => { const t = setTimeout(r, PROVISION_POLL_MS); if (t.unref) t.unref(); });
   }
   const locksCfg = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
-  // Access gating: if the new lock has a gating door, seed only users UniFi
-  // allows on that door. 'unknown' (access data not yet available) is deferred
-  // and logged, not seeded, since provisioning is additive and retryable via
-  // Rewrite Codes to Lock; a lock with no door association seeds everyone.
-  const gatingDoor = (deadboltRules.rulesForLock(config.deadbolt_rules, lockId) || {}).trigger_door || null;
+  // Access gating: if the new lock has gating doors (any door with a retract
+  // edge to it), seed only users UniFi allows on AT LEAST ONE of them - the
+  // same id-aware UNION verdict every other gate uses. 'unknown' (access data
+  // not yet available) is deferred and logged, not seeded, since provisioning
+  // is additive and retryable via Rewrite Codes to Lock; a lock wired to no
+  // door seeds everyone (ungated).
+  const gatingDoors = doorFlows.gatingDoorsForLock(config.door_flows, lockId);
   let eligibleUserIds = null;
-  if (gatingDoor) {
+  if (gatingDoors.length) {
     const access = currentAccessModel();
+    const doorNames = gatingDoors.map((d) => d.name).join('", "');
     eligibleUserIds = new Set();
     for (const userId of keypadUsers.canonicalPins(locksCfg).keys()) {
-      const verdict = accessGating.doorAccessVerdict(access, userId, gatingDoor);
+      const verdict = accessGating.doorAccessVerdictUnion(access, userId, gatingDoors);
       if (verdict === 'allowed' || verdict === 'ungated') eligibleUserIds.add(userId);
-      else logger.info(`Deadbolt: not seeding "${userId}" onto "${lockLabel(lockId)}" (${verdict === 'denied' ? `no UniFi access to "${gatingDoor}"` : 'access not yet known; retry with Rewrite Codes to Lock'})`);
+      else logger.info(`Deadbolt: not seeding "${userId}" onto "${lockLabel(lockId)}" (${verdict === 'denied' ? `no UniFi access to "${doorNames}"` : 'access not yet known; retry with Rewrite Codes to Lock'})`);
     }
   }
   const plan = keypadUsers.planNewLockProvision(locksCfg, lockId, cap, new Date().toISOString(), eligibleUserIds);
@@ -743,11 +798,14 @@ function deadboltHealthStatus() {
   const base = deadboltController ? deadboltController.getStatus() : { enabled: lockDrivers.size > 0 };
   base.locks = Array.from(lockDrivers.entries()).map(([lockId, driver]) => {
     const ctl = deadboltControllers.get(lockId);
+    const status = ctl ? ctl.getStatus() : null;
     return {
       lock_id: lockId,
       name: lockLabel(lockId),
       automated: !!ctl,
-      trigger_door: ctl ? ctl.triggerDoor : null,
+      // Compat single field + the full multi-door list.
+      trigger_door: status ? status.trigger_door : null,
+      trigger_doors: status ? status.trigger_doors : [],
       lock: typeof driver.snapshot === 'function' ? driver.snapshot() : null,
       stats: ctl ? Object.assign({}, ctl.stats) : null,
     };
@@ -1116,9 +1174,12 @@ async function reconcileAccessRevocations(trigger) {
     if (!userIds.size) return;
     const verdictMap = new Map();
     for (const userId of userIds) {
+      // classifyLocksForUser returns the COLLAPSED union verdict per lock
+      // (allowed on ANY gating door wins; unknown fails open) - the reconcile
+      // revoke planner must never see a raw per-door 'denied'.
       const verdicts = accessGating.classifyLocksForUser(
-        userId, relevant.map((l) => ({ lock_id: l.lock_id })), config.deadbolt_rules, access);
-      for (const v of verdicts) verdictMap.set(`${userId}|${v.lock_id}`, { verdict: v.verdict, door: v.door });
+        userId, relevant.map((l) => ({ lock_id: l.lock_id })), config.door_flows, access);
+      for (const v of verdicts) verdictMap.set(`${userId}|${v.lock_id}`, { verdict: v.verdict, door: v.doors.join('", "') });
     }
     const plan = keypadUsers.planReconciliation(
       zwLocks, relevant.map((l) => ({ lock_id: l.lock_id })), verdictMap);
@@ -1180,32 +1241,18 @@ function wireUnifiClientCallbacks(client) {
 function backfillTriggerDoorIds() {
   if (zwavePairing.isActive()) return;
   if (!unifiClient || !unifiClient.doors || !unifiClient.doors.size) return;
-  const byName = unifiClient.doors;   // name -> id
-  const byId = unifiClient.doorsById; // id -> name
   let changed = false;
-  const resolveEntry = (entry) => {
-    if (!entry || typeof entry !== 'object') return;
-    if (!entry.trigger_door_id && entry.trigger_door) {
-      const id = byName.get(entry.trigger_door);
-      if (id) { entry.trigger_door_id = String(id); changed = true; }
-    } else if (entry.trigger_door_id && byId && byId.has(String(entry.trigger_door_id))) {
-      const freshName = byId.get(String(entry.trigger_door_id));
-      if (freshName && freshName !== entry.trigger_door) { entry.trigger_door = freshName; changed = true; }
-    }
-  };
   persistZwaveMutation((cfg) => {
-    const db = cfg.deadbolt_rules;
-    if (db && typeof db === 'object' && !deadboltRules.isFlatShape(db)) {
-      for (const lockId of Object.keys(db)) {
-        if (deadboltRules.FLAT_KEYS.includes(lockId)) continue;
-        resolveEntry(db[lockId]);
-      }
+    // door_flows is the sole live shape: backfill flow door ids, re-key
+    // renamed doors under their live names, and give cascade unlock TARGETS
+    // parallel ids too (closing the remaining rename hole the legacy shape
+    // had on cascade destinations).
+    if (cfg.door_flows && doorFlows.backfillFlowDoorIds(cfg.door_flows, unifiClient.doors, unifiClient.doorsById)) {
+      changed = true;
     }
-    const casc = cfg.cascade_rules;
-    if (casc && Array.isArray(casc.rules)) for (const r of casc.rules) resolveEntry(r);
   });
   if (changed) {
-    logger.info('Deadbolt: backfilled trigger_door_id from the door registry (rename-proof gating)');
+    logger.info('Deadbolt: backfilled door ids on door_flows from the door registry (rename-proof automation and gating)');
     buildDeadboltControllers();
     applyEventTaps();
   }
@@ -1667,7 +1714,7 @@ function perLockSummaries() {
   return Object.entries(locks).map(([lockId, lc]) => {
     const driver = lockDrivers.get(lockId) || null;
     const snap = driver && typeof driver.snapshot === 'function' ? driver.snapshot() : null;
-    const automation = deadboltRules.rulesForLock(config.deadbolt_rules, lockId);
+    const triggerDoors = doorFlows.gatingDoorsForLock(config.door_flows, lockId).map((d) => d.name);
     return {
       lock_id: lockId,
       name: (lc && lc.name) || null,
@@ -1676,8 +1723,9 @@ function perLockSummaries() {
       configured: !!zw.serial_path,
       pairing_active: pairingActive,
       bound: !!driver,
-      automated: !!automation,
-      trigger_door: (automation && automation.trigger_door) || null,
+      automated: triggerDoors.length > 0,
+      trigger_door: triggerDoors[0] || null,
+      trigger_doors: triggerDoors,
       lock_state: snap,
       auto_relock: !lc || lc.auto_relock == null ? null : !!lc.auto_relock,
       auto_relock_support: (driver && typeof driver.autoRelockInfo === 'function')
@@ -1705,14 +1753,16 @@ app.get('/api/deadbolt/locks', (req, res) => {
     const driver = lockDrivers.get(lockId);
     const snap = driver && typeof driver.snapshot === 'function' ? driver.snapshot() : null;
     const bound = nodeId > 0 && snap;
-    const automation = deadboltRules.rulesForLock(config.deadbolt_rules, lockId);
+    const triggerDoors = doorFlows.gatingDoorsForLock(config.door_flows, lockId).map((d) => d.name);
     locks.push({
       lock_id: lockId,
       name: (lc && lc.name) || null,
       node_id: nodeId,
       paired: nodeId > 0,
       bound: !!bound,
-      automation: automation ? { trigger_door: automation.trigger_door || null } : null,
+      automation: triggerDoors.length
+        ? { trigger_door: triggerDoors[0], trigger_doors: triggerDoors }
+        : null,
       on_stick: !!(nodeId && zwaveManager.getNode(nodeId)),
       model: bound ? snap.model : nodeModelLabel(zwaveManager.getNode(nodeId)),
       model_key: (lc && lc.model_key) || null,
@@ -1867,12 +1917,12 @@ app.post('/api/deadbolt/auto-relock', async (req, res) => {
 // ---------------------------------------------------------------------------
 
 // The lock entry the driver is bound to (same resolution buildDeadbolt uses):
-// the first automated lock (deadbolt_rules map key; legacy flat lock_id also
-// honored via the shape helpers), else the first saved lock.
+// the first lock referenced by any door's retract edge, else the first saved
+// lock.
 function activeLockId(cfg) {
   const c = cfg || config;
   const locks = (c.devices && c.devices.zwave && c.devices.zwave.locks) || {};
-  return deadboltRules.automatedLockIds(c.deadbolt_rules)[0] || Object.keys(locks)[0] || null;
+  return doorFlows.automatedLockIdsFromFlows(c.door_flows)[0] || Object.keys(locks)[0] || null;
 }
 
 function savedUserCodes(lockId) {
@@ -2193,18 +2243,17 @@ app.get('/api/deadbolt/keypad-users', async (req, res) => {
     const relevant = capable.filter((l) => l.cap && l.cap.supported !== false);
     const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
     const known = (unifiClient && unifiClient.userNames) || new Map();
-    // Per-lock gating door + per-(user,lock) access verdicts, so the panel can
-    // show which users are blocked from which deadbolts and why.
-    const gatingDoorFor = (lockId) => {
-      const rule = deadboltRules.rulesForLock(config.deadbolt_rules, lockId);
-      return (rule && rule.trigger_door) || null;
-    };
-    const relevantForAgg = relevant.map((l) => ({ lock_id: l.lock_id, label: l.label, gating_door: gatingDoorFor(l.lock_id) }));
+    // Per-lock gating doors (a lock may be triggered by SEVERAL doors) +
+    // per-(user,lock) UNION verdicts, so the panel shows which users are
+    // blocked from which deadbolts and why.
+    const gatingDoorsFor = (lockId) =>
+      doorFlows.gatingDoorsForLock(config.door_flows, lockId).map((d) => d.name);
+    const relevantForAgg = relevant.map((l) => ({ lock_id: l.lock_id, label: l.label, gating_doors: gatingDoorsFor(l.lock_id) }));
     const access = currentAccessModel();
     const base = keypadUsers.aggregateKeypadUsers(zwLocks, relevantForAgg);
     const verdicts = new Map();
     for (const u of base) {
-      for (const v of accessGating.classifyLocksForUser(u.user_id, relevant.map((l) => ({ lock_id: l.lock_id })), config.deadbolt_rules, access)) {
+      for (const v of accessGating.classifyLocksForUser(u.user_id, relevant.map((l) => ({ lock_id: l.lock_id })), config.door_flows, access)) {
         verdicts.set(`${u.user_id}|${v.lock_id}`, v.verdict);
       }
     }
@@ -2212,13 +2261,18 @@ app.get('/api/deadbolt/keypad-users', async (req, res) => {
       user_missing: !!(u.user_id && known.size && !known.has(u.user_id)),
     }));
     res.json({
-      locks: capable.map((l) => ({
-        lock_id: l.lock_id,
-        name: l.label,
-        supported: !!(l.cap && l.cap.supported !== false),
-        note: (l.cap && l.cap.note) || null,
-        gating_door: gatingDoorFor(l.lock_id),
-      })),
+      locks: capable.map((l) => {
+        const doors = gatingDoorsFor(l.lock_id);
+        return {
+          lock_id: l.lock_id,
+          name: l.label,
+          supported: !!(l.cap && l.cap.supported !== false),
+          note: (l.cap && l.cap.note) || null,
+          // Compat single field + the full list for multi-door gating.
+          gating_door: doors[0] || null,
+          gating_doors: doors,
+        };
+      }),
       pin_rule: keypadUsers.combinedLengthRule(relevant.map((l) => l.cap)),
       access_gating: accessGatingStatus(),
       // Pickable users straight from the live sync (in-memory, zero extra
@@ -2264,11 +2318,13 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
 
     // Access gating: split the code-capable locks into those this user may
     // hold a code on (allowed / ungated / unknown -> fail open) and those they
-    // are confirmed NOT allowed on (denied -> block + revoke any existing
-    // code). A lock with no gating door is 'ungated' and behaves as before.
+    // are confirmed NOT allowed on (denied on EVERY gating door -> block +
+    // revoke any existing code; the collapsed UNION verdict, so allowed via a
+    // second trigger door always wins). A lock wired to no door is 'ungated'
+    // and behaves as before.
     const access = currentAccessModel();
     const verdicts = accessGating.classifyLocksForUser(
-      b.user_id, capable.map((l) => ({ lock_id: l.lock_id })), config.deadbolt_rules, access
+      b.user_id, capable.map((l) => ({ lock_id: l.lock_id })), config.door_flows, access
     );
     const verdictByLock = new Map(verdicts.map((v) => [v.lock_id, v]));
     const writable = capable.filter((l) => accessGating.WRITE_VERDICTS.has(verdictByLock.get(l.lock_id).verdict));
@@ -2283,7 +2339,7 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
       // an unconfirmed clear reports revoke_pending and queues a retry.
       for (const l of denied) {
         const v = verdictByLock.get(l.lock_id);
-        const reason = `no UniFi access to "${v.door}"`;
+        const reason = `no UniFi access to "${v.doors.join('", "')}"`;
         const held = Object.entries((zwLocks[l.lock_id] && zwLocks[l.lock_id].user_codes) || {})
           .find(([, e]) => e && e.user_id === b.user_id);
         if (held) {
@@ -2988,7 +3044,14 @@ app.get('/api/config', (req, res) => {
   // Redact every secret-valued field (unifi token, webhook secret, auto-lock
   // token, admin key, any alert secret), not just the two the UI happens to
   // display. PUT strips the same placeholders back out on save.
-  res.json(redactSecrets(config));
+  const out = redactSecrets(config);
+  // Transition (one release): external readers of the legacy shapes keep
+  // working via a COMPUTED projection derived from door_flows. Never
+  // persisted; a multi-door lock projects only its first edge.
+  const projection = doorFlows.legacyProjection(config.door_flows);
+  out.deadbolt_rules = projection.deadbolt_rules;
+  out.cascade_rules = projection.cascade_rules;
+  res.json(out);
 });
 
 // ---------------------------------------------------------------------------
@@ -3019,20 +3082,6 @@ app.put('/api/config', async (req, res) => {
     // Read current config (with real secrets)
     const current = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
 
-    // Migrate the MERGE TARGET first. The startup flat->map migration runs
-    // once, but a backup restore or a hand-edit can put the legacy FLAT
-    // deadbolt_rules shape back on disk after that. Deep-merging a map-shaped
-    // update into a flat target produces a mixed object whose stale flat keys
-    // then win on the next reload (toMapShape flat-precedence), silently
-    // reverting the operator's save. Normalizing current here means the merge
-    // is always map-into-map.
-    if (deadboltRules.isFlatShape(current.deadbolt_rules)) {
-      current.deadbolt_rules = deadboltRules.toMapShape(
-        current.deadbolt_rules,
-        current.devices && current.devices.zwave && current.devices.zwave.locks
-      ).rules;
-    }
-
     // Drop any secret still carrying the redaction placeholder, so the UI
     // echoing a redacted GET back on save cannot clobber the real value.
     stripRedactedPlaceholders(updates);
@@ -3045,20 +3094,68 @@ app.put('/api/config', async (req, res) => {
       delete updates.server.admin_api_key;
     }
 
-    // Legacy writers (the Visual Designer, older dashboards) still PUT the
-    // FLAT deadbolt_rules shape; normalize it onto the per-lock map so the
-    // merge below cannot mix flat keys into the map (which would corrupt
-    // both shapes). The flat fields land on the first automated lock.
-    if (updates.deadbolt_rules !== undefined) {
-      updates.deadbolt_rules = deadboltRules.normalizePutRules(
+    // Transition (one release): legacy writers still PUT deadbolt_rules /
+    // cascade_rules (flat or map). Fold them into the door-centric shape:
+    // migrate the LEGACY payload against the CURRENT flows so an old
+    // single-door write updates that lock's edge without dropping the other
+    // doors. The legacy keys never reach the file (door_flows is the sole
+    // persisted shape).
+    if (updates.deadbolt_rules !== undefined || updates.cascade_rules !== undefined) {
+      const locks = current.devices && current.devices.zwave && current.devices.zwave.locks;
+      const normalized = deadboltRules.normalizePutRules(
         updates.deadbolt_rules,
-        current.deadbolt_rules,
-        current.devices && current.devices.zwave && current.devices.zwave.locks
+        doorFlows.legacyProjection(current.door_flows || {}).deadbolt_rules,
+        locks
       );
+      const incoming = doorFlows.migrateToFlows(
+        { deadbolt_rules: normalized, cascade_rules: updates.cascade_rules },
+        locks
+      ).flows;
+      const merged = Object.assign({}, current.door_flows);
+      // A legacy deadbolt_rules write repoints each mentioned lock: remove
+      // that lock's old edges, then graft the incoming ones. A legacy cascade
+      // write replaces each mentioned door's cascade.
+      if (updates.deadbolt_rules !== undefined) {
+        const touchedLocks = new Set(doorFlows.automatedLockIdsFromFlows(incoming));
+        // A cleared trigger ('' -> no edge) must also drop the lock's edges:
+        // collect every lock the normalized legacy payload mentions.
+        for (const k of Object.keys(normalized || {})) {
+          if (!deadboltRules.FLAT_KEYS.includes(k)) touchedLocks.add(k);
+        }
+        for (const door of Object.keys(merged)) {
+          const flow = merged[door];
+          if (!flow || !Array.isArray(flow.retract)) continue;
+          flow.retract = flow.retract.filter((e) => !e || !touchedLocks.has(e.lock_id));
+        }
+      }
+      for (const [door, flow] of Object.entries(incoming)) {
+        merged[door] = merged[door] || { door_id: flow.door_id || null, retract: [], cascade: null };
+        for (const edge of flow.retract || []) merged[door].retract.push(edge);
+        if (updates.cascade_rules !== undefined && flow.cascade) merged[door].cascade = flow.cascade;
+      }
+      // Drop doors left with nothing.
+      for (const door of Object.keys(merged)) {
+        const f = merged[door];
+        const hasCascade = f.cascade && Array.isArray(f.cascade.unlock) && f.cascade.unlock.length;
+        if ((!f.retract || !f.retract.length) && !hasCascade) delete merged[door];
+      }
+      updates.door_flows = merged;
+      delete updates.deadbolt_rules;
+      delete updates.cascade_rules;
     }
 
-    // Deep merge updates (only allow specific safe keys)
-    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog', 'auto_lock', 'auto_sync', 'devices', 'deadbolt_rules', 'cascade_rules', 'alerts', 'setup_wizard'];
+    // door_flows is validated and REPLACED whole (deep-merge cannot express
+    // a deletion, which is exactly how the old shape accumulated ghosts).
+    if (updates.door_flows !== undefined) {
+      const flowErrors = doorFlows.validateFlows(updates.door_flows);
+      if (flowErrors.length) {
+        return res.status(400).json({ error: `door_flows invalid: ${flowErrors.join('; ')}` });
+      }
+    }
+
+    // Deep merge updates (only allow specific safe keys). door_flows is
+    // handled with REPLACE semantics below, never deep-merged.
+    const safeKeys = ['unlock_rules', 'doorbell_rules', 'event_source', 'logging', 'server', 'unifi', 'resolver', 'doors', 'backup', 'watchdog', 'auto_lock', 'auto_sync', 'devices', 'door_flows', 'alerts', 'setup_wizard'];
 
     // recursive merge for plain objects: source values override primitives/arrays
     function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
@@ -3084,13 +3181,21 @@ app.put('/api/config', async (req, res) => {
 
     for (const key of safeKeys) {
       if (updates[key] !== undefined) {
-        if (isPlainObject(updates[key]) && isPlainObject(current[key])) {
+        if (key === 'door_flows') {
+          // WHOLE-OBJECT REPLACE: an edge/door removed by the editor must
+          // actually go away; deep-merge would resurrect it.
+          current[key] = updates[key];
+        } else if (isPlainObject(updates[key]) && isPlainObject(current[key])) {
           current[key] = deepMerge(current[key], updates[key]);
         } else {
           current[key] = updates[key];
         }
       }
     }
+    // The file carries door_flows only; stale legacy keys (old backup/hand
+    // edit) are dropped on every save.
+    delete current.deadbolt_rules;
+    delete current.cascade_rules;
 
     writeConfigFile(current);
     logger.info('Config saved to disk');
@@ -3114,6 +3219,136 @@ app.put('/api/config', async (req, res) => {
     res.json({ status: 'saved', note: 'Config applied automatically', reload_mode: reloadMode });
   } catch (err) {
     logger.error(`Config save failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Door Flows API - the door-centric automation editor's endpoints.
+// door_flows is the sole persisted automation shape; PUT REPLACES it whole
+// (deep-merge cannot express a deleted edge/door).
+// ---------------------------------------------------------------------------
+
+// Per-edge hardware-conflict annotation + response warnings: a stay_unlocked
+// edge cannot hold the bolt open when the LOCK's own hardware auto-relock
+// timer is on (a device-level Z-Wave parameter). The app never fights the
+// hardware; it tells the operator where to change it.
+function doorFlowWarnings(flows) {
+  const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  const warnings = [];
+  for (const [door, flow] of Object.entries(flows || {})) {
+    for (const edge of (flow && Array.isArray(flow.retract) ? flow.retract : [])) {
+      if (!edge || !edge.lock_id) continue;
+      const hw = zwLocks[edge.lock_id] && zwLocks[edge.lock_id].auto_relock;
+      if (edge.after_unlock === 'stay_unlocked' && hw === true) {
+        warnings.push(`"${lockLabel(edge.lock_id)}" has its hardware auto-relock ON, so "stay unlocked" from "${door}" cannot hold it open. Turn off the lock's After-unlock default in Deadbolt Devices to make this stick.`);
+      }
+    }
+  }
+  return warnings;
+}
+
+app.get('/api/door-flows', (req, res) => {
+  try {
+    const flows = config.door_flows || {};
+    const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+    // Doors the editor can offer: everything the controller knows about plus
+    // any door that already has a flow (it may be temporarily undiscovered).
+    const doorSet = new Map(); // name -> id|null
+    if (unifiClient && unifiClient.doors) {
+      for (const [name, id] of unifiClient.doors) doorSet.set(name, String(id));
+    }
+    for (const [door, flow] of Object.entries(flows)) {
+      if (!doorSet.has(door)) doorSet.set(door, (flow && flow.door_id) || null);
+    }
+    // Annotate per-edge hardware conflicts (computed, never persisted).
+    const annotated = {};
+    for (const [door, flow] of Object.entries(flows)) {
+      annotated[door] = Object.assign({}, flow, {
+        retract: (Array.isArray(flow.retract) ? flow.retract : []).map((e) => Object.assign({}, e, {
+          hardware_conflict: !!(e && e.after_unlock === 'stay_unlocked'
+            && zwLocks[e.lock_id] && zwLocks[e.lock_id].auto_relock === true),
+        })),
+      });
+    }
+    res.json({
+      doors: [...doorSet.entries()].map(([name, id]) => ({ name, id, discovered: !!(unifiClient && unifiClient.doors && unifiClient.doors.has(name)) }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+      flows: annotated,
+      locks: Object.entries(zwLocks).map(([lockId, lc]) => ({
+        lock_id: lockId,
+        name: lockLabel(lockId),
+        paired: !!(lc && lc.node_id > 0),
+        bound: lockDrivers.has(lockId),
+        hardware_auto_relock: !lc || lc.auto_relock == null ? null : !!lc.auto_relock,
+      })),
+      warnings: doorFlowWarnings(flows),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/door-flows', async (req, res) => {
+  const body = req.body || {};
+  // Accept {flows: {...}} or the bare flows object.
+  const flows = body.flows && typeof body.flows === 'object' ? body.flows : body;
+  const errors = doorFlows.validateFlows(flows);
+  if (errors.length) {
+    return res.status(400).json({ error: errors.join('; ') });
+  }
+  // Strip client-side annotations before persisting.
+  const clean = {};
+  for (const [door, flow] of Object.entries(flows)) {
+    clean[door] = {
+      door_id: flow.door_id || null,
+      retract: (Array.isArray(flow.retract) ? flow.retract : []).map((e) => ({
+        lock_id: e.lock_id,
+        after_unlock: e.after_unlock || 'lock_default',
+        relock_seconds: e.relock_seconds == null ? null : e.relock_seconds,
+        require_result: e.require_result || 'ACCESS',
+        mirror_unlock: !!e.mirror_unlock,
+        relock_cooldown_seconds: e.relock_cooldown_seconds == null ? 10 : e.relock_cooldown_seconds,
+      })),
+      cascade: flow.cascade && Array.isArray(flow.cascade.unlock) && flow.cascade.unlock.length
+        ? {
+          unlock: [...flow.cascade.unlock],
+          unlock_ids: Array.isArray(flow.cascade.unlock_ids) ? [...flow.cascade.unlock_ids] : undefined,
+          debounce_seconds: flow.cascade.debounce_seconds == null ? 8 : flow.cascade.debounce_seconds,
+        }
+        : null,
+    };
+    // Drop a door left with nothing at all.
+    if (!clean[door].retract.length && !clean[door].cascade) delete clean[door];
+  }
+  try {
+    const current = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    current.door_flows = clean;    // REPLACE, never merge
+    delete current.deadbolt_rules; // door_flows is the sole persisted shape
+    delete current.cascade_rules;
+    writeConfigFile(current);
+    if (configSync) configSync.markConfigApplied();
+    logger.info(`Door flows saved (${Object.keys(clean).length} door(s))`);
+    // Live apply: reload from disk (rebuilds controllers via the door_flows
+    // signature), backfill any new door ids, and re-run access gating since
+    // the gating doors may just have changed.
+    let reloadMode = 'skipped';
+    try {
+      const result = await reloadOrchestrator({
+        reason: 'door_flows_saved',
+        actor: 'API',
+        eventType: 'system.config_reload',
+        actionPrefix: 'Door flows reloaded',
+      });
+      reloadMode = result.mode;
+    } catch (reloadErr) {
+      logger.warn(`Auto-reload after door-flows save failed: ${reloadErr.message}`);
+    }
+    backfillTriggerDoorIds();
+    scheduleReconcile('door_flows_changed');
+    res.json({ status: 'saved', reload_mode: reloadMode, warnings: doorFlowWarnings(clean) });
+  } catch (err) {
+    logger.error(`Door flows save failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
@@ -3154,12 +3389,16 @@ app.post('/api/backups/restore', async (req, res) => {
 
   try {
     const result = restoreBackup(filename, BACKUP_DIR, CONFIG_PATH);
+    // A pre-redesign backup restores legacy deadbolt_rules/cascade_rules;
+    // migrate them forward to door_flows right away (after the flat->map
+    // canonicalization below).
     logger.info(`Config restored from backup: ${filename}`);
     if (configSync) configSync.markConfigApplied();
     // A restored backup may be a pre-migration (flat) config; canonicalize it
     // on disk immediately so the reload below and later PUTs work on the map
     // shape. markApplied so this write does not itself trigger a reload.
     migrateConfigFileOnDisk(true);
+    migrateDoorFlowsOnDisk(true);
 
     try {
       const reloadResult = await reloadOrchestrator({
@@ -3716,20 +3955,20 @@ async function reloadOrchestrator({
   }
 }
 
-// Apply deadbolt_rules / cascade_rules edits live, REUSING the running lock
-// driver (no Z-Wave reconnect). Called from reloadServices when the rules
-// signature changed. Removing all rules detaches the controller; adding rules
-// when a paired lock exists but no driver was built yet takes the full
-// activation path (safe: the driver is not running, so nothing reconnects).
+// Apply door_flows edits live, REUSING the running lock driver (no Z-Wave
+// reconnect). Called from reloadServices when the flows signature changed.
+// Removing all flows detaches (and DESTROYS - timers/listeners) the
+// controllers; adding flows when a paired lock exists but no driver was built
+// yet takes the full activation path (safe: the driver is not running, so
+// nothing reconnects).
 async function maybeRebuildDeadboltRules(oldSig) {
-  const newSig = JSON.stringify([config.deadbolt_rules, config.cascade_rules]);
+  const newSig = JSON.stringify(config.door_flows);
   if (newSig === oldSig) return;
-  if (!config.deadbolt_rules && !config.cascade_rules) {
-    deadboltControllers = new Map();
-    cascadeController = null;
+  if (!config.door_flows || !Object.keys(config.door_flows).length) {
+    destroyDeadboltControllers();
     deadboltController = null;
     applyEventTaps();
-    logger.info('Deadbolt rules removed: controllers detached (lock drivers untouched)');
+    logger.info('Door flows removed: controllers detached (lock drivers untouched)');
     return;
   }
   const zw = config.devices && config.devices.zwave;
@@ -3750,7 +3989,7 @@ async function reloadServices(newConfig) {
   const settingsChanged = controllerOrSourceChanged(config, newConfig);
   const degraded = isEventSourceDegraded();
   const fullReload = settingsChanged || degraded;
-  const oldRulesSig = JSON.stringify([config.deadbolt_rules, config.cascade_rules]);
+  const oldRulesSig = JSON.stringify(config.door_flows);
 
   if (degraded && !settingsChanged) {
     logger.info('Reload: event source is degraded — escalating to full reconnect');

@@ -82,22 +82,59 @@ test('every handler that sets busy(true) re-enables in a finally', () => {
   }
 });
 
-test('both focus guards record the skip on a gate instead of dropping it', () => {
+test('every focus guard records the skip on its section gate instead of dropping it', () => {
   const refresh = extractFn('refreshZwaveDeadbolt');
-  assert.match(refresh, /_zwDeadboltGate\.skipped\(/, 'refreshZwaveDeadbolt records skipped repaints');
-  assert.match(refresh, /_zwDeadboltGate\.ran\(\)/, 'refreshZwaveDeadbolt clears the gate on a real repaint');
-  const setup = extractFn('renderZwaveSetup');
-  assert.match(setup, /_zwSetupGate\.skipped\(/, 'renderZwaveSetup records skipped repaints');
-  assert.match(setup, /_zwSetupGate\.ran\(\)/, 'renderZwaveSetup clears the gate on a real repaint');
+  assert.match(refresh, /_devicesGate\.skipped\(renderDeadboltDevices\)/,
+    'refreshZwaveDeadbolt records skipped repaints, retried by the section OWNER');
+  const devices = extractFn('renderDeadboltDevices');
+  assert.match(devices, /_devicesGate\.skipped\(/, 'renderDeadboltDevices records skipped repaints');
+  assert.match(devices, /_devicesGate\.ran\(\)/, 'renderDeadboltDevices clears the gate on a real repaint');
+  const flows = extractFn('renderDoorFlows');
+  assert.match(flows, /_doorFlowsGate\.skipped\(/, 'renderDoorFlows records skipped repaints');
+  assert.match(flows, /_doorFlowsGate\.ran\(\)/, 'renderDoorFlows clears the gate on a real repaint');
+  const keypad = extractFn('renderKeypadUsers');
+  assert.match(keypad, /_keypadGate\.skipped\(/, 'renderKeypadUsers records skipped repaints');
+  assert.match(keypad, /_keypadGate\.ran\(\)/, 'renderKeypadUsers clears the gate on a real repaint');
+});
+
+test('no focus guard ever includes BUTTON (the vanishing-section regression)', () => {
+  // One shared predicate, and it must skip only SELECT/INPUT/TEXTAREA. A
+  // focused Save button deferring the rebuild its own click earned is how
+  // the saved deadbolt trigger used to vanish until a page reload.
+  const pred = extractFn('sectionHoldsFocus');
+  assert.match(pred, /SELECT\|INPUT\|TEXTAREA/, 'the shared predicate covers the three field types');
+  assert.ok(!/BUTTON/.test(pred), 'BUTTON must never hold off a repaint');
+  // And no renderer sneaks in its own BUTTON-including tagName regex.
+  for (const name of ['renderDeadboltDevices', 'refreshZwaveDeadbolt', 'renderDoorFlows', 'renderKeypadUsers']) {
+    const src = extractFn(name);
+    assert.ok(!/BUTTON/.test(src), `${name} must not test for BUTTON focus`);
+    assert.match(src, /sectionHoldsFocus\(/, `${name} uses the shared predicate`);
+  }
+});
+
+test('user-initiated mutations repaint through repaintOwned with the guard bypassed', () => {
+  const owned = extractFn('repaintOwned');
+  assert.match(owned, /renderDeadboltDevices\(true\)/, 'devices force-repaint');
+  assert.match(owned, /renderDoorFlows\(true\)/, 'door-flows force-repaint');
+  assert.match(owned, /renderKeypadUsers\(true\)/, 'keypad force-repaint');
+  // The keypad Save and Remove paths must use it: the old guarded refresh
+  // skipped while the picker held focus, leaving the panel dead until a
+  // page reload (field report: had to Ctrl+R to re-add a removed user).
+  const save = extractFn('saveKeypadUser');
+  assert.match(save, /repaintOwned\('keypad'\)/, 'Save PIN repaints the keypad panel unguarded');
+  const remove = extractFn('removeKeypadUser');
+  assert.match(remove, /repaintOwned\('keypad'\)/, 'Remove repaints the keypad panel unguarded');
+  const saveFlow = extractFn('saveDoorFlow');
+  assert.match(saveFlow, /repaintOwned\('doorflows'\)/, 'a saved door flow repaints in place (never vanishes)');
 });
 
 test('focusout and the health poll deliver owed repaints', () => {
-  const wire = extractFn('wireZwRefreshRetry');
+  const wire = extractFn('wireSectionFocusRetry');
   assert.match(wire, /addEventListener\('focusout'/, 'focusout listener wired');
-  assert.match(wire, /_zwSetupGate\.kick|_zwDeadboltGate\.kick/, 'focusout kicks the gates');
   const health = extractFn('fetchHealth');
-  assert.match(health, /_zwSetupGate\.kick\(renderZwaveSetup\)/, 'health poll backstops the setup repaint');
-  assert.match(health, /_zwDeadboltGate\.kick\(refreshZwaveDeadbolt\)/, 'health poll backstops the deadbolt repaint');
+  assert.match(health, /_devicesGate\.kick\(renderDeadboltDevices\)/, 'health poll backstops the devices repaint');
+  assert.match(health, /_doorFlowsGate\.kick\(renderDoorFlows\)/, 'health poll backstops the door-flows repaint');
+  assert.match(health, /_keypadGate\.kick\(renderKeypadUsers\)/, 'health poll backstops the keypad repaint');
 });
 
 test('api() aborts hung requests instead of pinning the UI forever', () => {

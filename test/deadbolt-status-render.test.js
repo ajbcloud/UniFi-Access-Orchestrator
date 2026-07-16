@@ -4,10 +4,13 @@
 // public/index.html:
 //  - describeLockLink / describeLockBattery: an asleep battery lock must not
 //    paint as a red "offline", and a low battery must be flagged.
-//  - renderZwaveSetup: while a pairing session is live (_pairPollTimer set),
-//    the function must NOT rewrite #configZwave. A background
-//    system.auto_reload used to call loadConfig() -> renderZwaveSetup() and
+//  - renderDeadboltDevices: while a pairing session is live (_pairPollTimer
+//    set), the function must NOT rewrite #configZwave. A background
+//    system.auto_reload used to call loadConfig() -> the section renderer and
 //    destroy the focused PIN input mid-typing (field report: "it froze").
+//    The focus guard must skip for SELECT/INPUT/TEXTAREA but NEVER for
+//    BUTTON (a focused Save button deferring its own repaint was the
+//    vanishing-section bug), and a forced repaint must always land.
 // Extracts the REAL functions from public/index.html via the shared
 // extractFn harness.
 
@@ -91,13 +94,16 @@ test('describeLockBolt: transient reading state while the link is up', () => {
   assert.equal(describeLockBolt({ bolt: 'jammed', link_state: 'online' }), 'jammed');
 });
 
-function loadRenderZwaveSetup() {
-  const src = extractFn('renderZwaveSetup');
+function loadRenderDevices() {
+  // The REAL shared focus predicate compiles alongside the renderer, closing
+  // over the same fake document, so the guard contract is tested end to end.
+  const src = extractFn('sectionHoldsFocus') + ';' + extractFn('renderDeadboltDevices');
   // Parameters stand in for the SPA globals the function touches. The retry
   // gate stubs record skip/run so the focus-guard contract stays covered.
   return new Function(
-    '_pairPollTimer', 'document', 'configData', 'armDirtySave', 'wireZwRefreshRetry', '_zwSetupGate',
-    src + '; return renderZwaveSetup;'
+    '_pairPollTimer', 'document', 'configData', 'armDirtySave', 'wireSectionFocusRetry',
+    '_devicesGate', 'loadSerialPorts', 'refreshZwaveDeadbolt',
+    src + '; return renderDeadboltDevices;'
   );
 }
 function gateStub() {
@@ -105,30 +111,40 @@ function gateStub() {
     skips: 0, runs: 0,
     skipped() { this.skips++; },
     ran() { this.runs++; },
+    kick() {},
   };
 }
+function counters() {
+  const c = { ports: 0, refresh: 0 };
+  return { c, ports: () => { c.ports++; }, refresh: () => { c.refresh++; } };
+}
 
-test('renderZwaveSetup: leaves the DOM alone while a pairing session is live', () => {
+test('renderDeadboltDevices: leaves the DOM alone while a pairing session is live', () => {
   let touched = 0;
   const doc = { getElementById: () => { touched++; return null; } };
-  loadRenderZwaveSetup()(123 /* timer running */, doc, {}, () => {}, () => {}, gateStub())();
+  const { ports, refresh } = counters();
+  loadRenderDevices()(123 /* timer running */, doc, {}, () => {}, () => {}, gateStub(), ports, refresh)();
   assert.equal(touched, 0, 'must return before any DOM access while pairing');
 });
 
-test('renderZwaveSetup: renders normally when no pairing session is live', () => {
+test('renderDeadboltDevices: renders the shell and refills its dynamic parts', () => {
   const el = { innerHTML: '' };
   let armed = 0;
   const gate = gateStub();
   const doc = { getElementById: (id) => (id === 'configZwave' ? el : null) };
-  loadRenderZwaveSetup()(null, doc, { devices: { zwave: { enabled: true } } }, () => { armed++; }, () => {}, gate)();
+  const { c, ports, refresh } = counters();
+  loadRenderDevices()(null, doc, { devices: { zwave: { enabled: true } } }, () => { armed++; }, () => {}, gate, ports, refresh)();
   assert.match(el.innerHTML, /zwavePairPanel/, 'panel container rendered');
-  assert.match(el.innerHTML, /zwaveKeypadUsers/, 'global keypad users container rendered');
   assert.match(el.innerHTML, /checked/, 'enabled checkbox reflects config');
+  assert.ok(!el.innerHTML.includes('zwaveKeypadUsers'), 'keypad users live on their own tab now');
+  assert.ok(!el.innerHTML.includes('zwaveRulesBlock'), 'the vanishing automation block is gone; Door Flows owns that editor');
   assert.equal(armed, 1, 'dirty-save armed after render');
   assert.equal(gate.runs, 1, 'gate told the repaint ran');
+  assert.equal(c.ports, 1, 'serial ports reloaded with the shell');
+  assert.equal(c.refresh, 1, 'dynamic fill runs after every shell rebuild, including retries');
 });
 
-test('renderZwaveSetup: a skipped focus-guard repaint is recorded for retry', () => {
+test('renderDeadboltDevices: a skipped focus-guard repaint is recorded for retry', () => {
   const el = {
     innerHTML: '',
     contains: (x) => x && x.inside === true,
@@ -138,8 +154,46 @@ test('renderZwaveSetup: a skipped focus-guard repaint is recorded for retry', ()
     getElementById: (id) => (id === 'configZwave' ? el : null),
     activeElement: { tagName: 'SELECT', inside: true },
   };
-  loadRenderZwaveSetup()(null, doc, { devices: { zwave: { enabled: true } } }, () => {}, () => {}, gate)();
+  const { c, ports, refresh } = counters();
+  loadRenderDevices()(null, doc, { devices: { zwave: { enabled: true } } }, () => {}, () => {}, gate, ports, refresh)();
   assert.equal(el.innerHTML, '', 'no repaint under the cursor');
   assert.equal(gate.skips, 1, 'skip recorded so the retry gate can deliver it later');
   assert.equal(gate.runs, 0);
+  assert.equal(c.refresh, 0, 'no partial fill either');
+});
+
+test('renderDeadboltDevices: a focused BUTTON never defers the repaint (regression)', () => {
+  // The old guard included BUTTON, so clicking Save deferred the rebuild the
+  // click itself had earned, and the deferred rebuild wiped the section.
+  const el = {
+    innerHTML: '',
+    contains: (x) => x && x.inside === true,
+  };
+  const gate = gateStub();
+  const doc = {
+    getElementById: (id) => (id === 'configZwave' ? el : null),
+    activeElement: { tagName: 'BUTTON', inside: true },
+  };
+  const { c, ports, refresh } = counters();
+  loadRenderDevices()(null, doc, { devices: { zwave: { enabled: true } } }, () => {}, () => {}, gate, ports, refresh)();
+  assert.match(el.innerHTML, /zwavePairPanel/, 'repaint lands with a button focused');
+  assert.equal(gate.skips, 0);
+  assert.equal(gate.runs, 1);
+});
+
+test('renderDeadboltDevices: force bypasses the focus guard (user-initiated repaint)', () => {
+  const el = {
+    innerHTML: '',
+    contains: (x) => x && x.inside === true,
+  };
+  const gate = gateStub();
+  const doc = {
+    getElementById: (id) => (id === 'configZwave' ? el : null),
+    activeElement: { tagName: 'SELECT', inside: true },
+  };
+  const { c, ports, refresh } = counters();
+  loadRenderDevices()(null, doc, { devices: { zwave: { enabled: true } } }, () => {}, () => {}, gate, ports, refresh)(true);
+  assert.match(el.innerHTML, /zwavePairPanel/, 'forced repaint lands even with focus held');
+  assert.equal(gate.skips, 0);
+  assert.equal(gate.runs, 1);
 });

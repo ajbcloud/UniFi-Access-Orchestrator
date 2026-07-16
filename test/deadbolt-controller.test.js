@@ -322,3 +322,188 @@ test('a dedicated cascade controller fires cascades exactly once alongside per-l
   assert.equal(front.lock.calls.length, 1, 'front lock still retracted');
   assert.deepEqual(side.lock.calls, [], 'side lock untouched');
 });
+
+// ---------------------------------------------------------------------------
+// Door-centric edge mode: config.edges from door_flows (edgesForLock shape).
+// Per-edge after-unlock orchestration, multi-door matching, destroy lifecycle.
+// ---------------------------------------------------------------------------
+
+function makeEdgeController(edges, opts = {}) {
+  const lock = new FakeLock({ initial: opts.initial || LockState.LOCKED });
+  const unifi = makeUnifi();
+  const alerts = [];
+  let clock = { t: 0 };
+  const ctl = new DeadboltController(
+    { edges, cascade_rules: opts.cascade_rules || { rules: [] } },
+    {
+      lockDriver: lock,
+      unifiClient: unifi,
+      onAlert: (a) => alerts.push(a),
+      now: () => clock.t,
+      logger: { debug() {} },
+    }
+  );
+  return { ctl, lock, unifi, alerts, clock };
+}
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('edge mode: one edge behaves like the legacy single block', async () => {
+  const { ctl, lock } = makeEdgeController([
+    { trigger_door: 'Front Door', after_unlock: 'lock_default', require_result: 'ACCESS' },
+  ]);
+  await lock.init();
+  ctl.observe(entryGrant('Front Door'));
+  await flush();
+  assert.equal(lock._state, LockState.UNLOCKED, 'retracted');
+  ctl.observe(entryGrant('Back Door'));
+  await flush();
+  assert.equal(lock.calls.filter((c) => c.action === 'unlock').length, 1, 'other doors ignored');
+  assert.deepEqual(ctl.getStatus().trigger_doors, ['Front Door']);
+});
+
+test('edge mode: lock_default and stay_unlocked schedule NO app relock', async () => {
+  for (const mode of ['lock_default', 'stay_unlocked']) {
+    const { ctl, lock } = makeEdgeController([
+      { trigger_door: 'Front Door', after_unlock: mode, relock_seconds: 0.03 },
+    ]);
+    await lock.init();
+    ctl.observe(entryGrant('Front Door'));
+    await flush();
+    assert.equal(ctl.getStatus().relock_pending, false, `${mode}: nothing pending`);
+    await wait(60);
+    assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 0, `${mode}: no app lock ever fires`);
+    ctl.destroy();
+  }
+});
+
+test('edge mode: relock_after fires ONE lock command after N seconds', async () => {
+  const { ctl, lock } = makeEdgeController([
+    { trigger_door: 'Front Door', after_unlock: 'relock_after', relock_seconds: 0.05 },
+  ]);
+  await lock.init();
+  ctl.observe(entryGrant('Front Door'));
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, true, 'timer armed');
+  assert.equal(lock._state, LockState.UNLOCKED);
+  await wait(90);
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 1, 'exactly one relock');
+  assert.equal(lock._state, LockState.LOCKED);
+  assert.equal(ctl.getStatus().relock_pending, false);
+  ctl.destroy();
+});
+
+test('edge mode: a manual/hardware lock cancels the pending relock via state-change', async () => {
+  const { ctl, lock } = makeEdgeController([
+    { trigger_door: 'Front Door', after_unlock: 'relock_after', relock_seconds: 0.06 },
+  ]);
+  await lock.init();
+  ctl.observe(entryGrant('Front Door'));
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, true);
+  await lock.lock('manual thumbturn'); // emits state-change boltState locked
+  assert.equal(ctl.getStatus().relock_pending, false, 'listener cancelled the timer, not the fire-time guard');
+  const locksBefore = lock.calls.filter((c) => c.action === 'lock').length;
+  await wait(100);
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, locksBefore, 'timer never fired');
+  ctl.destroy();
+});
+
+test('edge mode: an observed door-secured transition cancels the pending relock', async () => {
+  const { ctl, lock, clock } = makeEdgeController([
+    { trigger_door: 'Front Door', after_unlock: 'relock_after', relock_seconds: 0.06, relock_cooldown_seconds: 10 },
+  ]);
+  await lock.init();
+  clock.t = 1000; // a retract at t=0 would read as "never retracted" (falsy)
+  ctl.observe(locationUpdate('Front Door', 'unlocked')); // seed
+  ctl.observe(entryGrant('Front Door'));
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, true);
+  ctl.observe(locationUpdate('Front Door', 'locked')); // secured within cooldown
+  assert.equal(ctl.getStatus().relock_pending, false, 'pending relock cancelled on secured');
+  await wait(100);
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 0,
+    'no app lock: timer cancelled AND secured-lock suppressed by the cooldown');
+  ctl.destroy();
+});
+
+test('edge mode: LAST WRITER WINS when two doors retract the same lock', async () => {
+  const { ctl, lock } = makeEdgeController([
+    { trigger_door: 'Door A', after_unlock: 'relock_after', relock_seconds: 0.05 },
+    { trigger_door: 'Door B', after_unlock: 'stay_unlocked' },
+  ]);
+  await lock.init();
+  ctl.observe(entryGrant('Door A', { doorId: 'd-a' }));
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, true, 'Door A armed a relock');
+  ctl.observe(entryGrant('Door B', { doorId: 'd-b' }));
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, false, 'Door B (stay_unlocked) cancelled it');
+  await wait(90);
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 0, 'no relock fired');
+  // And the reverse order arms the newest edge's timer.
+  ctl.observe(entryGrant('Door A', { doorId: 'd-a' }));
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, true, 'A after B re-arms');
+  ctl.destroy();
+});
+
+test('edge mode: multi-door lock-on-secured tracks state PER DOOR', async () => {
+  const { ctl, lock, clock } = makeEdgeController([
+    { trigger_door: 'Door A', after_unlock: 'lock_default' },
+    { trigger_door: 'Door B', after_unlock: 'lock_default' },
+  ]);
+  await lock.init();
+  await lock.unlock('start retracted');
+  // Seed only Door A; Door B's first telemetry must seed, not fire.
+  ctl.observe(locationUpdate('Door A', 'unlocked'));
+  ctl.observe(locationUpdate('Door B', 'locked'));
+  await flush();
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 0, 'first B telemetry only seeds');
+  // A locked transition on Door A throws the lock (no retract happened; no cooldown).
+  clock.t = 60000;
+  ctl.observe(locationUpdate('Door A', 'locked'));
+  await flush();
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 1, 'Door A secured throws');
+  // Door B: unlocked then locked -> a second throw, independent of A's state.
+  await lock.unlock('again');
+  ctl.observe(locationUpdate('Door B', 'unlocked'));
+  ctl.observe(locationUpdate('Door B', 'locked'));
+  await flush();
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 2, 'Door B tracked separately');
+  ctl.destroy();
+});
+
+test('edge mode: per-edge mirror_unlock and require_result', async () => {
+  const { ctl, lock } = makeEdgeController([
+    { trigger_door: 'Door A', mirror_unlock: true },
+    { trigger_door: 'Door B', mirror_unlock: false },
+  ]);
+  await lock.init();
+  ctl.observe(locationUpdate('Door A', 'locked'));
+  ctl.observe(locationUpdate('Door B', 'locked'));
+  ctl.observe(locationUpdate('Door A', 'unlocked'));
+  await flush();
+  assert.equal(lock.calls.filter((c) => c.action === 'unlock').length, 1, 'A mirrors unsecure');
+  ctl.observe(locationUpdate('Door B', 'unlocked'));
+  await flush();
+  assert.equal(lock.calls.filter((c) => c.action === 'unlock').length, 1, 'B does not mirror');
+  ctl.destroy();
+});
+
+test('edge mode: destroy() clears the timer and the driver listener', async () => {
+  const { ctl, lock } = makeEdgeController([
+    { trigger_door: 'Front Door', after_unlock: 'relock_after', relock_seconds: 0.05 },
+  ]);
+  await lock.init();
+  const listenersBefore = lock.listenerCount('state-change');
+  assert.ok(listenersBefore >= 1, 'controller subscribed to state-change');
+  ctl.observe(entryGrant('Front Door'));
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, true);
+  ctl.destroy();
+  assert.equal(ctl.getStatus().relock_pending, false, 'timer cleared');
+  assert.equal(lock.listenerCount('state-change'), listenersBefore - 1, 'listener removed');
+  await wait(90);
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 0, 'nothing fires after destroy');
+});

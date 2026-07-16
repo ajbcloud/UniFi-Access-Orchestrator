@@ -1347,6 +1347,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <button class="tab active" role="tab" data-page="dashboard" aria-selected="true" tabindex="0">Dashboard</button>
   <button class="tab" role="tab" data-page="events" aria-selected="false" tabindex="-1">Live Events</button>
   <button class="tab" role="tab" data-page="config" aria-selected="false" tabindex="-1">Automations</button>
+  <button class="tab" role="tab" data-page="keypad" aria-selected="false" tabindex="-1">Keypad Users</button>
   <button class="tab" role="tab" data-page="designer" aria-selected="false" tabindex="-1">Visual Designer</button>
   <button class="tab" role="tab" data-page="settings" aria-selected="false" tabindex="-1">Settings</button>
   <button class="tab" role="tab" data-page="tools" aria-selected="false" tabindex="-1">Test Tools</button>
@@ -1699,10 +1700,32 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 
     <div class="config-section">
       <div class="config-header">
-        Smart Deadbolt (Z-Wave)
+        Door Flows
+        <span style="font-weight:400;font-size:12px;color:var(--text-muted)">everything starts at the door: pick a door, then say what it controls</span>
+      </div>
+      <div class="config-body" id="configDoorFlows"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-header">
+        Deadbolt Devices (Z-Wave)
         <button class="btn btn-sm btn-secondary" onclick="loadSerialPorts()">Refresh Ports</button>
       </div>
       <div class="config-body" id="configZwave"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
+    </div>
+  </div>
+
+  <!-- KEYPAD USERS -->
+  <div id="keypad" class="page">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div>
+        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Keypad Users</div>
+        <div style="font-size:12px;color:var(--text-muted)">One PIN per person, written to every deadbolt their UniFi door access allows and kept in sync with their UniFi PIN.</div>
+      </div>
+      <button class="btn btn-sm btn-secondary" onclick="renderKeypadUsers()">Refresh</button>
+    </div>
+    <div class="config-section">
+      <div class="config-body" id="kuPanel"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
   </div>
 
@@ -1711,7 +1734,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div>
         <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Visual Designer</div>
-        <div style="font-size:12px;color:var(--text-muted)">Build cascading door rules and the deadbolt add-on visually. Changes here fill in the Automations tab, and vice versa.</div>
+        <div style="font-size:12px;color:var(--text-muted)">See your doors, groups, and deadbolts as a map. Access and visitor rules are edited here; deadbolt retract and cascade wiring shows read-only and is edited under Door Flows on the Automations tab.</div>
       </div>
       <button class="btn btn-sm btn-secondary" onclick="if(window.openDesigner)window.openDesigner()">Refresh designer</button>
     </div>
@@ -1722,7 +1745,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
           <div class="fd-labels" id="fdLabels"></div>
           <div class="fd-nodes" id="fdNodes"></div>
         </div>
-        <div class="fd-empty" id="fdEmpty" style="display:none">No rules yet. Use the panel on the right to add an access, visitor, or cascade rule, or drag between nodes to wire one.</div>
+        <div class="fd-empty" id="fdEmpty" style="display:none">No rules yet. Use the panel on the right to add an access or visitor rule, or drag between nodes to wire one. Deadbolt and cascade wiring is set up under Door Flows on the Automations tab.</div>
         <div class="fd-controls">
           <button id="fdZoomIn" title="Zoom in">+</button>
           <button id="fdZoomOut" title="Zoom out">&minus;</button>
@@ -2043,6 +2066,7 @@ function activateTab(tabEl) {
   if (page) page.classList.add('active');
   if (tabEl.dataset.page === 'settings') { loadSettings(); loadBackups(); }
   if (tabEl.dataset.page === 'designer' && window.openDesigner) window.openDesigner();
+  if (tabEl.dataset.page === 'keypad') renderKeypadUsers();
 }
 window.activateTab = activateTab;
 
@@ -2257,10 +2281,11 @@ async function fetchHealth() {
     updateDashboard();
     updateStatus(true);
     updateAutoSyncPill();
-    // Backstop for the Z-Wave panel's focus-guarded repaints: if one was
-    // skipped and the user's focus has moved on, deliver it now.
-    _zwSetupGate.kick(renderZwaveSetup);
-    _zwDeadboltGate.kick(refreshZwaveDeadbolt);
+    // Backstop for the focus-guarded section repaints: if one was skipped
+    // and the user's focus has moved on, deliver it now.
+    _devicesGate.kick(renderDeadboltDevices);
+    _doorFlowsGate.kick(renderDoorFlows);
+    _keypadGate.kick(renderKeypadUsers);
   } catch (e) {
     updateStatus(false);
   }
@@ -2513,7 +2538,11 @@ function renderDeadbolt(h) {
   const link = describeLockLink(lock);
   linkEl.textContent = link.label;
   linkEl.style.color = link.color;
-  document.getElementById('deadboltDoor').textContent = db.trigger_door || '-';
+  // A lock may be retracted by several doors; show them all.
+  const dashTriggers = (Array.isArray(db.trigger_doors) && db.trigger_doors.length)
+    ? db.trigger_doors
+    : (db.trigger_door ? [db.trigger_door] : []);
+  document.getElementById('deadboltDoor').textContent = dashTriggers.join(', ') || '-';
 
   const s = db.stats || {};
   const la = s.last_action;
@@ -2542,10 +2571,13 @@ function renderDeadbolt(h) {
         const snap = l.lock || {};
         const bolt = describeLockBolt(snap);
         const link = describeLockLink(snap);
+        const trig = (Array.isArray(l.trigger_doors) && l.trigger_doors.length)
+          ? l.trigger_doors
+          : (l.trigger_door ? [l.trigger_door] : []);
         return '<div style="font-size:12px;margin-top:2px">'
           + '<strong>' + escapeHtml(l.name || l.lock_id) + '</strong>: '
           + escapeHtml(bolt) + ' · ' + escapeHtml(link.label)
-          + (l.trigger_door ? ' · trigger ' + escapeHtml(l.trigger_door) : ' · manual only')
+          + (trig.length ? ' · triggered by ' + trig.map(escapeHtml).join(', ') : ' · manual only')
           + '</div>';
       }).join('');
     } else {
@@ -2789,11 +2821,11 @@ async function loadConfig() {
     if (typeof renderDesigner === 'function') { try { renderDesigner(); } catch (e) { /* designer optional */ } }
     // Rendered here (not inside renderConfig) because renderConfig returns
     // early when no users are synced yet, and the Z-Wave transport setup must
-    // be reachable on a fresh install.
-    renderZwaveSetup();
-    loadSerialPorts();
-    refreshZwaveDeadbolt();
-    renderDeadboltRules();
+    // be reachable on a fresh install. Each section has exactly ONE owner:
+    // renderDoorFlows -> #configDoorFlows, renderDeadboltDevices ->
+    // #configZwave (which refills its own dynamic parts internally).
+    renderDoorFlows();
+    renderDeadboltDevices();
     populateSimForm();
     renderTestRules();
   } catch (e) {
@@ -3197,29 +3229,30 @@ function renderConfig() {
 // the transport. Ports load from /api/deadbolt/serial-ports; the selection is
 // saved into devices.zwave via PUT /api/config. Pairing itself arrives in a
 // later phase; this section only prepares the transport.
-function renderZwaveSetup() {
+function renderDeadboltDevices(force) {
   // Field report: while the user was typing the S2 pairing PIN, a background
   // system.auto_reload event called loadConfig() -> here, and the innerHTML
   // rewrite below destroyed the focused PIN input ("it froze"). While a
   // pairing session is live, leave the whole Z-Wave section alone; the
   // terminal poll branch clears _pairPollTimer before its own loadConfig(),
-  // so the post-pairing repaint still happens.
+  // so the post-pairing repaint still happens. This holds even for a forced
+  // repaint: nothing may rebuild the section under a live pairing session.
   if (typeof _pairPollTimer !== 'undefined' && _pairPollTimer) return;
   const el = document.getElementById('configZwave');
   if (!el) return;
-  wireZwRefreshRetry();
+  wireSectionFocusRetry(el, () => _devicesGate.kick(renderDeadboltDevices));
   // Same protection for ANY interaction: background auto-refreshes (door/user
   // drift on a flapping controller) used to rebuild this section while a
   // dropdown was open, closing it instantly ("the After unlock dropdown gives
   // me no options"). If the user is focused on a control inside this section,
-  // skip this repaint; the next refresh catches up.
-  const focused = document.activeElement;
-  if (focused && typeof el.contains === 'function' && el.contains(focused)
-      && /^(SELECT|INPUT|TEXTAREA|BUTTON)$/.test(focused.tagName || '')) {
-    _zwSetupGate.skipped(renderZwaveSetup);
+  // skip this repaint; the gate retries shortly. A user-initiated repaint
+  // (repaintOwned) passes force and is never skipped: the click that earned
+  // the repaint must see its result.
+  if (force !== true && sectionHoldsFocus(el)) {
+    _devicesGate.skipped(renderDeadboltDevices);
     return;
   }
-  _zwSetupGate.ran();
+  _devicesGate.ran();
   const zw = configData?.devices?.zwave || {};
   const enabled = zw.enabled === true;
   el.innerHTML = `
@@ -3248,17 +3281,21 @@ function renderZwaveSetup() {
       <div id="zwaveAddDeadbolt" style="margin-top:10px"></div>
       <div id="zwavePairPanel" style="margin-top:10px"></div>
       <div id="zwaveLockCards" style="margin-top:10px"></div>
-      <div id="zwaveKeypadUsers" style="margin-top:10px"></div>
       <div id="zwaveDeadboltLocks" style="margin-top:10px"></div>
       <div id="zwaveDeadboltHealth" style="margin-top:10px;font-size:12px"></div>
     </div>
-
-    <div id="zwaveRulesBlock" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);display:none">
-      <div style="font-size:13px;font-weight:600;margin-bottom:6px">Deadbolt Automation</div>
-      <div id="zwaveRulesBody"></div>
-    </div>
   `;
   armDirtySave('#zwaveSetupRow', 'button[onclick^="saveZwaveSetup"]');
+  // The shell rebuild just replaced the pair panel with an empty one; drop
+  // the last-rendered memo so the next setPairPanel write repaints instead
+  // of trusting stale contents.
+  _lastPairPanelHtml = null;
+  // The shell's dynamic parts (status line, buttons, lock cards, inventory)
+  // are refilled by the ONE filler this section has. Called from here so a
+  // deferred shell rebuild can never leave the containers it just recreated
+  // sitting empty (the mechanism behind the old vanishing-section bug).
+  loadSerialPorts();
+  refreshZwaveDeadbolt(force);
 }
 
 // Pure renderer for the pairing panel: pairing-status object -> innerHTML.
@@ -3404,25 +3441,46 @@ function createZwRefreshGate(delayMs) {
     kick(retryFn) { if (this.pending) retryFn(); },
   };
 }
-const _zwSetupGate = createZwRefreshGate();
-const _zwDeadboltGate = createZwRefreshGate();
+// One gate per OWNED SECTION: Deadbolt Devices (#configZwave), Door Flows
+// (#configDoorFlows), and the Keypad Users tab (#kuPanel). Each guard tests
+// only its own container, so typing in one section never starves another.
+const _devicesGate = createZwRefreshGate();
+const _doorFlowsGate = createZwRefreshGate();
+const _keypadGate = createZwRefreshGate();
 
-// One-time wiring: leaving any field inside the Z-Wave section immediately
-// delivers a repaint that was skipped while the field had focus.
-let _zwRetryWired = false;
-function wireZwRefreshRetry() {
-  if (_zwRetryWired) return;
-  const el = document.getElementById('configZwave');
-  if (!el) return;
-  _zwRetryWired = true;
+// THE one focus predicate every section guard shares: a repaint is skipped
+// only while the user is inside a SELECT, INPUT, or TEXTAREA in that section.
+// BUTTON is deliberately excluded: a focused Save button used to defer the
+// very rebuild its own click had earned, and the deferred rebuild then wiped
+// the section (the "my saved trigger disappeared" bug). Clicking a button is
+// the END of an interaction, not the middle of one.
+function sectionHoldsFocus(sectionEl) {
+  const focused = document.activeElement;
+  return !!(sectionEl && focused && typeof sectionEl.contains === 'function'
+    && sectionEl.contains(focused)
+    && /^(SELECT|INPUT|TEXTAREA)$/.test(focused.tagName || ''));
+}
+
+// One-time wiring per section: leaving any field inside the container
+// immediately delivers a repaint that was skipped while the field had focus.
+function wireSectionFocusRetry(el, kickFn) {
+  if (!el || el._retryWired) return;
+  el._retryWired = true;
   el.addEventListener('focusout', () => {
     // setTimeout(0): let focus settle on the NEW element first, so a move
     // between two fields inside the section still counts as focused.
-    setTimeout(() => {
-      _zwSetupGate.kick(renderZwaveSetup);
-      _zwDeadboltGate.kick(refreshZwaveDeadbolt);
-    }, 0);
+    setTimeout(kickFn, 0);
   });
+}
+
+// USER-initiated mutations (Save, Remove, Add) repaint their section
+// through here: the focus guard is BYPASSED (force) because the user just
+// acted on this section and expects to see the result now. The guard exists
+// only to protect against BACKGROUND repaints destroying in-progress input.
+function repaintOwned(section) {
+  if (section === 'devices') renderDeadboltDevices(true);
+  else if (section === 'doorflows') renderDoorFlows(true);
+  else if (section === 'keypad') renderKeypadUsers(true);
 }
 
 // Pure renderer for the deadbolt action-button row (#zwaveDeadboltButtons),
@@ -3621,11 +3679,14 @@ function buildLockCard(l) {
   const batt = describeLockBattery(ls);
   const link = describeLockLink(ls);
   const title = l.name ? `${escapeHtml(l.name)} <span style="font-weight:400;color:var(--text-muted)">(${escapeHtml(l.lock_id)})</span>` : escapeHtml(l.lock_id);
-  const automation = l.automated
-    ? (l.trigger_door
-      ? `Automated: retracts on entry at <strong>${escapeHtml(l.trigger_door)}</strong>`
-      : 'Automated, no trigger door set (set one under Deadbolt Automation below)')
-    : 'Not automated: manual control only (assign a trigger door under Deadbolt Automation below)';
+  // Read-only automation summary: the editable trigger lives in Door Flows
+  // (a lock can be retracted by SEVERAL doors, each with its own behavior).
+  const triggerDoors = (Array.isArray(l.trigger_doors) && l.trigger_doors.length)
+    ? l.trigger_doors
+    : (l.trigger_door ? [l.trigger_door] : []);
+  const automation = triggerDoors.length
+    ? `Triggered by: <strong>${triggerDoors.map((d) => escapeHtml(d)).join('</strong>, <strong>')}</strong> <span style="color:var(--text-muted)">— edit in Door Flows above</span>`
+    : 'Manual control only — add this deadbolt to a door in Door Flows above to retract it on entry';
   return `<div class="lock-card" id="zwaveLockCard_${cssId(l.lock_id)}" style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-top:10px">`
     + `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">`
     + `<div style="font-size:13px;font-weight:600">${title}</div>`
@@ -3714,12 +3775,16 @@ function keypadBlockedLabel(s) {
 }
 
 // Per-lock status badge for one user. Pure and testable: takes the resolved
-// lock name and gating door name rather than closing over the panel lookups.
-// Every caller-derived string is escaped.
-function keypadLockBadge(s, lockName, doorName) {
+// lock name and gating door NAMES (a lock may be triggered by several doors;
+// access to ANY of them grants the code) rather than closing over the panel
+// lookups. Every caller-derived string is escaped.
+function keypadLockBadge(s, lockName, doorNames) {
   const nm = escapeHtml(lockName);
   if (s.status === 'blocked') {
-    const doorLabel = doorName ? `"${escapeHtml(doorName)}"` : "this lock's door";
+    const doors = (Array.isArray(doorNames) ? doorNames : (doorNames ? [doorNames] : [])).filter(Boolean);
+    const doorLabel = doors.length > 1
+      ? `any of its trigger doors (${doors.map((d) => `"${escapeHtml(d)}"`).join(', ')})`
+      : (doors.length ? `"${escapeHtml(doors[0])}"` : "this lock's door");
     const note = keypadBlockedLabel(s);
     return `<span class="badge error" title="This user's UniFi access does not include ${doorLabel}, so they get no new code here">${nm}: ${note}</span>`;
   }
@@ -3773,11 +3838,13 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
     const l = locks.find((x) => x.lock_id === id);
     return (l && l.name) || id;
   };
-  const doorOf = (id) => {
+  const doorsOf = (id) => {
     const l = locks.find((x) => x.lock_id === id);
-    return (l && l.gating_door) || null;
+    if (!l) return [];
+    if (Array.isArray(l.gating_doors)) return l.gating_doors;
+    return l.gating_door ? [l.gating_door] : [];
   };
-  const statusBadge = (s) => keypadLockBadge(s, lockName(s.lock_id), doorOf(s.lock_id));
+  const statusBadge = (s) => keypadLockBadge(s, lockName(s.lock_id), doorsOf(s.lock_id));
   const rows = (Array.isArray(a.users) ? a.users : []).map((u) => {
     const badges = (u.in_unifi ? ` <span class="badge success" title="The same PIN is set on this user's UniFi Access account">UniFi</span>` : ` <span class="badge warning" title="UniFi may hold a different PIN for this user; save the PIN again to sync">UniFi not synced</span>`)
       + (u.user_missing ? ` <span class="badge warning" title="This user is no longer in the UniFi sync; the code still opens the deadbolts until removed">user missing</span>` : '');
@@ -3806,10 +3873,13 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
   const noUsersHint = !pickerUsers.length
     ? `<span style="color:var(--text-muted)">UniFi users not synced yet; they appear automatically once the controller connects.</span>`
     : '';
-  // Which locks gate on a door vs. reach everyone (no door associated).
-  const gated = usable.filter((l) => l.gating_door);
+  // Which locks gate on doors vs. reach everyone (no trigger door). A lock
+  // triggered by SEVERAL doors admits a user who is allowed on ANY of them.
+  const gatedDoorsOf = (l) => (Array.isArray(l.gating_doors) && l.gating_doors.length)
+    ? l.gating_doors : (l.gating_door ? [l.gating_door] : []);
+  const gated = usable.filter((l) => gatedDoorsOf(l).length);
   const gatingLine = gated.length
-    ? `Access-gated: ${gated.map((l) => `${escapeHtml(l.name || l.lock_id)} → ${escapeHtml(l.gating_door)}`).join(', ')}. A user only gets a code on a lock whose UniFi door their access allows. Note that a deadbolt PIN works 24/7 and does not follow UniFi access schedules.`
+    ? `Access-gated: ${gated.map((l) => `${escapeHtml(l.name || l.lock_id)} → ${gatedDoorsOf(l).map(escapeHtml).join(', ')}`).join('; ')}. A user gets a code on a lock when their UniFi access allows at least one of its trigger doors. Note that a deadbolt PIN works 24/7 and does not follow UniFi access schedules.`
     : '';
   // Warn when gating cannot be trusted: access policies not synced, a
   // door-groups read failed, or some users have unresolved policies (all
@@ -3826,6 +3896,39 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
     + `<button class="btn btn-sm btn-primary" onclick="saveKeypadUser()"${dis} title="Writes the code to every paired lock and updates this user's UniFi Access PIN to match.">Save PIN</button>`
     + noUsersHint
     + `</div></div>`;
+}
+
+// Owner of the Keypad Users tab (#kuPanel). Fetches the server aggregate and
+// paints the one-PIN-per-user panel. Guarded like every owned section: a
+// background repaint is skipped while the user is inside a field here, but a
+// user-initiated one (repaintOwned('keypad') after Save/Remove) forces
+// through, so the picker is usable again the moment a mutation lands - no
+// page reload needed.
+async function renderKeypadUsers(force) {
+  const el = document.getElementById('kuPanel');
+  if (!el) return;
+  if (force !== true && sectionHoldsFocus(el)) {
+    _keypadGate.skipped(renderKeypadUsers);
+    return;
+  }
+  _keypadGate.ran();
+  wireSectionFocusRetry(el, () => _keypadGate.kick(renderKeypadUsers));
+  try {
+    const [agg, devices] = await Promise.all([
+      api('GET', '/api/deadbolt/keypad-users'),
+      api('GET', '/api/devices').catch(() => ({})),
+    ]);
+    if (agg && agg.error) {
+      el.innerHTML = `<div style="font-size:12px;color:var(--text-muted)">Keypad users unavailable: ${escapeHtml(agg.error)}</div>`;
+      return;
+    }
+    const pairingActive = !!(devices && devices.zwave && devices.zwave.pairing_active);
+    const html = buildKeypadUsersPanel(agg, usersData?.users || [], pairingActive);
+    el.innerHTML = html
+      || emptyStateHtml('No deadbolt with a keypad is paired yet. Pair one under Automations → Deadbolt Devices, then manage PINs here.', '🔢');
+  } catch (e) {
+    el.innerHTML = `<div style="font-size:12px;color:var(--text-muted)">Could not load keypad users: ${escapeHtml(e.message)}</div>`;
+  }
 }
 
 // Save a user's ONE PIN: every paired lock plus their UniFi Access PIN.
@@ -3869,7 +3972,10 @@ async function saveKeypadUser() {
       if (r.unifi.hint) toast(r.unifi.hint, 'info');
     }
     pinEl.value = '';
-    refreshZwaveDeadbolt();
+    // User-initiated: repaint the panel NOW, guard bypassed. The old
+    // whole-section refresh was skipped whenever focus sat in the picker,
+    // which left the panel stale until a page reload.
+    repaintOwned('keypad');
   } catch (e) { toast(`Saving the PIN failed: ${e.message}`, 'error'); }
 }
 
@@ -3879,7 +3985,9 @@ async function removeKeypadUser(userId) {
     const r = await api('DELETE', `/api/deadbolt/keypad-users/${encodeURIComponent(userId)}`);
     if (r.error) { toast(r.error, 'error'); return; }
     toast(`Keypad code removed on ${(r.results || []).length} lock(s).`, 'success');
-    refreshZwaveDeadbolt();
+    // Unguarded targeted repaint: the removed user must reappear in the
+    // picker immediately so they can be re-added without a page reload.
+    repaintOwned('keypad');
   } catch (e) { toast(`Remove failed: ${e.message}`, 'error'); }
 }
 
@@ -3897,26 +4005,23 @@ async function rewriteUserCodesToLock(lockId) {
   } catch (e) { toast(`Rewrite failed: ${e.message}`, 'error'); }
 }
 
-async function refreshZwaveDeadbolt() {
+async function refreshZwaveDeadbolt(force) {
   const line = document.getElementById('zwaveDeadboltStatusLine');
   const btns = document.getElementById('zwaveDeadboltButtons');
   const cardsEl = document.getElementById('zwaveLockCards');
   if (!line || !btns) return;
   // Never rebuild the panel under the user's cursor: an open dropdown or a
-  // half-typed PIN would be destroyed by the innerHTML swap. The skip is
-  // TEMPORARY (gate retries shortly / on focusout / via the health poll) -
-  // it used to be permanent, which left action-disabled buttons dead until
-  // a full page reload.
+  // half-typed field would be destroyed by the innerHTML swap. The skip is
+  // TEMPORARY and the retry is the SECTION OWNER (renderDeadboltDevices), so
+  // a deferred repaint always rebuilds shell + fill together; this filler
+  // never clears the gate itself, because a pending shell rebuild must not
+  // be cancelled by a fill that repaints less than the shell would.
   const zwSection = document.getElementById('configZwave');
-  const focusedEl = document.activeElement;
-  if (zwSection && focusedEl && typeof zwSection.contains === 'function'
-      && zwSection.contains(focusedEl)
-      && /^(SELECT|INPUT|TEXTAREA)$/.test(focusedEl.tagName || '')) {
-    _zwDeadboltGate.skipped(refreshZwaveDeadbolt);
+  if (force !== true && sectionHoldsFocus(zwSection)) {
+    _devicesGate.skipped(renderDeadboltDevices);
     return;
   }
-  _zwDeadboltGate.ran();
-  wireZwRefreshRetry();
+  if (zwSection) wireSectionFocusRetry(zwSection, () => _devicesGate.kick(renderDeadboltDevices));
   try {
     const r = await api('GET', '/api/devices');
     const zw = r.zwave || {};
@@ -3956,21 +4061,12 @@ async function refreshZwaveDeadbolt() {
         ? `1 lock paired. Each lock's controls live on its card below.`
         : `${pairedLocks.length} locks paired. Each lock's controls live on its card below.`;
       // One card per paired lock: identity, live badges, buttons, after-unlock
-      // control. PIN management is the single Keypad users panel below the
-      // cards (one PIN per user, applied to every lock).
+      // control. PIN management lives on the Keypad Users tab (one PIN per
+      // user, applied to every lock the user's access allows).
       if (cardsEl) cardsEl.innerHTML = pairedLocks.map((l) => buildLockCard(l)).join('');
-      const kuEl = document.getElementById('zwaveKeypadUsers');
-      if (kuEl) {
-        try {
-          const agg = await api('GET', '/api/deadbolt/keypad-users');
-          kuEl.innerHTML = agg.error ? '' : buildKeypadUsersPanel(agg, usersData?.users || [], pairingActive);
-        } catch (e) { /* panel is optional detail; leave as-is */ }
-      }
     } else {
       line.textContent = 'No lock paired yet.';
       if (cardsEl) cardsEl.innerHTML = '';
-      const kuEl = document.getElementById('zwaveKeypadUsers');
-      if (kuEl) kuEl.innerHTML = '';
     }
     // Resume polling if a session is running (e.g. after a page reload).
     if (pairingActive && !_pairPollTimer) pollPairingStatus();
@@ -4236,162 +4332,399 @@ async function startReinterview(lockId) {
 }
 
 // ------------------------------------------------------------
-// Deadbolt automation rules (retract trigger + interior cascade).
-// Edits apply live: the server rebuilds the deadbolt controller on
-// save without touching the Z-Wave connection.
+// Door Flows: the door-centric automation editor. Everything
+// starts at the door - pick a door, then say what an entry there
+// controls: deadbolts to RETRACT (a real Z-Wave unlock command,
+// each edge with its own after-unlock behavior) and other doors
+// to CASCADE-unlock (UniFi unlock only, never a lock command).
+// Owns #configDoorFlows; reads GET /api/door-flows and saves via
+// PUT /api/door-flows (whole-map replace, so removals stick).
+// Edits apply live: the server rebuilds the deadbolt controllers
+// on save without touching the Z-Wave connection.
 // ------------------------------------------------------------
 
+// Read-only cascade view for the Visual Designer. Sourced from the computed
+// legacy projection GET /api/config still attaches; edits happen ONLY in the
+// Door Flows editor.
 function _getCascadeRules() {
   return (configData?.cascade_rules?.rules || []).slice();
 }
 
-function renderDeadboltRules() {
-  const block = document.getElementById('zwaveRulesBlock');
-  const body = document.getElementById('zwaveRulesBody');
-  if (!block || !body) return;
-  const zwEnabled = configData?.devices?.zwave?.enabled === true;
-  const hasRules = !!(configData?.deadbolt_rules || configData?.cascade_rules);
-  if (!zwEnabled && !hasRules) { block.style.display = 'none'; return; }
-  block.style.display = '';
+let doorFlowsData = null; // last GET /api/door-flows payload + local edits
 
-  const rules = _getCascadeRules();
-  // deadbolt_rules is a per-lock map: one retract row per SAVED lock, each
-  // writing its own entry, so two locks can follow two different doors.
-  const savedLocks = configData?.devices?.zwave?.locks || {};
-  const db = configData?.deadbolt_rules || {};
-  // Unpaired ghosts (node_id 0, left by an unpair) get no automation row;
-  // entries with NO node_id (dev FakeLock bindings) keep theirs.
-  const lockIds = Object.keys(savedLocks).filter((id) => savedLocks[id]?.node_id !== 0);
-
-  let html = `
-    <div id="deadboltTriggerRow" style="margin-bottom:14px">
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">
-        Retract on entry: when someone badges in at a lock's trigger door, that deadbolt retracts.
-        Leave a lock unset to keep it manual-only. This door also gates keypad access:
-        only users whose UniFi access includes it get a keypad code on that lock.
-      </div>`;
-  if (!lockIds.length) {
-    html += `<div style="font-size:12px;color:var(--text-muted)">Pair a lock first; each lock then gets its own trigger-door row here.</div>`;
-  }
-  for (const lockId of lockIds) {
-    const entry = (db[lockId] && typeof db[lockId] === 'object') ? db[lockId] : null;
-    const trigger = (entry && entry.trigger_door) || '';
-    const label = savedLocks[lockId]?.name || lockId;
-    const idArg = escapeHtml(JSON.stringify(String(lockId)));
-    html += `
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
-        <span style="font-size:12px;min-width:150px">${escapeHtml(label)}</span>
-        <select id="deadboltTriggerDoor_${cssId(lockId)}" style="min-width:220px;font-size:12px;padding:6px">
-          <option value="">-- No retract trigger --</option>
-          ${_doorOptions(trigger)}
-        </select>
-        <button class="btn btn-sm btn-primary" onclick="saveDeadboltTrigger(${idArg})">Save Trigger</button>
-      </div>`;
-  }
-  html += `
+// One retract edge row: "Retract <lock> then <after-unlock>", with the
+// rarely-needed fields folded under an Advanced expander. Pure builder.
+function buildRetractEdgeRow(door, edge, idx, locks) {
+  const lock = (locks || []).find((l) => l.lock_id === edge.lock_id);
+  const lockName = (lock && (lock.name || lock.lock_id)) || edge.lock_id;
+  const sfx = `${cssId(door)}_${idx}`;
+  const doorArg = escapeHtml(JSON.stringify(String(door)));
+  const after = edge.after_unlock || 'lock_default';
+  const opt = (v, label) => `<option value="${v}"${after === v ? ' selected' : ''}>${label}</option>`;
+  const relockSecs = edge.relock_seconds == null ? 30 : edge.relock_seconds;
+  const ghost = lock && !lock.paired && !lock.bound
+    ? ` <span class="badge warning" title="This lock is saved but not paired right now; the retract resumes when it is paired again.">not paired</span>`
+    : '';
+  const conflict = edge.hardware_conflict
+    ? `<div class="notice notice-warn" style="margin-top:6px">This lock's own auto-relock is ON, so it re-locks itself anyway. Turn off its After-unlock default on its card under Deadbolt Devices to make "stay unlocked" stick.</div>`
+    : '';
+  return `<div style="padding:8px 0;border-bottom:1px dashed var(--border)">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px">
+      <span style="min-width:170px">Retract <strong>${escapeHtml(lockName)}</strong>${ghost}</span>
+      <span style="color:var(--text-muted)">then</span>
+      <select id="dfAfter_${sfx}" style="font-size:12px;padding:5px" onchange="onAfterUnlockChange(${doorArg}, ${idx})" title="What the app does with THIS deadbolt after THIS door retracts it. Another door can treat the same deadbolt differently.">
+        ${opt('lock_default', 'leave it to the lock’s own default')}
+        ${opt('stay_unlocked', 'keep it unlocked until something locks it')}
+        ${opt('relock_after', 'relock it after a delay')}
+      </select>
+      <span id="dfRelockWrap_${sfx}" style="${after === 'relock_after' ? '' : 'display:none'}">
+        <input type="number" id="dfRelockSecs_${sfx}" value="${escapeHtml(relockSecs)}" min="5" max="3600" style="width:70px;font-size:12px;padding:5px"> seconds
+      </span>
+      <button class="btn btn-sm btn-secondary" onclick="removeRetractEdge(${doorArg}, ${idx})">Remove</button>
     </div>
-    <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">
-      Interior cascade: when an entry is granted at the trigger door, momentarily unlock these interior doors (UniFi unlock only, never a lock command).
-    </div>
-  `;
-
-  if (rules.length === 0) {
-    html += `<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">No cascade rules configured.</div>`;
-  } else {
-    rules.forEach((rule, idx) => {
-      html += `<div class="rule-card">
-        <div class="rule-actions">
-          <button class="delete" onclick="deleteCascadeRule(${idx})">Delete</button>
-        </div>
-        <div class="rule-sentence">
-          When <strong>${escapeHtml(rule.trigger_door)}</strong> grants entry, unlock
-          <span class="rule-doors-list">${escapeHtml((rule.unlock || []).join(', '))}</span>
-          <span style="font-size:11px;color:var(--text-muted)">(debounce ${escapeHtml(rule.debounce_seconds != null ? rule.debounce_seconds : 8)}s)</span>
-        </div>
-      </div>`;
-    });
-  }
-
-  html += `<div id="cascadeRuleFormContainer"></div>
-    <button class="btn btn-sm btn-secondary" onclick="showCascadeRuleForm()" style="margin-top:8px">Add Cascade Rule</button>`;
-  body.innerHTML = html;
-  // Note: no armDirtySave here. It hides a save button until a change, but
-  // querySelector wires only the FIRST match, so with one Save Trigger button
-  // per lock it hid lock #1's while the rest stayed visible. Every per-lock
-  // Save Trigger button now stays visible for consistent behavior.
+    ${conflict}
+    <details style="margin-top:6px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">Advanced</summary>
+      <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:12px;margin-top:6px">
+        <label style="display:flex;align-items:center;gap:6px" title="Only entry events whose result matches this trigger the retract. ACCESS is the normal granted-entry result; change it only if your controller reports something else.">
+          Entry result <input type="text" id="dfReq_${sfx}" value="${escapeHtml(edge.require_result || 'ACCESS')}" style="width:90px;font-size:12px;padding:5px">
+        </label>
+        <label style="display:flex;align-items:center;gap:6px" title="Also retract when UniFi reports this door unlocked outside an entry (an unlock schedule or a manual unlock), mirroring the door state onto the deadbolt.">
+          <input type="checkbox" id="dfMirror_${sfx}"${edge.mirror_unlock ? ' checked' : ''}> Mirror door unlocks
+        </label>
+        <label style="display:flex;align-items:center;gap:6px" title="After a retract, ignore the door re-securing for this many seconds so a normal entry cannot immediately re-throw the bolt.">
+          Re-lock cooldown <input type="number" id="dfCooldown_${sfx}" value="${escapeHtml(edge.relock_cooldown_seconds == null ? 10 : edge.relock_cooldown_seconds)}" min="0" max="600" style="width:70px;font-size:12px;padding:5px"> s
+        </label>
+      </div>
+    </details>
+  </div>`;
 }
 
-function showCascadeRuleForm() {
-  const container = document.getElementById('cascadeRuleFormContainer');
-  if (!container) return;
-  const doors = doorsData?.discovered || doorsData?.configured || {};
-  const doorNames = Object.keys(doors).filter(d => !d.startsWith('_'));
-  const checkboxes = doorNames.map(n =>
+// The cascade block of a door flow: which OTHER doors momentarily unlock
+// after an entry here. Only offered once the site has 2+ doors (a cascade
+// needs somewhere to go); an elevator is just another door in this list.
+function buildCascadeEditor(door, cascade, doors) {
+  const others = (doors || []).filter((d) => d.name !== door);
+  if (!others.length) return '';
+  const cssD = cssId(door);
+  const sel = new Set((cascade && Array.isArray(cascade.unlock)) ? cascade.unlock : []);
+  const checks = others.map((d) =>
     `<label style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:12px">
-      <input type="checkbox" class="cascade-unlock-door" value="${escapeHtml(n)}"> ${escapeHtml(n)}
-    </label>`
-  ).join('');
-  container.innerHTML = `<div class="rule-form">
-    <div style="margin-bottom:8px">
-      <label class="form-label">Trigger door (entry granted here)</label>
-      <select id="cascadeTriggerDoor" style="font-size:12px;padding:6px">${_doorOptions('')}</select>
-    </div>
-    <div style="margin-bottom:8px">
-      <label class="form-label">Unlock these doors</label>
-      <div>${checkboxes || '<span style="font-size:12px;color:var(--text-muted)">No doors discovered yet.</span>'}</div>
-    </div>
-    <div style="margin-bottom:8px">
-      <label class="form-label">Debounce (seconds)</label>
-      <input type="number" id="cascadeDebounce" value="8" min="0" max="600" style="width:90px;font-size:12px;padding:6px">
-    </div>
-    <div style="display:flex;gap:8px">
-      <button class="btn btn-sm btn-primary" onclick="saveCascadeRule()">Save Rule</button>
-      <button class="btn btn-sm btn-secondary" onclick="document.getElementById('cascadeRuleFormContainer').innerHTML=''">Cancel</button>
+      <input type="checkbox" class="df-cascade-door" data-df-door="${cssD}" value="${escapeHtml(d.name)}"${sel.has(d.name) ? ' checked' : ''}> ${escapeHtml(d.name)}
+    </label>`).join('');
+  const deb = cascade && cascade.debounce_seconds != null ? cascade.debounce_seconds : 8;
+  return `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
+    <div style="font-size:12px;font-weight:600;margin-bottom:2px">Also unlock other doors (cascade)</div>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">Momentarily unlocks these UniFi doors after an entry here - a UniFi unlock only, never a lock command.</div>
+    <div>${checks}</div>
+    <div style="font-size:12px;margin-top:6px">
+      <label style="display:inline-flex;align-items:center;gap:6px" title="Ignore repeat entries for this many seconds so one person badging twice does not fire the cascade twice.">
+        Debounce <input type="number" id="dfDebounce_${cssD}" value="${escapeHtml(deb)}" min="0" max="600" style="width:70px;font-size:12px;padding:5px"> seconds
+      </label>
     </div>
   </div>`;
 }
 
-async function saveCascadeRule() {
-  const trigger = document.getElementById('cascadeTriggerDoor')?.value || '';
-  const unlock = Array.from(document.querySelectorAll('.cascade-unlock-door:checked')).map(c => c.value);
-  const debounce = parseInt(document.getElementById('cascadeDebounce')?.value, 10);
-  if (!trigger) { toast('Pick a trigger door', 'error'); return; }
-  if (unlock.length === 0) { toast('Pick at least one door to unlock', 'error'); return; }
-  const rules = _getCascadeRules();
-  rules.push({ trigger_door: trigger, unlock, debounce_seconds: Number.isFinite(debounce) ? debounce : 8 });
-  try {
-    await api('PUT', '/api/config', { cascade_rules: { rules } });
-    toast('Cascade rule saved (applies immediately)', 'success');
-    await loadConfig();
-  } catch (e) { toast(`Failed to save: ${e.message}`, 'error'); }
+// One card per configured door: retract edges + add-deadbolt row + cascade.
+// Pure builder over the GET /api/door-flows payload.
+function buildDoorFlowCard(door, flow, data) {
+  const doors = (data && data.doors) || [];
+  const locks = (data && data.locks) || [];
+  const info = doors.find((d) => d.name === door);
+  const cssD = cssId(door);
+  const doorArg = escapeHtml(JSON.stringify(String(door)));
+  const edges = Array.isArray(flow.retract) ? flow.retract : [];
+  const usableLocks = locks.filter((l) => l.paired || l.bound);
+  const freeLocks = usableLocks.filter((l) => !edges.some((e) => e && e.lock_id === l.lock_id));
+  const undiscovered = info && !info.discovered
+    ? ` <span class="badge warning" title="Not in the current UniFi door list. The flow stays saved and resumes if the door reappears.">not discovered</span>`
+    : '';
+  const rows = edges.map((e, i) => buildRetractEdgeRow(door, e, i, locks)).join('');
+  let addRow;
+  if (freeLocks.length) {
+    addRow = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+      <select id="dfAddLock_${cssD}" style="min-width:200px;font-size:12px;padding:6px">
+        ${freeLocks.map((l) => `<option value="${escapeHtml(l.lock_id)}">${escapeHtml(l.name || l.lock_id)}</option>`).join('')}
+      </select>
+      <button class="btn btn-sm btn-secondary" onclick="addRetractEdge(${doorArg})">Add Deadbolt</button>
+    </div>`;
+  } else if (!usableLocks.length && !edges.length) {
+    addRow = `<div style="font-size:12px;color:var(--text-muted);margin-top:6px">No deadbolt is paired yet. Pair one under Deadbolt Devices below to retract it from this door.</div>`;
+  } else {
+    addRow = '';
+  }
+  const retract = `<div style="margin-top:4px">
+    <div style="font-size:12px;font-weight:600;margin-bottom:2px">Retract deadbolts</div>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:2px">A retract sends a real Z-Wave unlock command to the bolt. These deadbolts also gate keypad PINs: a user gets a PIN on a deadbolt only when their UniFi access allows one of its trigger doors.</div>
+    ${rows || `<div style="font-size:12px;color:var(--text-muted);padding:6px 0">No deadbolts retract from this door yet.</div>`}
+    ${addRow}
+  </div>`;
+  const cascade = buildCascadeEditor(door, flow.cascade, doors);
+  return `<div class="rule-card" id="dfCard_${cssD}" style="margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div style="font-size:13px;font-weight:600">When entry is granted at ${escapeHtml(door)}${undiscovered}</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span data-dirty-label style="display:none;font-size:11px;color:var(--text-muted)">Unsaved changes</span>
+        <button class="btn btn-sm btn-primary" data-df-save onclick="saveDoorFlow(${doorArg})">Save</button>
+        <button class="btn btn-sm btn-secondary" onclick="removeDoorFlow(${doorArg})">Remove Flow</button>
+      </div>
+    </div>
+    ${retract}
+    ${cascade}
+  </div>`;
 }
 
-async function deleteCascadeRule(idx) {
-  const rules = _getCascadeRules();
-  const rule = rules[idx];
-  if (!rule) return;
-  if (!confirm(`Remove the cascade rule for "${rule.trigger_door}"?`)) return;
-  rules.splice(idx, 1);
-  try {
-    await api('PUT', '/api/config', { cascade_rules: { rules } });
-    toast('Cascade rule removed', 'success');
-    await loadConfig();
-  } catch (e) { toast(`Failed to save: ${e.message}`, 'error'); }
+// The whole Door Flows section body. Pure builder.
+function buildDoorFlowsSection(data) {
+  const doors = (data && data.doors) || [];
+  const flows = (data && data.flows) || {};
+  const flowDoors = Object.keys(flows).sort((a, b) => a.localeCompare(b));
+  const freeDoors = doors.filter((d) => !Object.prototype.hasOwnProperty.call(flows, d.name));
+  if (!doors.length && !flowDoors.length) {
+    return `<div style="font-size:12px;color:var(--text-muted)">No doors discovered yet. Connect the UniFi controller (Settings), then pick a door here and say what it controls.</div>`;
+  }
+  const intro = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+    Everything starts at the door. Pick a door, then choose what an entry there controls:
+    deadbolts to retract${doors.length >= 2 ? ' and other doors to cascade-unlock' : ''}.
+    Each door decides its own after-unlock behavior for each deadbolt.
+  </div>`;
+  const warnings = ((data && data.warnings) || [])
+    .map((w) => `<div class="notice notice-warn">${escapeHtml(w)}</div>`).join('');
+  const cards = flowDoors.map((d) => buildDoorFlowCard(d, flows[d], data)).join('');
+  const empty = !flowDoors.length
+    ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">No door flows yet. Add one below to automate a deadbolt or cascade.</div>`
+    : '';
+  const addFlow = freeDoors.length
+    ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:${flowDoors.length ? 8 : 0}px">
+        <select id="dfAddDoor" style="min-width:220px;font-size:12px;padding:6px">
+          <option value="">-- pick a door to configure --</option>
+          ${freeDoors.map((d) => `<option value="${escapeHtml(d.name)}">${escapeHtml(d.name)}</option>`).join('')}
+        </select>
+        <button class="btn btn-sm btn-secondary" onclick="addDoorFlow()">Add Door Flow</button>
+      </div>`
+    : '';
+  return intro + warnings + empty + cards + addFlow;
 }
 
-async function saveDeadboltTrigger(lockId) {
-  const sel = document.getElementById('deadboltTriggerDoor_' + cssId(lockId));
-  if (!sel) return;
-  const door = sel.value || '';
-  // The server deep-merges per entry, so clearing must send an explicit
-  // empty string (an absent key would leave the old trigger in place). An
-  // empty trigger never matches a door, which disables the retract.
-  try {
-    await api('PUT', '/api/config', { deadbolt_rules: { [lockId]: { trigger_door: door } } });
-    toast(door ? `${lockId} retracts on entry at "${door}"` : `${lockId}: retract trigger disabled`, 'success');
-    await loadConfig();
-  } catch (e) { toast(`Failed to save: ${e.message}`, 'error'); }
+// A door-flow card is "dirty" when its Save button is armed. A background
+// repaint would silently discard those edits, so the section guard treats a
+// dirty card exactly like held focus: skip and retry later.
+function _dirtyDoorFlowCards() {
+  const out = [];
+  if (!doorFlowsData || !doorFlowsData.flows) return out;
+  for (const door of Object.keys(doorFlowsData.flows)) {
+    const card = document.getElementById(`dfCard_${cssId(door)}`);
+    const btn = card && card.querySelector('button[data-df-save]');
+    if (btn && !btn.disabled) out.push(door);
+  }
+  return out;
 }
+
+// Owner of #configDoorFlows. Background calls are guarded (focus held OR
+// unsaved edits anywhere in the section); user-initiated calls pass force,
+// which still preserves other cards' unsaved edits by collecting them into
+// the local model first and carrying them over the refetch.
+async function renderDoorFlows(force) {
+  const el = document.getElementById('configDoorFlows');
+  if (!el) return;
+  wireSectionFocusRetry(el, () => _doorFlowsGate.kick(renderDoorFlows));
+  const dirtyDoors = _dirtyDoorFlowCards();
+  if (force !== true && (sectionHoldsFocus(el) || dirtyDoors.length)) {
+    _doorFlowsGate.skipped(renderDoorFlows);
+    return;
+  }
+  _doorFlowsGate.ran();
+  // Snapshot unsaved edits (DOM -> local model) BEFORE the refetch, so a
+  // forced repaint after saving card A cannot wipe card B's work in progress.
+  for (const door of dirtyDoors) collectDoorFlowCard(door);
+  try {
+    const fresh = await api('GET', '/api/door-flows');
+    if (fresh && fresh.error) {
+      el.innerHTML = `<div style="font-size:12px;color:var(--text-muted)">Door flows unavailable: ${escapeHtml(fresh.error)}</div>`;
+      return;
+    }
+    for (const door of dirtyDoors) {
+      if (doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door]) {
+        fresh.flows = fresh.flows || {};
+        fresh.flows[door] = doorFlowsData.flows[door];
+      }
+    }
+    doorFlowsData = fresh;
+    el.innerHTML = buildDoorFlowsSection(doorFlowsData);
+    _armDoorFlowCards(dirtyDoors);
+  } catch (e) {
+    el.innerHTML = `<div style="font-size:12px;color:var(--text-muted)">Could not load door flows: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// Arm the dirty-save machinery on every card; cards whose unsaved edits were
+// carried across the repaint come back up already marked dirty.
+function _armDoorFlowCards(dirtyDoors) {
+  for (const door of Object.keys(doorFlowsData?.flows || {})) {
+    armDirtySave(`#dfCard_${cssId(door)}`, 'button[data-df-save]');
+  }
+  for (const door of (dirtyDoors || [])) {
+    markSectionDirty(`#dfCard_${cssId(door)}`, 'button[data-df-save]');
+  }
+}
+
+// Repaint ONE card in place from the local model (used by add/remove edge,
+// which are unsaved structural edits). The card comes back marked dirty.
+function repaintDoorFlowCard(door) {
+  const card = document.getElementById(`dfCard_${cssId(door)}`);
+  const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
+  if (!card || !flow) return;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = buildDoorFlowCard(door, flow, doorFlowsData);
+  card.replaceWith(wrap.firstElementChild);
+  armDirtySave(`#dfCard_${cssId(door)}`, 'button[data-df-save]');
+  markSectionDirty(`#dfCard_${cssId(door)}`, 'button[data-df-save]');
+}
+
+// Read one card's controls back into the local model. Tolerant of a card
+// that is not currently in the DOM (returns silently).
+function collectDoorFlowCard(door) {
+  const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
+  if (!flow) return;
+  const cssD = cssId(door);
+  (Array.isArray(flow.retract) ? flow.retract : []).forEach((edge, idx) => {
+    const sfx = `${cssD}_${idx}`;
+    const after = document.getElementById(`dfAfter_${sfx}`);
+    if (!after) return; // row not rendered
+    edge.after_unlock = after.value || 'lock_default';
+    const secs = parseInt(document.getElementById(`dfRelockSecs_${sfx}`)?.value, 10);
+    if (Number.isFinite(secs)) edge.relock_seconds = secs;
+    if (edge.after_unlock === 'relock_after' && !(Number.isFinite(edge.relock_seconds) && edge.relock_seconds > 0)) {
+      edge.relock_seconds = 30;
+    }
+    const req = document.getElementById(`dfReq_${sfx}`);
+    if (req) edge.require_result = (req.value || '').trim() || 'ACCESS';
+    const mir = document.getElementById(`dfMirror_${sfx}`);
+    if (mir) edge.mirror_unlock = !!mir.checked;
+    const cd = parseInt(document.getElementById(`dfCooldown_${sfx}`)?.value, 10);
+    if (Number.isFinite(cd)) edge.relock_cooldown_seconds = cd;
+  });
+  const checks = document.querySelectorAll(`input.df-cascade-door[data-df-door="${cssD}"]`);
+  if (checks.length) {
+    const unlock = Array.from(checks).filter((c) => c.checked).map((c) => c.value);
+    const deb = parseInt(document.getElementById(`dfDebounce_${cssD}`)?.value, 10);
+    flow.cascade = unlock.length
+      ? { unlock, debounce_seconds: Number.isFinite(deb) ? deb : 8 }
+      : null;
+  }
+}
+
+// PUT the whole flows map (replace semantics: removals stick). Returns the
+// server response or null on error; server-side warnings surface as toasts.
+async function putDoorFlows() {
+  try {
+    const r = await api('PUT', '/api/door-flows', { flows: doorFlowsData?.flows || {} });
+    if (r.error) { toast(r.error, 'error'); return null; }
+    for (const w of (r.warnings || [])) toast(w, 'info');
+    return r;
+  } catch (e) {
+    toast(`Saving door flows failed: ${e.message}`, 'error');
+    return null;
+  }
+}
+
+function addDoorFlow() {
+  const sel = document.getElementById('dfAddDoor');
+  const door = sel && sel.value;
+  if (!door) { toast('Pick a door first.', 'error'); return; }
+  if (!doorFlowsData) return;
+  doorFlowsData.flows = doorFlowsData.flows || {};
+  if (!doorFlowsData.flows[door]) {
+    const info = (doorFlowsData.doors || []).find((d) => d.name === door);
+    doorFlowsData.flows[door] = { door_id: (info && info.id) || null, retract: [], cascade: null };
+  }
+  // Local-only until saved; the repaint marks the new card dirty so the
+  // background-refresh guard protects it until Save.
+  const el = document.getElementById('configDoorFlows');
+  if (el) el.innerHTML = buildDoorFlowsSection(doorFlowsData);
+  _armDoorFlowCards([door]);
+}
+
+function addRetractEdge(door) {
+  const sel = document.getElementById(`dfAddLock_${cssId(door)}`);
+  const lockId = sel && sel.value;
+  if (!lockId) { toast('Pick a deadbolt first.', 'error'); return; }
+  const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
+  if (!flow) return;
+  collectDoorFlowCard(door); // keep in-progress edits on the other rows
+  flow.retract = Array.isArray(flow.retract) ? flow.retract : [];
+  flow.retract.push({
+    lock_id: lockId,
+    after_unlock: 'lock_default',
+    relock_seconds: null,
+    require_result: 'ACCESS',
+    mirror_unlock: false,
+    relock_cooldown_seconds: 10,
+  });
+  repaintDoorFlowCard(door);
+}
+
+function removeRetractEdge(door, idx) {
+  const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
+  if (!flow || !Array.isArray(flow.retract) || !flow.retract[idx]) return;
+  collectDoorFlowCard(door);
+  flow.retract.splice(idx, 1);
+  repaintDoorFlowCard(door);
+}
+
+// Show/hide the relock-delay input to match the chosen after-unlock mode.
+// The change event bubbles to the card's dirty-save listener on its own.
+function onAfterUnlockChange(door, idx) {
+  const sfx = `${cssId(door)}_${idx}`;
+  const sel = document.getElementById(`dfAfter_${sfx}`);
+  const wrap = document.getElementById(`dfRelockWrap_${sfx}`);
+  if (sel && wrap) wrap.style.display = sel.value === 'relock_after' ? '' : 'none';
+}
+
+async function saveDoorFlow(door) {
+  if (!doorFlowsData) return;
+  collectDoorFlowCard(door);
+  const flow = doorFlowsData.flows && doorFlowsData.flows[door];
+  const hasContent = !!(flow && ((Array.isArray(flow.retract) && flow.retract.length)
+    || (flow.cascade && Array.isArray(flow.cascade.unlock) && flow.cascade.unlock.length)));
+  if (!hasContent) {
+    toast(`Nothing is configured for "${door}" yet. Add a deadbolt or pick cascade doors, or use Remove Flow.`, 'info');
+    return;
+  }
+  const r = await putDoorFlows();
+  if (!r) return;
+  toast(`Door flow for "${door}" saved (applies immediately).`, 'success');
+  repaintOwned('doorflows');
+  refreshZwaveDeadbolt(); // the lock cards' "Triggered by" lines just changed
+}
+
+async function removeDoorFlow(door) {
+  if (!doorFlowsData || !doorFlowsData.flows || !doorFlowsData.flows[door]) return;
+  if (!confirm(`Remove the door flow for "${door}"?\n\nIts deadbolts stop retracting from this door and any cascade from it is removed.`)) return;
+  delete doorFlowsData.flows[door];
+  const r = await putDoorFlows();
+  if (!r) return;
+  toast(`Door flow for "${door}" removed.`, 'success');
+  repaintOwned('doorflows');
+  refreshZwaveDeadbolt();
+}
+
+// Deep-link to a door's flow card on the Automations tab (used by the Visual
+// Designer's read-only deadbolt and cascade summaries).
+function jumpToDoorFlow(door) {
+  const tab = document.querySelector('#tabBar [role="tab"][data-page="config"]');
+  if (tab) activateTab(tab);
+  // Give the tab switch (and a possibly fresh renderDoorFlows) a beat, then
+  // scroll to the door's card, falling back to the section itself.
+  setTimeout(() => {
+    const card = (door && document.getElementById(`dfCard_${cssId(door)}`))
+      || document.getElementById('configDoorFlows');
+    if (card && typeof card.scrollIntoView === 'function') {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, 80);
+}
+window.jumpToDoorFlow = jumpToDoorFlow;
 
 async function loadSerialPorts() {
   const sel = document.getElementById('zwaveSerialPort');
@@ -6340,22 +6673,19 @@ setInterval(fetchHealth, 10000);
     return Array.from(s).sort();
   }
 
-  // deadbolt_rules is a per-lock map; the Designer (single-deadbolt view for
-  // now) reads and edits the FIRST automated lock's trigger. Its flat write
-  // is normalized onto that same entry server-side.
-  function firstAutomatedTrigger() {
-    const db = (configData && configData.deadbolt_rules) || {};
-    for (const v of Object.values(db)) {
-      if (v && typeof v === 'object') return v.trigger_door || '';
-    }
-    return db.trigger_door || '';
+  // door_flows is the canonical door-centric shape (door -> retract edges +
+  // cascade). The designer is a VIEW of it: every paired lock gets its own
+  // node and every (door, lock) retract edge draws, but edits happen only in
+  // the Automations tab's Door Flows editor.
+  function doorFlowsCfg() {
+    return (configData && configData.door_flows) || {};
   }
 
-  function deadboltVisible() {
-    const cfg = configData || {};
-    const db = cfg.deadbolt_rules || null;
-    const zw = (cfg.devices && cfg.devices.zwave) || {};
-    return !!(db || zw.enabled || (zw.locks && Object.keys(zw.locks).length) || cascadeRules().length);
+  // Saved locks minus unpaired ghosts (node_id 0). [lockId, lockCfg] pairs.
+  function savedLockEntries() {
+    const locks = (configData && configData.devices && configData.devices.zwave
+      && configData.devices.zwave.locks) || {};
+    return Object.entries(locks).filter(([, lc]) => !(lc && lc.node_id === 0));
   }
 
   // ---- position persistence ----
@@ -6420,14 +6750,25 @@ setInterval(fetchHealth, 10000);
       });
     });
 
-    if (deadboltVisible()) {
-      const db = ensureNode('deadbolt', 'deadbolt', 'Smart Deadbolt');
-      const trig = firstAutomatedTrigger();
-      if (trig) {
-        const t = ensureNode('door', trig); t.roles.trigger = true;
-        addEdge(t, db, 'retract', 0, 'retract');
-      }
+    // Multi-lock: one node per saved lock, one retract edge per (door, lock)
+    // pair from door_flows. The composite ruleIndex (door>lock) selects the
+    // matching read-only summary in the panel.
+    const zwEnabled = !!(configData && configData.devices && configData.devices.zwave
+      && configData.devices.zwave.enabled);
+    const lockEntries = savedLockEntries();
+    if (zwEnabled || lockEntries.length) {
+      lockEntries.forEach(([lockId, lc]) => ensureNode('deadbolt', lockId, (lc && lc.name) || lockId));
     }
+    Object.entries(doorFlowsCfg()).forEach(([door, flow]) => {
+      const retract = (flow && Array.isArray(flow.retract)) ? flow.retract : [];
+      retract.forEach((e) => {
+        if (!e || !e.lock_id) return;
+        const t = ensureNode('door', door); t.roles.trigger = true;
+        const lc = lockEntries.find(([id]) => id === e.lock_id);
+        const db = ensureNode('deadbolt', e.lock_id, (lc && lc[1] && lc[1].name) || e.lock_id);
+        addEdge(t, db, 'retract', door + '>' + e.lock_id, 'retract', { door, lock_id: e.lock_id });
+      });
+    });
 
     FD.nodes = nodes;
     FD.byId = byId;
@@ -6683,12 +7024,14 @@ setInterval(fetchHealth, 10000);
   }
 
   // Map a drawn connection to a config operation, mirroring the semantics
-  // of the manual rule builders.
+  // of the manual rule builders. Deadbolt retract and cascade wiring is
+  // door-centric now and edited in ONE place (Automations -> Door Flows),
+  // so those drags point there instead of opening a second, competing editor.
   function applyConnection(from, to) {
     if (!from || !to) return;
-    // trigger door -> deadbolt : set the retract trigger (complete action)
-    if (from.kind === 'door' && to.kind === 'deadbolt') {
-      doSaveDeadboltTrigger(from.key);
+    if ((from.kind === 'door' && to.kind === 'deadbolt') || (from.kind === 'door' && to.kind === 'door')) {
+      notify('Deadbolt and cascade wiring is edited under Door Flows on the Automations tab.', 'info');
+      if (window.jumpToDoorFlow) window.jumpToDoorFlow(from.key);
       return;
     }
     // trigger door -> group : start a new access rule (needs unlock doors)
@@ -6699,11 +7042,6 @@ setInterval(fetchHealth, 10000);
     // group -> door : add that door to a rule for this group
     if (from.kind === 'group' && to.kind === 'door') {
       addDoorToGroup(from.key, to.key);
-      return;
-    }
-    // trigger door -> door : start a cascade rule
-    if (from.kind === 'door' && to.kind === 'door') {
-      openNew('cascade', { trigger_door: from.key, unlock: [to.key], debounce: 8 });
       return;
     }
     notify('That connection has no matching rule type', 'error');
@@ -6772,9 +7110,8 @@ setInterval(fetchHealth, 10000);
       + '<div class="fd-add">'
       + '<button class="btn btn-sm btn-primary" data-add="access">+ Access rule</button>'
       + '<button class="btn btn-sm btn-primary" data-add="visitor">+ Visitor rule</button>'
-      + '<button class="btn btn-sm btn-secondary" data-add="cascade">+ Cascade rule</button>'
-      + '<button class="btn btn-sm btn-secondary" data-add="retract">Set deadbolt trigger</button>'
       + '</div>'
+      + '<div class="fd-hint" style="margin-top:8px">Deadbolt retract and cascade wiring shows here read-only; edit it under Door Flows on the Automations tab.</div>'
       + '<div class="fd-legend">'
       + legendRow('access', 'Access (NFC / PIN / face / mobile)')
       + legendRow('visitor', 'Visitor (doorbell / buzz-in)')
@@ -6809,7 +7146,11 @@ setInterval(fetchHealth, 10000);
       + (list ? '<div class="fd-sublabel">Rules on this node</div>' + list : '<div class="fd-hint">No rules touch this node yet.</div>')
       + '<div style="margin-top:14px"><button class="btn btn-sm btn-secondary" data-back>Back</button></div>';
     panelEl.querySelectorAll('.fd-rulechip').forEach((b) => {
-      b.addEventListener('click', () => select({ ruleType: b.getAttribute('data-rt'), ruleIndex: Number(b.getAttribute('data-ri')) }));
+      // A retract edge's ruleIndex is a composite "door>lock" string; only
+      // the array-backed rule types use numeric indexes.
+      const raw = b.getAttribute('data-ri');
+      const ri = /^\d+$/.test(raw) ? Number(raw) : raw;
+      b.addEventListener('click', () => select({ ruleType: b.getAttribute('data-rt'), ruleIndex: ri }));
     });
     panelEl.querySelector('[data-back]').addEventListener('click', () => select(null));
   }
@@ -6818,47 +7159,75 @@ setInterval(fetchHealth, 10000);
     if (type === 'access') { const r = accessRules()[idx] || {}; return r.group + ' @ ' + r.trigger; }
     if (type === 'visitor') { const r = visitorRules()[idx] || {}; return r.group + ' @ ' + r.trigger; }
     if (type === 'cascade') { const r = cascadeRules()[idx] || {}; return (r.trigger_door || '?') + ' cascade'; }
-    if (type === 'retract') { return 'Deadbolt retract'; }
+    if (type === 'retract') { const p = String(idx).split('>'); return (p[0] || '?') + ' retracts ' + (p.slice(1).join('>') || '?'); }
     return type;
+  }
+
+  // Read-only summary for a retract or cascade selection: the door-centric
+  // wiring is edited in ONE place (Automations -> Door Flows), so the panel
+  // describes the edge and deep-links there instead of offering a second,
+  // competing editor (the old flat single-deadbolt write clobbered
+  // multi-lock configs).
+  function renderFlowSummary(type, idx) {
+    let door = '';
+    let body = '';
+    if (type === 'retract') {
+      const parts = String(idx).split('>');
+      door = parts[0] || '';
+      const lockId = parts.slice(1).join('>');
+      const zwLocks = (configData && configData.devices && configData.devices.zwave
+        && configData.devices.zwave.locks) || {};
+      const label = (zwLocks[lockId] && zwLocks[lockId].name) || lockId;
+      const flow = doorFlowsCfg()[door];
+      const edge = (flow && Array.isArray(flow.retract))
+        ? flow.retract.find((e) => e && e.lock_id === lockId) : null;
+      const after = edge && edge.after_unlock === 'stay_unlocked' ? 'then stays unlocked'
+        : edge && edge.after_unlock === 'relock_after' ? ('then relocks after ' + (edge.relock_seconds || 0) + 's')
+          : 'after-unlock left to the lock';
+      body = '<div class="fd-hint">Entry granted at <strong>' + esc(door) + '</strong> retracts <strong>' + esc(label) + '</strong> (' + esc(after) + '). A retract is a real Z-Wave unlock command to the bolt.</div>';
+    } else {
+      const r = cascadeRules()[idx] || {};
+      door = r.trigger_door || '';
+      body = '<div class="fd-hint">Entry granted at <strong>' + esc(door) + '</strong> momentarily unlocks <strong>' + esc((r.unlock || []).join(', ')) + '</strong> (debounce ' + esc(r.debounce_seconds == null ? 8 : r.debounce_seconds) + 's). UniFi unlock only, never a lock command.</div>';
+    }
+    panelEl.innerHTML = ''
+      + '<div class="fd-panel-title">' + esc(type === 'retract' ? 'Deadbolt retract' : 'Cascade') + '</div>'
+      + body
+      + '<div class="fd-hint">Read-only here: deadbolt and cascade wiring is edited under Door Flows on the Automations tab.</div>'
+      + '<div class="fd-form-actions">'
+      + '<button class="btn btn-sm btn-primary" data-edit-flow>Edit in Automations</button>'
+      + '<button class="btn btn-sm btn-secondary" data-cancel>Back</button>'
+      + '</div>';
+    panelEl.querySelector('[data-edit-flow]').addEventListener('click', () => {
+      if (window.jumpToDoorFlow) window.jumpToDoorFlow(door);
+    });
+    panelEl.querySelector('[data-cancel]').addEventListener('click', () => select(null));
   }
 
   // Unified rule form for create + edit. idx === null means create.
   function renderRuleForm(type, idx) {
+    if (type === 'retract' || type === 'cascade') return renderFlowSummary(type, idx);
     const editing = idx !== null && idx !== undefined;
     const pf = FD.prefill || {};
     let rule = {};
     if (type === 'access') rule = editing ? (accessRules()[idx] || {}) : { group: pf.group || '', trigger: pf.trigger || '', unlock: pf.unlock || [], delay: pf.delay || 0 };
     if (type === 'visitor') rule = editing ? (visitorRules()[idx] || {}) : { group: pf.group || '', trigger: pf.trigger || '', unlock: pf.unlock || [], delay: pf.delay || 0 };
-    if (type === 'cascade') rule = editing ? (cascadeRules()[idx] || {}) : { trigger_door: pf.trigger_door || '', unlock: pf.unlock || [], debounce_seconds: pf.debounce == null ? 8 : pf.debounce };
-    if (type === 'retract') rule = { trigger_door: firstAutomatedTrigger() };
 
     // Include any door/group the rule already references, so a stale discovery
     // list can never drop a value that is genuinely in use.
-    const doors = Array.from(new Set([].concat(allDoors(), rule.trigger, rule.trigger_door, rule.unlock || []).filter(Boolean)));
+    const doors = Array.from(new Set([].concat(allDoors(), rule.trigger, rule.unlock || []).filter(Boolean)));
     const groups = Array.from(new Set([].concat(allGroups(), rule.group).filter(Boolean)));
     const title = (editing ? 'Edit ' : 'New ') + labelFor(type);
 
     let body = '';
-    if (type === 'access' || type === 'visitor') {
-      const verb = type === 'access' ? 'badges in at' : 'is buzzed in at';
-      body += field('Group',
-        select_(groups, rule.group, 'fdGroup', '-- select group --'));
-      body += field('Trigger door (' + verb + ')',
-        select_(doors, rule.trigger, 'fdTrigger', '-- select door --'));
-      body += field('Delay before unlock (seconds)',
-        '<input type="number" id="fdDelay" min="0" max="600" value="' + Number(rule.delay || 0) + '">');
-      body += field('Unlock these doors', doorChecklist(doors, rule.unlock || []));
-    } else if (type === 'cascade') {
-      body += field('Trigger door (entry granted here)',
-        select_(doors, rule.trigger_door, 'fdTrigger', '-- select door --'));
-      body += field('Debounce (seconds)',
-        '<input type="number" id="fdDebounce" min="0" max="600" value="' + Number(rule.debounce_seconds == null ? 8 : rule.debounce_seconds) + '">');
-      body += field('Unlock these doors', doorChecklist(doors, rule.unlock || []));
-    } else if (type === 'retract') {
-      body += '<div class="fd-hint">When an entry is granted at this door, the deadbolt retracts. Clear it to disable automatic retract.</div>';
-      body += field('Retract trigger door',
-        select_(doors, rule.trigger_door, 'fdTrigger', '-- no retract trigger --'));
-    }
+    const verb = type === 'access' ? 'badges in at' : 'is buzzed in at';
+    body += field('Group',
+      select_(groups, rule.group, 'fdGroup', '-- select group --'));
+    body += field('Trigger door (' + verb + ')',
+      select_(doors, rule.trigger, 'fdTrigger', '-- select door --'));
+    body += field('Delay before unlock (seconds)',
+      '<input type="number" id="fdDelay" min="0" max="600" value="' + Number(rule.delay || 0) + '">');
+    body += field('Unlock these doors', doorChecklist(doors, rule.unlock || []));
 
     panelEl.innerHTML = ''
       + '<div class="fd-panel-title">' + esc(title) + '</div>'
@@ -6875,7 +7244,7 @@ setInterval(fetchHealth, 10000);
   }
 
   function labelFor(type) {
-    return type === 'access' ? 'access rule' : type === 'visitor' ? 'visitor rule' : type === 'cascade' ? 'cascade rule' : 'deadbolt trigger';
+    return type === 'access' ? 'access rule' : type === 'visitor' ? 'visitor rule' : type === 'cascade' ? 'cascade rule' : 'deadbolt retract';
   }
   function field(label, inner) {
     return '<div class="fd-field"><label class="form-label">' + esc(label) + '</label>' + inner + '</div>';
@@ -6901,22 +7270,8 @@ setInterval(fetchHealth, 10000);
 
   async function saveRuleForm(type, idx) {
     const editing = idx !== null && idx !== undefined;
-    if (type === 'retract') {
-      const door = (panelEl.querySelector('#fdTrigger') || {}).value || '';
-      return doSaveDeadboltTrigger(door);
-    }
-    if (type === 'cascade') {
-      const trigger = (panelEl.querySelector('#fdTrigger') || {}).value || '';
-      const unlock = readChecked();
-      const debRaw = parseInt((panelEl.querySelector('#fdDebounce') || {}).value, 10);
-      if (!trigger) return notify('Pick a trigger door', 'error');
-      if (!unlock.length) return notify('Pick at least one door to unlock', 'error');
-      const rules = cascadeRules();
-      const rule = { trigger_door: trigger, unlock, debounce_seconds: Number.isFinite(debRaw) ? debRaw : 8 };
-      if (editing) rules[idx] = rule; else rules.push(rule);
-      return doSaveCascade(rules, 'Cascade rule saved');
-    }
-    // access / visitor
+    // access / visitor only: retract and cascade render a read-only summary
+    // (renderFlowSummary) and never reach this save path.
     const group = (panelEl.querySelector('#fdGroup') || {}).value || '';
     const trigger = (panelEl.querySelector('#fdTrigger') || {}).value || '';
     const delay = parseInt((panelEl.querySelector('#fdDelay') || {}).value || '0', 10) || 0;
@@ -6937,11 +7292,12 @@ setInterval(fetchHealth, 10000);
   }
 
   async function deleteRule(type, idx) {
+    if (type === 'cascade' || type === 'retract') {
+      return notify('Deadbolt and cascade wiring is edited under Door Flows on the Automations tab.', 'info');
+    }
     if (!confirm('Delete this ' + labelFor(type) + '?')) return;
     if (type === 'access') { const r = accessRules(); r.splice(idx, 1); return doSaveAccess(r, 'Rule deleted'); }
     if (type === 'visitor') { const r = visitorRules(); r.splice(idx, 1); return doSaveVisitor(r, 'Rule deleted'); }
-    if (type === 'cascade') { const r = cascadeRules(); r.splice(idx, 1); return doSaveCascade(r, 'Rule deleted'); }
-    if (type === 'retract') { return doSaveDeadboltTrigger(''); }
   }
 
   // ---- persistence (routes through the same helpers the manual UI uses) ----
@@ -6958,19 +7314,10 @@ setInterval(fetchHealth, 10000);
     try { await window._saveVisitorRules(rules); notify(msg + ' (manual fields updated)', 'success'); await reloadAndRedraw(); }
     catch (e) { notify('Save failed: ' + e.message, 'error'); }
   }
-  async function doSaveCascade(rules, msg) {
-    try { await window.api('PUT', '/api/config', { cascade_rules: { rules } }); notify(msg + ' (manual fields updated)', 'success'); await reloadAndRedraw(); }
-    catch (e) { notify('Save failed: ' + e.message, 'error'); }
-  }
-  async function doSaveDeadboltTrigger(door) {
-    try {
-      const db = Object.assign({}, (configData && configData.deadbolt_rules) || {});
-      db.trigger_door = door;
-      await window.api('PUT', '/api/config', { deadbolt_rules: db });
-      notify(door ? 'Deadbolt retracts on entry at "' + door + '"' : 'Retract trigger disabled', 'success');
-      await reloadAndRedraw();
-    } catch (e) { notify('Save failed: ' + e.message, 'error'); }
-  }
+  // Deadbolt/cascade writes deliberately have NO designer path anymore: the
+  // old flat deadbolt_rules.trigger_door write could clobber a multi-lock,
+  // multi-door configuration down to one edge. Door Flows is the single
+  // writer for that wiring.
 
   // ---- zoom / fit controls ----
   function zoomAt(clientX, clientY, factor) {

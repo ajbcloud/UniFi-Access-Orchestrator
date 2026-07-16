@@ -139,13 +139,14 @@ test('no catalog -> a plain Unpair button with no tooltip (back-compat 2-arg cal
   assert.ok(!out.includes('title="Exclude'));
 });
 
-test('the automation panel offers no row for an unpaired ghost (node_id 0)', () => {
-  // Source-level contract on renderDeadboltRules: entries a legacy unpair
-  // zeroed must not get a trigger-door row, while node_id-less dev entries
-  // keep theirs.
-  const src = extractFn('renderDeadboltRules');
-  assert.match(src, /node_id !== 0/, 'ghost filter present');
-  assert.match(src, /filter\(/, 'lock ids are filtered, not just listed');
+test('the Door Flows editor offers no unpaired ghost in the add-deadbolt picker', () => {
+  // Source-level contract on buildDoorFlowCard: only paired or bound locks
+  // are usable targets for a new retract edge, so an unpaired ghost (or a
+  // saved-but-dead entry) can never be wired to a door. Dev FakeLock
+  // bindings read as bound and stay offered.
+  const src = extractFn('buildDoorFlowCard');
+  assert.match(src, /l\.paired \|\| l\.bound/, 'usable-lock filter present');
+  assert.match(src, /freeLocks/, 'already-wired locks are excluded from the picker');
 });
 
 test('pairing_active disables every Unpair button', () => {

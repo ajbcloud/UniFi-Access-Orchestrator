@@ -13,6 +13,7 @@ const {
   parseAccessPolicies,
   buildAccess,
   doorAccessVerdict,
+  doorAccessVerdictUnion,
   classifyLocksForUser,
   WRITE_VERDICTS,
   REVOKE_VERDICTS,
@@ -143,37 +144,95 @@ test('doorAccessVerdict: a configured id absent from the registry with no resolv
     'an unresolvable door never denies (fail open)');
 });
 
-// ---- classifyLocksForUser -------------------------------------------------
+// ---- doorAccessVerdictUnion (the multi-door collapse) -----------------------
 
-test('classifyLocksForUser: per-lock verdict off each lock trigger_door', () => {
-  const rules = {
-    lockA: { trigger_door: 'Door A' },
-    lockB: { trigger_door: 'Door B' },
-    lockManual: {}, // no trigger_door
+test('union: no gating doors -> ungated (a lock with no triggers serves everyone)', () => {
+  assert.equal(doorAccessVerdictUnion(access(), 'u1', []), 'ungated');
+  assert.equal(doorAccessVerdictUnion(access(), 'u1', null), 'ungated');
+});
+
+test('union: allowed on ANY triggering door wins', () => {
+  const a = access({ allowed: { u1: ['d-b'] }, complete: { u1: true } });
+  assert.equal(doorAccessVerdictUnion(a, 'u1', [
+    { id: 'd-a', name: 'Door A' }, // denied here
+    { id: 'd-b', name: 'Door B' }, // allowed here
+  ]), 'allowed');
+});
+
+test('union: denied ONLY when denied on every known gating door', () => {
+  const a = access({ allowed: { u1: [] }, complete: { u1: true } });
+  assert.equal(doorAccessVerdictUnion(a, 'u1', [
+    { id: 'd-a', name: 'Door A' },
+    { id: 'd-b', name: 'Door B' },
+  ]), 'denied');
+});
+
+test('union: any unknown among non-allowed doors fails OPEN (never denied)', () => {
+  // Denied on Door A; Door X is undiscovered -> unknown -> the union must be
+  // unknown, because the user might be allowed through Door X.
+  const a = access({ allowed: { u1: [] }, complete: { u1: true } });
+  assert.equal(doorAccessVerdictUnion(a, 'u1', [
+    { id: 'd-a', name: 'Door A' },
+    { id: null, name: 'Ghost Door X' },
+  ]), 'unknown');
+});
+
+test('union: single door equals doorAccessVerdict exactly', () => {
+  const a = access({ allowed: { u1: ['d-a'] }, complete: { u1: true } });
+  for (const [doors, single] of [
+    [[{ id: 'd-a', name: 'Door A' }], doorAccessVerdict(a, 'u1', { id: 'd-a', name: 'Door A' })],
+    [[{ id: 'd-b', name: 'Door B' }], doorAccessVerdict(a, 'u1', { id: 'd-b', name: 'Door B' })],
+  ]) {
+    assert.equal(doorAccessVerdictUnion(a, 'u1', doors), single);
+  }
+});
+
+// ---- classifyLocksForUser (over door_flows) --------------------------------
+
+test('classifyLocksForUser: per-lock union verdict off each lock\'s gating doors', () => {
+  const flows = {
+    'Door A': { door_id: 'd-a', retract: [{ lock_id: 'lockA' }], cascade: null },
+    'Door B': { door_id: 'd-b', retract: [{ lock_id: 'lockB' }], cascade: null },
   };
   const a = access({ allowed: { u1: ['d-a'] }, complete: { u1: true } });
-  const out = classifyLocksForUser('u1', [{ lock_id: 'lockA' }, { lock_id: 'lockB' }, { lock_id: 'lockManual' }], rules, a);
+  const out = classifyLocksForUser('u1', [{ lock_id: 'lockA' }, { lock_id: 'lockB' }, { lock_id: 'lockManual' }], flows, a);
   assert.deepEqual(out, [
-    { lock_id: 'lockA', verdict: 'allowed', door: 'Door A' },
-    { lock_id: 'lockB', verdict: 'denied', door: 'Door B' },
-    { lock_id: 'lockManual', verdict: 'ungated', door: null },
+    { lock_id: 'lockA', verdict: 'allowed', doors: ['Door A'] },
+    { lock_id: 'lockB', verdict: 'denied', doors: ['Door B'] },
+    { lock_id: 'lockManual', verdict: 'ungated', doors: [] },
   ]);
 });
 
 test('classifyLocksForUser: two locks on ONE door gate identically', () => {
-  const rules = { lock1: { trigger_door: 'Door A' }, lock2: { trigger_door: 'Door A' } };
+  const flows = { 'Door A': { door_id: 'd-a', retract: [{ lock_id: 'lock1' }, { lock_id: 'lock2' }], cascade: null } };
   const a = access({ allowed: { u1: ['d-a'] }, complete: { u1: true } });
-  const out = classifyLocksForUser('u1', [{ lock_id: 'lock1' }, { lock_id: 'lock2' }], rules, a);
+  const out = classifyLocksForUser('u1', [{ lock_id: 'lock1' }, { lock_id: 'lock2' }], flows, a);
   assert.ok(out.every((r) => r.verdict === 'allowed'), 'many locks -> one door, same verdict');
 });
 
-test('classifyLocksForUser: uses trigger_door_id and keeps trigger_door for display', () => {
-  // The rule stored the id d-a and the old display name; the door was renamed.
-  const rules = { lockA: { trigger_door: 'Door A', trigger_door_id: 'd-a' } };
+test('classifyLocksForUser: THE RECONCILE CASE - allowed via a second door is NOT denied', () => {
+  // lock1 is triggered by Door A AND Door B. The user is denied on A but
+  // allowed on B. The collapsed verdict MUST be allowed - if a per-door
+  // 'denied' ever reached the reconcile revoke planner, the periodic sync
+  // would silently wipe this user's code.
+  const flows = {
+    'Door A': { door_id: 'd-a', retract: [{ lock_id: 'lock1' }], cascade: null },
+    'Door B': { door_id: 'd-b', retract: [{ lock_id: 'lock1' }], cascade: null },
+  };
+  const a = access({ allowed: { u1: ['d-b'] }, complete: { u1: true } });
+  const out = classifyLocksForUser('u1', [{ lock_id: 'lock1' }], flows, a);
+  assert.equal(out[0].verdict, 'allowed');
+  assert.ok(!REVOKE_VERDICTS.has(out[0].verdict), 'the reconciler never sees a revocable verdict');
+  assert.deepEqual(out[0].doors.sort(), ['Door A', 'Door B']);
+});
+
+test('classifyLocksForUser: uses the flow door_id and keeps names for display', () => {
+  // The flow stored id d-a under the old display name; the door was renamed.
+  const flows = { 'Door A': { door_id: 'd-a', retract: [{ lock_id: 'lockA' }], cascade: null } };
   const a = access({ doors: { 'Front Entrance': 'd-a' }, allowed: { u1: ['d-a'] }, complete: { u1: true } });
-  const out = classifyLocksForUser('u1', [{ lock_id: 'lockA' }], rules, a);
+  const out = classifyLocksForUser('u1', [{ lock_id: 'lockA' }], flows, a);
   assert.equal(out[0].verdict, 'allowed', 'the id keeps the verdict correct after a rename');
-  assert.equal(out[0].door, 'Door A', 'the stored name is kept for display');
+  assert.deepEqual(out[0].doors, ['Door A'], 'the stored name is kept for display');
 });
 
 // ---- policy sets (the caller contract) ------------------------------------

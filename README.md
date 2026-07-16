@@ -488,15 +488,17 @@ curl http://DEVICE_IP:3000/health
 
 ## Dashboard Guide
 
-The dashboard has six tabs:
+The dashboard has seven tabs:
 
-**Dashboard** - Overview showing door count, user count, events received, unlocks triggered, last event details, and system info (memory, uptime, event source mode). When a Z-Wave deadbolt is paired, a Smart Deadbolt card also appears with live bolt state, battery, and link.
+**Dashboard** - Overview showing door count, user count, events received, unlocks triggered, last event details, and system info (memory, uptime, event source mode). When a Z-Wave deadbolt is paired, a Smart Deadbolt card also appears with live bolt state, battery, and link, listing every door that triggers each lock.
 
 **Live Events** - Real-time scrolling feed of every event. Each row shows the timestamp, event type (color-coded), who triggered it, which door, what the orchestrator did, and whether it succeeded. Events stream in automatically via Server-Sent Events.
 
-**Configuration** - Shows your door mappings, user groups, NFC tap rules, doorbell visitor rules, event source mode, and the Smart Deadbolt (Z-Wave) setup and automation rules. Buttons to rediscover doors and reload the service.
+**Automations** - Everything starts at the door. Door mappings, user groups, NFC tap rules, doorbell visitor rules, then **Door Flows** (pick a door and choose what an entry there controls: deadbolts to retract, each with its own after-unlock behavior, and other doors to cascade-unlock) and **Deadbolt Devices** (pair, test, health check, unpair). Buttons to rediscover doors and reload the service.
 
-**Visual Designer** - The same rules as a node graph you can build and edit by drawing connections. Kept in sync with the Configuration tab both ways. See [Visual Designer](#visual-designer).
+**Keypad Users** - One PIN per person, written to every deadbolt the user's UniFi door access allows and kept in sync with their UniFi Access PIN. A lock triggered by several doors admits a user who is allowed on ANY of them.
+
+**Visual Designer** - The same rules as a node graph you can build and edit by drawing connections. Access and visitor rules are editable here; deadbolt retract and cascade wiring shows read-only with a deep-link to Door Flows. See [Visual Designer](#visual-designer).
 
 **Settings** - Server port and host, controller connection and API token, auto-sync interval, log level, and backup/restore.
 
@@ -509,7 +511,7 @@ The dashboard has six tabs:
 The app can drive a Z-Wave deadbolt (tested design: Schlage BE469ZP over a Zooz ZST39 USB stick). Everything happens in the dashboard; no config editing is needed.
 
 1. Plug the Z-Wave USB stick into the machine running the app.
-2. Open **Configuration** and find **Smart Deadbolt (Z-Wave)**. Pick the stick's port from the dropdown (likely sticks are marked), tick **Enable Z-Wave deadbolt**, and Save.
+2. Open **Automations** and find **Deadbolt Devices (Z-Wave)**. Pick the stick's port from the dropdown (likely sticks are marked), tick **Enable Z-Wave deadbolt**, and Save.
 3. Click **Pair New Lock**. When the panel says it is waiting for the lock: on the Schlage keypad, enter the 6-digit programming code, press the Schlage button, then press **0**. Keep the lock within a few feet of the stick while pairing.
 4. The panel shows the lock's device ID and asks for the **5-digit PIN** printed on the label on the lock body (also on the box sticker). Type it and submit.
 5. After "Paired!", the deadbolt is active: the panel shows live bolt state, battery, and link, with **Test Lock** / **Test Unlock** buttons.
@@ -521,7 +523,7 @@ For the full first-time checklist (install, pairing, bench tests, automation, an
 Notes:
 - The app generates and stores Z-Wave security keys in its config file on first pairing. Back up the config, and never delete `devices.zwave.security_keys` after pairing, or the lock will need to be excluded and re-paired.
 - If pairing fails with a "joined WITHOUT S2 security" message, the PIN was likely mistyped or the signal was weak: run Unpair, move the stick close to the lock, and pair again.
-- Keypad PIN gating follows whether a user's UniFi access includes the lock's gating door, but it does not follow UniFi access time schedules. A synced deadbolt PIN works 24/7, so a user whose UniFi access is time restricted still has a working deadbolt PIN outside those hours. This is a known limitation.
+- Keypad PIN gating follows whether a user's UniFi access includes at least one of the lock's trigger doors (set in Door Flows), but it does not follow UniFi access time schedules. A synced deadbolt PIN works 24/7, so a user whose UniFi access is time restricted still has a working deadbolt PIN outside those hours. This is a known limitation.
 
 ---
 

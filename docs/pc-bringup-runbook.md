@@ -129,10 +129,12 @@ and a few field details are marked "verify against the manual" in the UI.
 
 ## 6. Automation
 
-- [ ] In Deadbolt Automation, set the retract trigger door (the front door
-      reader) and Save Trigger.
-- [ ] Add a cascade rule: trigger = front door, unlock = the interior door,
-      debounce 8s. It applies immediately, no restart.
+- [ ] In Door Flows (Automations tab), add a flow for the front door and add
+      the deadbolt to it (Add Deadbolt, then Save). The after-unlock behavior
+      per edge defaults to "lock default" (the app schedules nothing).
+- [ ] In the same flow card, check the interior door under "Also unlock other
+      doors (cascade)", debounce 8s, and Save. It applies immediately, no
+      restart. (The cascade block only appears once 2+ doors are known.)
 - [ ] Badge in at the front door: the deadbolt retracts and the interior
       strike releases once. Rapid repeat badging within the debounce window
       does NOT re-fire the cascade.
