@@ -1,15 +1,17 @@
 # Smart-Deadbolt Add-on: Handoff and Test Guide
 
+> _Historical engineering record. Kept for transparency; version numbers and
+> status reflect the state at the time of writing and may differ from the
+> current release._
+
 Audience: whoever picks up hardware bring-up, on-site capture, and deployment
 next. This documents what is built, what is verified, what remains, and
 exactly how to test it.
 
 Companion docs in this repo:
 - `docs/orchestrator-addon-plan.md`: the full design/plan and open questions.
-- The QIT AC2 site design (Draft 1.9): owns the physical site design, BOM,
-  Configuration 1 schedule, life-safety, and the BTS/QIT responsibility split.
-
-Branch: `claude/comprehensive-review-x9e1kk`.
+- The separate site design document: owns the physical site design, BOM,
+  Configuration 1 schedule, life-safety, and the integrator responsibility split.
 
 ---
 

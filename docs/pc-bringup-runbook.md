@@ -161,10 +161,3 @@ If any rule needs adjusting to real controller payloads, record one gesture:
 `POST /api/capture/start {"label":"double-badge"}` (admin key required),
 perform the gesture, `POST /api/capture/stop`, then `GET /api/capture` to
 inspect the raw events.
-
----
-
-Housekeeping note for the repo owner: the merged working branches
-(`claude/deadbolt-pairing`, `claude/deadbolt-followons`, and older
-`claude/*`) can be deleted in the GitHub UI. Deleting a stacked PR's base
-branch promptly also avoids the retarget pitfall that #17 had to correct.

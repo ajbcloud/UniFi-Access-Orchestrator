@@ -2,10 +2,6 @@
 
 This review is scoped to the code in this repository (`src/`, `public/`, `config/`).
 
-## Scope clarification
-
-No user-plan upgrade or entitlement-management code paths were found in this repository. If that logic exists in a separate service/repo, it should be reviewed there separately.
-
 ## High-priority findings
 
 1. **Administrative API exposure if `admin_api_key` is not configured**

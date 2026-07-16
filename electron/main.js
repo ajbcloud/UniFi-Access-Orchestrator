@@ -503,7 +503,7 @@ function createAppMenu() {
               type: 'info',
               title: 'About UniFi Access Orchestrator',
               message: 'UniFi Access Orchestrator',
-              detail: `Version ${app.getVersion()}\n\nMulti-door unlock automation for UniFi Access.\n\nBuilt by AJBCloud\nhttps://qitsolutions.com`
+              detail: `Version ${app.getVersion()}\n\nMulti-door unlock automation for UniFi Access.\n\nBuilt by AJBCloud\nhttps://github.com/ajbcloud/UniFi-Access-Orchestrator`
             });
           }
         }
