@@ -571,4 +571,4 @@ behavior; driver lifecycle events and the destroy-and-recreate reconnect pattern
 
 Repo files reviewed for grounding: `src/index.js`, `src/unifi-client.js`, `src/rules-engine.js`,
 `src/resolver.js`, `src/config-sync.js`, `src/backup.js`, `src/logger.js`, `electron/main.js`,
-`config/config.example.json`, `scripts/setup-pi.sh`, `README.md`, `replit.md`.
+`config/config.example.json`, `scripts/setup-pi.sh`, `README.md`.

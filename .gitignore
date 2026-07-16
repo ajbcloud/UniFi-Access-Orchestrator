@@ -22,9 +22,7 @@ Thumbs.db
 *.swo
 *~
 
-# Replit
-.replit
-replit.nix
+# Local dev environment caches
 .cache/
 
 # Runtime config backups

@@ -1,8 +1,8 @@
 # Smart-Deadbolt Add-on: Handoff and Test Guide
 
-Audience: the Replit agent (and a human) picking up hardware bring-up, on-site
-capture, and deployment. This documents what is built, what is verified, what
-remains, and exactly how to test it.
+Audience: whoever picks up hardware bring-up, on-site capture, and deployment
+next. This documents what is built, what is verified, what remains, and
+exactly how to test it.
 
 Companion docs in this repo:
 - `docs/orchestrator-addon-plan.md`: the full design/plan and open questions.
