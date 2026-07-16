@@ -430,6 +430,13 @@ function wireDriverEvents(lockId, driver) {
       success: e.failed === 0,
     });
   });
+  // A battery lock that could not confirm a code clear left a pending_clears
+  // marker. When the node next wakes, finish that clear so a revoked PIN cannot
+  // keep opening the door.
+  driver.on('node-awake', () => {
+    withKeypadLock(() => retryPendingClears(lockId))
+      .catch((e) => logger.debug(`Deadbolt ${label}: pending-clear retry on wake failed: ${e.message}`));
+  });
 }
 
 // Controllers only (no driver teardown): one per automated lock with ITS
@@ -981,6 +988,103 @@ function persistZwaveMutation(mutator) {
   writeConfigFile(diskConfig);
   if (configSync && typeof configSync.markConfigApplied === 'function') configSync.markConfigApplied();
   mutator(config);
+}
+
+// Serializes every keypad driver-plus-persistence operation so a periodic
+// reconcile, a wake-triggered retry, and a POST Save can never interleave
+// clear/set calls on the same lock. Not reentrant: callers that already run
+// under withKeypadLock must call the raw helpers (revokeHeldCode,
+// retryPendingClears) directly rather than wrapping again.
+let _keypadOpChain = Promise.resolve();
+function withKeypadLock(fn) {
+  const run = _keypadOpChain.then(() => fn());
+  _keypadOpChain = run.then(() => {}, () => {}); // keep the chain alive after a rejection
+  return run;
+}
+
+// The single path that removes a user's code from one lock. revoked is true
+// ONLY when clearUserCode confirms the slot is now empty. On a throw or an
+// unconfirmed clear (confirmed false or null, common for a sleeping battery
+// lock) the user_codes entry is still deleted, because a kept entry would be
+// resurrected by restoreUserCodes on the next re-interview, and a pending_clears
+// marker is armed so retryPendingClears can finish the job when the lock next
+// responds. The marker never stores the PIN; clearUserCode needs only the slot.
+// Raw: callers serialize with withKeypadLock.
+async function revokeHeldCode({ lockId, driver, label }, slot, userId, reason) {
+  let confirmed = null;
+  let error = null;
+  try {
+    if (driver && typeof driver.clearUserCode === 'function') {
+      const r = await driver.clearUserCode(slot);
+      confirmed = r ? r.confirmed : null;
+    }
+  } catch (e) {
+    confirmed = null;
+    error = e.message;
+    logger.debug(`Deadbolt: clearUserCode threw on "${label}" slot ${slot}: ${e.message}`);
+  }
+  const revoked = confirmed === true;
+  const requestedAt = new Date().toISOString(); // computed once, mutator runs twice
+  persistZwaveMutation((cfg) => {
+    const lock = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
+      && cfg.devices.zwave.locks[lockId];
+    if (!lock) return;
+    if (lock.user_codes) delete lock.user_codes[String(slot)];
+    if (revoked) {
+      if (lock.pending_clears) delete lock.pending_clears[String(slot)];
+    } else {
+      lock.pending_clears = lock.pending_clears || {};
+      lock.pending_clears[String(slot)] = { user_id: userId, requested_at: requestedAt, reason };
+    }
+  });
+  if (revoked) {
+    logger.info(`Deadbolt: revoked "${userId}" from "${label}" (${reason})`);
+  } else {
+    logger.warn(`Deadbolt: clear unconfirmed for "${userId}" on "${label}" slot ${slot}; entry removed, retry queued (${reason})`);
+  }
+  return { lock_id: lockId, slot, confirmed, revoked, revoke_pending: !revoked, reason, error };
+}
+
+// Re-attempt every armed pending clear. Deletes the marker only when the
+// physical clear confirms. onlyLockId scopes a wake-triggered retry to the lock
+// that woke, so it never pokes sleeping siblings. Raw: callers serialize with
+// withKeypadLock.
+async function retryPendingClears(onlyLockId) {
+  const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  for (const [lockId, lock] of Object.entries(zwLocks)) {
+    if (onlyLockId && lockId !== onlyLockId) continue;
+    const pend = (lock && lock.pending_clears) || {};
+    const slots = Object.keys(pend);
+    if (!slots.length) continue;
+    const driver = lockDrivers.get(lockId);
+    if (!driver || typeof driver.clearUserCode !== 'function') continue;
+    for (const slotKey of slots) {
+      let confirmed = null;
+      try {
+        const r = await driver.clearUserCode(Number(slotKey));
+        confirmed = r ? r.confirmed : null;
+      } catch (e) {
+        confirmed = null;
+      }
+      if (confirmed === true) {
+        persistZwaveMutation((cfg) => {
+          const pc = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
+            && cfg.devices.zwave.locks[lockId] && cfg.devices.zwave.locks[lockId].pending_clears;
+          if (pc) delete pc[slotKey];
+        });
+        logger.info(`Deadbolt: pending clear confirmed on "${lockLabel(lockId)}" slot ${slotKey}`);
+      }
+    }
+  }
+}
+
+// UniFi health-monitor state callback: when connectivity is restored, retry any
+// keypad clears that could not confirm while the controller or a lock was away.
+function onUnifiStateChange(state) {
+  if (state === 'connected') {
+    withKeypadLock(() => retryPendingClears())
+      .catch((e) => logger.debug(`Deadbolt: pending-clear retry failed: ${e.message}`));
+  }
 }
 
 // True only when the request carries the configured admin key (header, or the
@@ -2043,63 +2147,67 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
     const writable = capable.filter((l) => accessGating.WRITE_VERDICTS.has(verdictByLock.get(l.lock_id).verdict));
     const denied = capable.filter((l) => accessGating.REVOKE_VERDICTS.has(verdictByLock.get(l.lock_id).verdict));
 
-    // Revoke first: a user who lost access to a door must not keep a working
-    // code on its deadbolt. Only fires on a CONFIRMED denial (never 'unknown').
-    for (const l of denied) {
-      const v = verdictByLock.get(l.lock_id);
-      const held = Object.entries((zwLocks[l.lock_id] && zwLocks[l.lock_id].user_codes) || {})
-        .find(([, e]) => e && e.user_id === b.user_id);
-      let revoked = false;
-      if (held) {
-        const slot = Number(held[0]);
-        try {
-          if (typeof l.driver.clearUserCode === 'function') await l.driver.clearUserCode(slot);
-        } catch (e) { /* clear is best-effort; the config removal is what gates access here */ }
-        persistZwaveMutation((cfg) => {
-          const uc = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
-            && cfg.devices.zwave.locks[l.lock_id] && cfg.devices.zwave.locks[l.lock_id].user_codes;
-          if (uc) delete uc[String(slot)];
-        });
-        revoked = true;
-        logger.info(`Deadbolt: revoked "${name || b.user_id}" from "${l.label}" (no UniFi access to "${v.door}")`);
-      }
-      results.push({ lock_id: l.lock_id, blocked: true, revoked, reason: `no UniFi access to "${v.door}"` });
-    }
-
-    const plan = keypadUsers.planUserSave(
-      zwLocks,
-      writable.map((l) => ({ lock_id: l.lock_id, cap: l.cap })),
-      b.user_id, pin
-    );
-    for (const row of plan) {
-      if (row.error) { results.push(row); continue; }
-      const entry = capable.find((l) => l.lock_id === row.lock_id);
-      try {
-        const r = await entry.driver.setUserCode(row.slot, pin);
-        if (r.confirmed === false) {
-          results.push({ lock_id: row.lock_id, error: 'the lock rejected this code (usually a duplicate PIN or a mismatched code length)' });
-          continue;
+    // All driver-plus-persistence work runs under one lock so a periodic
+    // reconcile or a wake-triggered retry cannot interleave with this Save.
+    await withKeypadLock(async () => {
+      // Revoke first: a user who lost access to a door must not keep a working
+      // code on its deadbolt. Only fires on a CONFIRMED denial (never 'unknown').
+      // revokeHeldCode marks revoked true only when the physical clear confirms;
+      // an unconfirmed clear reports revoke_pending and queues a retry.
+      for (const l of denied) {
+        const v = verdictByLock.get(l.lock_id);
+        const reason = `no UniFi access to "${v.door}"`;
+        const held = Object.entries((zwLocks[l.lock_id] && zwLocks[l.lock_id].user_codes) || {})
+          .find(([, e]) => e && e.user_id === b.user_id);
+        if (held) {
+          const r = await revokeHeldCode(
+            { lockId: l.lock_id, driver: l.driver, label: l.label },
+            Number(held[0]), b.user_id, reason);
+          results.push({ lock_id: l.lock_id, blocked: true, revoked: r.revoked, revoke_pending: r.revoke_pending, reason });
+        } else {
+          results.push({ lock_id: l.lock_id, blocked: true, revoked: false, revoke_pending: false, reason });
         }
-        persistZwaveMutation((cfg) => {
-          const locks = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks;
-          if (!locks || !locks[row.lock_id]) return;
-          locks[row.lock_id].user_codes = locks[row.lock_id].user_codes || {};
-          locks[row.lock_id].user_codes[String(row.slot)] = {
-            user_id: b.user_id,
-            name,
-            pin_code: pin,
-            pushed_to_unifi: false,
-            confirmed: r.confirmed === true ? true : null,
-            updated_at: new Date().toISOString(),
-          };
-        });
-        results.push({ lock_id: row.lock_id, slot: row.slot, confirmed: r.confirmed });
-      } catch (e) {
-        results.push({ lock_id: row.lock_id, error: e.message });
       }
-    }
+
+      const plan = keypadUsers.planUserSave(
+        zwLocks,
+        writable.map((l) => ({ lock_id: l.lock_id, cap: l.cap })),
+        b.user_id, pin
+      );
+      for (const row of plan) {
+        if (row.error) { results.push(row); continue; }
+        const entry = capable.find((l) => l.lock_id === row.lock_id);
+        try {
+          const r = await entry.driver.setUserCode(row.slot, pin);
+          if (r.confirmed === false) {
+            results.push({ lock_id: row.lock_id, error: 'the lock rejected this code (usually a duplicate PIN or a mismatched code length)' });
+            continue;
+          }
+          persistZwaveMutation((cfg) => {
+            const locks = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks;
+            if (!locks || !locks[row.lock_id]) return;
+            locks[row.lock_id].user_codes = locks[row.lock_id].user_codes || {};
+            locks[row.lock_id].user_codes[String(row.slot)] = {
+              user_id: b.user_id,
+              name,
+              pin_code: pin,
+              pushed_to_unifi: false,
+              confirmed: r.confirmed === true ? true : null,
+              updated_at: new Date().toISOString(),
+            };
+            // Writing this slot supersedes any queued clear for it, so drop a
+            // stale pending_clears marker rather than let a retry wipe the new code.
+            if (locks[row.lock_id].pending_clears) delete locks[row.lock_id].pending_clears[String(row.slot)];
+          });
+          results.push({ lock_id: row.lock_id, slot: row.slot, confirmed: r.confirmed });
+        } catch (e) {
+          results.push({ lock_id: row.lock_id, error: e.message });
+        }
+      }
+    });
     const written = results.filter((r) => r.slot != null);
     const revokedCount = results.filter((r) => r.revoked).length;
+    const pendingCount = results.filter((r) => r.revoke_pending).length;
     // A total failure is only when writable locks existed and none accepted
     // AND there was no gating action. Being blocked/revoked everywhere is a
     // legitimate gated outcome, not an error, and the UniFi push still runs.
@@ -2162,8 +2270,12 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
       location: (written.length ? written : results).map((r) => lockLabel(r.lock_id)).join(', '),
       action: `PIN set for ${name || b.user_id} on ${written.length}/${results.length} lock(s)`
         + (revokedCount ? `; revoked on ${revokedCount} (no door access)` : '')
+        + (pendingCount ? `; revoke pending on ${pendingCount} (lock did not confirm, will retry)` : '')
         + `${unifi.success ? (unifi.skipped ? '; UniFi already in sync' : '; UniFi updated') : '; UniFi push FAILED'}`,
-      success: written.length + revokedCount === results.length && !!unifi.success,
+      // A blocked lock (revoked or revoke pending) is a legitimate gated outcome,
+      // not a failure. Only a write error leaves an entry that is neither written
+      // nor blocked, so count those as the failures.
+      success: results.every((r) => r.slot != null || r.blocked) && !!unifi.success,
     });
     res.json({ user_id: b.user_id, name, results, unifi });
   } catch (err) {
@@ -2184,44 +2296,36 @@ app.delete('/api/deadbolt/keypad-users/:user_id', async (req, res) => {
     const holdings = [];
     for (const [lockId, lock] of Object.entries(zwLocks)) {
       for (const [slot, e] of Object.entries((lock && lock.user_codes) || {})) {
-        if (e && e.user_id === userId) holdings.push({ lock_id: lockId, slot: Number(slot) });
+        if (e && e.user_id === userId) holdings.push({ lock_id: lockId, slot: Number(slot), name: (e && e.name) || null });
       }
     }
     if (!holdings.length) {
       return res.status(404).json({ error: 'no saved keypad code for that user' });
     }
-    let removedName = null;
+    const removedName = (holdings.find((h) => h.name) || {}).name || null;
     const results = [];
-    for (const h of holdings) {
-      const driver = lockDrivers.get(h.lock_id);
-      let confirmed = null;
-      let error = null;
-      if (driver && typeof driver.clearUserCode === 'function') {
-        try {
-          const r = await driver.clearUserCode(h.slot);
-          confirmed = r.confirmed;
-        } catch (e) {
-          error = e.message;
-        }
+    // Route through the shared executor so an unconfirmed clear (a sleeping
+    // lock) reports revoke_pending and queues a retry rather than claiming the
+    // code was removed. The user's UniFi PIN is a separate credential, untouched.
+    await withKeypadLock(async () => {
+      for (const h of holdings) {
+        const driver = lockDrivers.get(h.lock_id);
+        const r = await revokeHeldCode(
+          { lockId: h.lock_id, driver, label: lockLabel(h.lock_id) },
+          h.slot, userId, 'removed by admin');
+        results.push(Object.assign(
+          { lock_id: h.lock_id, slot: h.slot, confirmed: r.confirmed, revoke_pending: r.revoke_pending },
+          r.error ? { error: r.error } : {}));
       }
-      // Persist the removal even on an unconfirmed clear: the command is
-      // queued on the lock, and a kept entry would resurrect the code on the
-      // next rewrite/restore.
-      persistZwaveMutation((cfg) => {
-        const uc = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
-          && cfg.devices.zwave.locks[h.lock_id] && cfg.devices.zwave.locks[h.lock_id].user_codes;
-        if (uc && uc[String(h.slot)]) {
-          removedName = uc[String(h.slot)].name || removedName;
-          delete uc[String(h.slot)];
-        }
-      });
-      results.push(Object.assign({ lock_id: h.lock_id, slot: h.slot, confirmed }, error ? { error } : {}));
-    }
+    });
+    const pendingClears = results.filter((r) => r.revoke_pending).length;
     broadcastEvent({
       type: 'deadbolt.user_code',
       actor: 'GUI Admin',
       location: holdings.map((h) => lockLabel(h.lock_id)).join(', '),
-      action: `Keypad code removed for ${removedName || userId} on ${holdings.length} lock(s). The user's UniFi PIN is untouched`,
+      action: `Keypad code removed for ${removedName || userId} on ${holdings.length} lock(s)`
+        + (pendingClears ? `; ${pendingClears} clear(s) pending, will retry when the lock responds` : '')
+        + ". The user's UniFi PIN is untouched",
       success: results.every((r) => !r.error),
     });
     res.json({ user_id: userId, results });
@@ -3546,9 +3650,9 @@ async function reloadServices(newConfig) {
 
     const initOk = await unifiClient.initialize();
     if (initOk) {
-      unifiClient.startHealthMonitor();
+      unifiClient.startHealthMonitor(onUnifiStateChange);
     } else {
-      unifiClient.initializeWithRetry().then(() => unifiClient.startHealthMonitor());
+      unifiClient.initializeWithRetry().then(() => unifiClient.startHealthMonitor(onUnifiStateChange));
     }
     startEventSource();
     startWatchdog();
@@ -3615,11 +3719,11 @@ async function start() {
 
   const initialized = await unifiClient.initialize();
   if (initialized) {
-    unifiClient.startHealthMonitor();
+    unifiClient.startHealthMonitor(onUnifiStateChange);
   } else {
     logger.warn('Initial connection failed. Retrying in background...');
     unifiClient.initializeWithRetry().then(() => {
-      unifiClient.startHealthMonitor();
+      unifiClient.startHealthMonitor(onUnifiStateChange);
     });
   }
 

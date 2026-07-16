@@ -506,6 +506,9 @@ class ZwaveLock extends LockDriver {
     if (this._shouldLiveRead()) this._refreshLive().catch(() => { /* best effort */ });
     this._scheduleStateRecovery();
     this._maybeApplyAutoRelock();
+    // The node is awake and talking. Anything that was queued for a sleeping
+    // battery lock (a keypad code clear that could not confirm) can retry now.
+    this.emit('node-awake', { node_id: this.nodeId });
   }
 
   /**
