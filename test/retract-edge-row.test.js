@@ -49,30 +49,31 @@ function edge(overrides = {}) {
 // signature: buildRetractEdgeRow(door, tIdx, edge, eIdx, locks)
 test('a default edge renders the lock name, the two after-unlock modes, and Remove', () => {
   const out = load()('Front Door', 0, edge(), 0, LOCKS);
-  assert.match(out, /Retract <strong>Front Bolt<\/strong>/, 'friendly lock name shown');
-  assert.match(out, /value="stay_unlocked" selected/, 'stay unlocked is the default');
-  assert.match(out, /value="relock_after"/);
-  assert.ok(!out.includes('value="lock_default"'), 'lock_default retired from the UI');
+  assert.match(out, /Retract deadbolt/, 'action titled');
+  assert.match(out, /Front Bolt/, 'friendly lock name shown');
+  assert.match(out, /class="chip active" data-df-after="stay_unlocked"/, 'stay unlocked is the default');
+  assert.match(out, /data-df-after="relock_after"/);
+  assert.ok(!out.includes('lock_default'), 'lock_default retired from the UI');
   assert.match(out, /removeRetractEdge\(&quot;Front Door&quot;, 0, 0\)/, 'remove targets this door + trigger + edge');
-  assert.match(out, /display:none/, 'relock-seconds input hidden outside relock_after');
+  assert.match(out, /id="dfRelockWrap_[^"]*" style="display:none"/, 'relock-seconds input hidden outside relock_after');
 });
 
 test('a stale lock_default edge reads as stay unlocked', () => {
   const out = load()('Front Door', 0, edge({ after_unlock: 'lock_default' }), 0, LOCKS);
-  assert.match(out, /value="stay_unlocked" selected/);
+  assert.match(out, /class="chip active" data-df-after="stay_unlocked"/);
 });
 
 test('relock_after shows the seconds input with the stored value', () => {
   const out = load()('Front Door', 1, edge({ after_unlock: 'relock_after', relock_seconds: 90 }), 2, LOCKS);
-  assert.match(out, /value="relock_after" selected/);
+  assert.match(out, /class="chip active" data-df-after="relock_after"/);
   assert.match(out, /value="90"/, 'stored relock seconds surface');
   assert.ok(!/id="dfRelockWrap_[^"]*" style="display:none"/.test(out), 'seconds input visible');
 });
 
 test('advanced fields live under a details expander with their stored values', () => {
   const out = load()('Front Door', 0, edge({ require_result: 'GRANTED', mirror_unlock: true, relock_cooldown_seconds: 25 }), 0, LOCKS);
-  assert.match(out, /<details/, 'Advanced is an expander (collapsed by default)');
-  assert.match(out, /Advanced/);
+  assert.match(out, /<details/, 'advanced is an expander (collapsed by default)');
+  assert.match(out, /advanced/, 'advanced summary present');
   assert.match(out, /value="GRANTED"/, 'require_result editable');
   assert.match(out, /id="dfMirror_[^"]+" checked/, 'mirror_unlock reflects the stored flag');
   assert.match(out, /value="25"/, 'cooldown editable');
@@ -100,7 +101,7 @@ test('door names and values are escaped; edge ids are unique per door, trigger, 
   const a = load()('Door A', 0, edge(), 0, LOCKS);
   const b = load()('Door A', 0, edge(), 1, LOCKS);
   const c = load()('Door A', 1, edge(), 0, LOCKS);
-  const idOf = (s) => (s.match(/id="dfAfter_([^"]+)"/) || [])[1];
+  const idOf = (s) => (s.match(/id="dfAfterRow_([^"]+)"/) || [])[1];
   assert.notEqual(idOf(a), idOf(b), 'two edges in one trigger get distinct control ids');
   assert.notEqual(idOf(a), idOf(c), 'the same edge index in different triggers is distinct');
 });
