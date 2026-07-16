@@ -20,9 +20,9 @@
     "build:all": "electron-builder --win --linux --mac"
   },
   "build": {
-    "appId": "com.qitsolutions.unifi-access-orchestrator",
+    "appId": "io.github.ajbcloud.unifi-access-orchestrator",
     "productName": "UniFi Access Orchestrator",
-    "copyright": "Copyright (c) 2026 QIT Solutions",
+    "copyright": "Copyright (c) 2026 AJBCloud",
     "directories": {
       "output": "dist"
     },
@@ -68,7 +68,7 @@
       ],
       "icon": "assets/icon.png",
       "category": "Utility",
-      "maintainer": "Atticus Brind <support@qitsolutions.dev>"
+      "maintainer": "AJBCloud"
     },
     "mac": {
       "target": [
@@ -89,10 +89,10 @@
     "raspberry-pi"
   ],
   "author": {
-    "name": "Atticus Brind",
-    "email": "support@qitsolutions.dev"
+    "name": "AJBCloud",
+    "url": "https://github.com/ajbcloud"
   },
-  "license": "SEE LICENSE",
+  "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
     "url": "https://github.com/ajbcloud/UniFi-Access-Orchestrator.git"
