@@ -4171,6 +4171,8 @@ async function maybeRebuildDeadboltRules(oldSig) {
   // the Z-Wave connections are never touched by a rules edit.
   buildDeadboltControllers();
   applyEventTaps();
+  // A rules edit may have newly wired a lock; hand its hardware auto-relock off.
+  ensureHardwareAutoRelockOff().catch((e) => logger.warn(`Deadbolt: hardware auto-relock handoff error: ${e.message}`));
   logger.info(`Deadbolt rules updated live (automated: ${deadboltControllers.size}, cascade rules: ${cascadeController ? cascadeController.cascadeRules.length : 0}); lock drivers untouched`);
 }
 
@@ -4332,6 +4334,9 @@ async function start() {
     if (_failedInitLocks.size) scheduleDeadboltInitRetry();
   }
   applyEventTaps();
+  // Decision 2: hand the hardware auto-relock off for flow-wired locks so the
+  // app owns relock in software (best-effort; retried on rebuild).
+  ensureHardwareAutoRelockOff().catch((e) => logger.warn(`Deadbolt: hardware auto-relock handoff error: ${e.message}`));
 
   startEventSource();
   startWatchdog();
