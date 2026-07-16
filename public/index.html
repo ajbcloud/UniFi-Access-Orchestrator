@@ -615,6 +615,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 .btn-secondary:hover { background: var(--btn2-hover); }
 .btn-ghost { background: transparent; color: var(--accent); border-color: var(--border); }
 .btn-ghost:hover { background: var(--accent-dim); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-danger { background: var(--red); color: var(--on-danger); }
 .btn-danger:hover { background: var(--red-hover); }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
@@ -1708,7 +1709,8 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <div id="settings" class="page">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <div style="font-size:15px;font-weight:600">Settings</div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span data-dirty-label style="display:none;font-size:12px;color:var(--text-muted)">Unsaved changes</span>
           <button class="btn btn-sm btn-secondary" onclick="loadSettings()">Refresh settings</button>
           <button class="btn btn-sm btn-primary" id="saveSettingsBtn" onclick="saveSettings()">Save</button>
         </div>
@@ -2047,25 +2049,39 @@ function toast(message, type = 'info') {
 // keep the scope's own listener, and the button is re-queried on every event
 // so a freshly rendered button is found. Programmatic edits that fire no
 // input/change event (adding or removing a row) call markSectionDirty.
+// One save model everywhere: the Save button stays visible but is disabled
+// until the section is edited, and an adjacent "Unsaved changes" label appears
+// while dirty. A hidden button that silently materialized was easy to miss;
+// this makes the unsaved state explicit and consistent.
 function armDirtySave(scopeSelector, buttonSelector) {
   const scope = document.querySelector(scopeSelector);
   if (!scope) return;
-  const btn = scope.querySelector(buttonSelector);
-  if (btn) btn.style.display = 'none';
+  const setClean = () => {
+    const b = scope.querySelector(buttonSelector);
+    if (b) b.disabled = true;
+    const lbl = scope.querySelector('[data-dirty-label]');
+    if (lbl) lbl.style.display = 'none';
+  };
+  const setDirty = () => {
+    const b = scope.querySelector(buttonSelector);
+    if (b) b.disabled = false;
+    const lbl = scope.querySelector('[data-dirty-label]');
+    if (lbl) lbl.style.display = '';
+  };
+  setClean();
   if (scope._dirtyArmed) return;
   scope._dirtyArmed = true;
-  const show = () => {
-    const b = scope.querySelector(buttonSelector);
-    if (b) b.style.display = '';
-  };
-  scope.addEventListener('input', show);
-  scope.addEventListener('change', show);
+  scope.addEventListener('input', setDirty);
+  scope.addEventListener('change', setDirty);
 }
 
 function markSectionDirty(scopeSelector, buttonSelector) {
   const scope = document.querySelector(scopeSelector);
-  const b = scope && scope.querySelector(buttonSelector);
-  if (b) b.style.display = '';
+  if (!scope) return;
+  const b = scope.querySelector(buttonSelector);
+  if (b) b.disabled = false;
+  const lbl = scope.querySelector('[data-dirty-label]');
+  if (lbl) lbl.style.display = '';
 }
 
 // ============================================================
@@ -2707,12 +2723,13 @@ async function saveSettings() {
     await api('PUT', '/api/config', body);
     toast('Settings saved. Reloading service...', 'success');
     await api('POST', '/reload');
-    // Refresh local state
+    // Refresh local state. loadSettings re-arms the section, so the Save button
+    // returns to its disabled (clean) state on success.
     await loadConfig();
     await loadSettings();
   } catch (e) {
     toast('Failed to save settings: ' + e.message, 'error');
-  } finally {
+    // Save failed, so the section is still dirty: leave Save available to retry.
     btn.disabled = false;
   }
 }
