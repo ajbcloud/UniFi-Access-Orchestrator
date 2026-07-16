@@ -118,7 +118,8 @@ test('with groups, entry reads "[scope] badges in" and the doorbell scope option
   const bell = load(['Staff'])('Front Door', doorbellFlow, DATA);
   assert.match(bell, />anyone</, 'doorbell scope offers anyone');
   assert.ok(!bell.includes('anyone who answers'), 'never reads "anyone who answers answers"');
-  assert.match(bell, /rings and/, 'doorbell reads: doorbell rings and [scope] answers');
+  assert.match(bell, /rings,/, 'doorbell reads: doorbell rings, [scope] answers and unlocks the door');
+  assert.match(bell, /answers and unlocks the door/, 'doorbell states the intended outcome');
 });
 
 test('the doorbell advanced expander explains the reason code in plain language', () => {
@@ -179,18 +180,21 @@ test('a door can hold multiple triggers of the same type, each scoped', () => {
   const out = load(['Staff', 'Visitors'])('Front Door', two, DATA);
   assert.match(out, /data-df-trig="0"/, 'first doorbell trigger renders');
   assert.match(out, /data-df-trig="1"/, 'second doorbell trigger renders');
-  assert.ok(!/addTrigger\(&quot;Front Door&quot;, 'entry'\)/.test(out), 'no badge-in add button (every flow starts with one)');
+  assert.match(out, /addTrigger\(&quot;Front Door&quot;, 'entry'\)/, 'badge-in trigger addable (can be re-added after removal)');
   assert.match(out, /addTrigger\(&quot;Front Door&quot;, 'doorbell'\)/, 'doorbell trigger always addable');
   assert.match(out, /more than one doorbell rule/, 'the scope hint appears when a type repeats and groups exist');
 });
 
-test('a fresh trigger opens the action chooser; a trigger with an action collapses it', () => {
+test('the action chooser stays collapsed by default; + add action reveals both choices', () => {
   const empty = load()('Front Door', flow({ triggers: [entryTrigger([])] }), DATA);
-  const openMenu = empty.match(/<div id="dfAddMenu_[^"]*"[^>]*>/)[0];
-  assert.ok(!/display:none/.test(openMenu), 'no actions yet -> chooser is open');
+  const emptyMenu = empty.match(/<div id="dfAddMenu_[^"]*"[^>]*>/)[0];
+  assert.ok(/display:none/.test(emptyMenu), 'no default action -> chooser collapsed until + add action');
   const withAction = load()('Front Door', flow(), DATA); // flow() has a retract edge
   const closedMenu = withAction.match(/<div id="dfAddMenu_[^"]*"[^>]*>/)[0];
-  assert.ok(/display:none/.test(closedMenu), 'an action present -> chooser tucked behind the button');
+  assert.ok(/display:none/.test(closedMenu), 'an action present -> chooser also collapsed behind the button');
+  // both action choices are always present inside the (collapsed) chooser
+  assert.match(empty, /Retract a deadbolt/, 'deadbolt choice offered');
+  assert.match(empty, /Unlock other doors/, 'unlock choice offered');
 });
 
 test('the inline gating note points at Keypad Users when a deadbolt retracts', () => {
