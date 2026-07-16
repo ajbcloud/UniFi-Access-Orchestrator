@@ -438,10 +438,17 @@ class RulesEngine {
       rule.group === group && this.locationMatches(event.locationName, rule.trigger)
     );
 
-    // Collect all doors to unlock from matching rules
+    // Collect all doors to unlock from matching rules.
+    // NOTE: this engine only backs /test/simulate-rule (preflight); it is never
+    // the live path. When several rules match (e.g. stacked unlock actions on
+    // one scope, each projected to its own rule), it unions their doors and
+    // keeps a single delay (the last non-zero one). The live cascade controller
+    // instead fires each action with its OWN delay/debounce, so a preflight of
+    // stacked actions carrying different delays is an approximation of live
+    // timing, not an exact match.
     let doorsToUnlock = [];
     let ruleWithDelay = null;
-    
+
     if (matchingRules.length > 0) {
       for (const rule of matchingRules) {
         doorsToUnlock.push(...(rule.unlock || []));

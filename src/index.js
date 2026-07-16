@@ -3217,8 +3217,8 @@ app.put('/api/config', async (req, res) => {
         flows[door] = flows[door] || { door_id: null, triggers: [] };
         if (!Array.isArray(flows[door].triggers)) flows[door].triggers = [];
         let t = flows[door].triggers.find((x) => isEntry(x) && x.scope == null);
-        if (!t) { t = { type: 'entry', scope: null, actions: { unlock: null, retract: [] } }; flows[door].triggers.push(t); }
-        if (!t.actions) t.actions = { unlock: null, retract: [] };
+        if (!t) { t = { type: 'entry', scope: null, actions: { unlock: [], retract: [] } }; flows[door].triggers.push(t); }
+        if (!t.actions) t.actions = { unlock: [], retract: [] };
         if (!Array.isArray(t.actions.retract)) t.actions.retract = [];
         return t;
       };
@@ -3253,6 +3253,12 @@ app.put('/api/config', async (req, res) => {
       }
 
       // cascade_rules -> everyone-entry unlock action (per mentioned door).
+      // cascade_rules is the legacy single-cascade view and owns the WHOLE
+      // everyone-entry unlock category, so (like the unlock_rules/doorbell_rules
+      // folds below) it fully replaces that trigger's unlock stack. A caller that
+      // has stacked several everyone-entry unlock actions via PUT /api/door-flows
+      // must keep using that endpoint: a cascade_rules PUT intentionally
+      // collapses them to the single cascade action this legacy key can express.
       if (updates.cascade_rules !== undefined) {
         const incoming = doorFlows.migrateToFlows({ cascade_rules: updates.cascade_rules }, locks).flows;
         for (const [door, flow] of Object.entries(incoming)) {
@@ -3490,12 +3496,23 @@ function cleanDoorFlowTrigger(trig) {
     : (actions.unlock ? [actions.unlock] : []);
   const unlock = rawUnlock
     .filter((u) => u && Array.isArray(u.doors) && u.doors.some((d) => typeof d === 'string' && d))
-    .map((u) => ({
-      doors: u.doors.filter((d) => typeof d === 'string' && d),
-      door_ids: Array.isArray(u.door_ids) ? [...u.door_ids] : undefined,
-      debounce_seconds: u.debounce_seconds == null ? 8 : u.debounce_seconds,
-      delay_seconds: u.delay_seconds == null ? 0 : u.delay_seconds,
-    }));
+    .map((u) => {
+      // Filter doors and their parallel door_ids together so the arrays stay
+      // index-aligned; a dropped (empty) door name must not shift ids onto the
+      // wrong door, since backfill later maps door_ids[i] back onto doors[i].
+      const hasIds = Array.isArray(u.door_ids);
+      const keptDoors = [];
+      const keptIds = [];
+      u.doors.forEach((d, i) => {
+        if (typeof d === 'string' && d) { keptDoors.push(d); if (hasIds) keptIds.push(u.door_ids[i]); }
+      });
+      return {
+        doors: keptDoors,
+        door_ids: hasIds ? keptIds : undefined,
+        debounce_seconds: u.debounce_seconds == null ? 8 : u.debounce_seconds,
+        delay_seconds: u.delay_seconds == null ? 0 : u.delay_seconds,
+      };
+    });
   const out = { type, scope, actions: { unlock, retract } };
   if (type === 'doorbell') {
     const db = (trig && trig.doorbell) || {};

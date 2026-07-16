@@ -4563,8 +4563,9 @@ function buildDoorFlowCard(door, flow, data) {
   const gate = lockSet.size
     ? `<div class="df-note"><span aria-hidden="true">&#128273;</span><span>Keypad PINs on ${lockSet.size > 1 ? 'these deadbolts' : 'this deadbolt'} follow UniFi access to <strong>${escapeHtml(door)}</strong>. <a href="#" onclick="openKeypadTab();return false;" style="color:var(--accent)">Manage keypad users</a></span></div>`
     : '';
-  // Both trigger types are always addable: a door can have several badge-in and
-  // several doorbell rules, each scoped differently.
+  // Every flow is seeded with one badge-in (entry) trigger (see addDoorFlow), so
+  // the palette only adds doorbell triggers; a door can still hold several
+  // doorbell rules, each scoped differently.
   const addTriggerRow = `<div class="df-addrow">
     <button type="button" class="df-add" onclick="addTrigger(${doorArg}, 'doorbell')">+ add doorbell trigger</button>
   </div>`;
@@ -4790,16 +4791,15 @@ function _triggersOf(flow) {
   return flow.triggers;
 }
 
-// Add a trigger of the given type. Both badge in (entry) and doorbell are first
-// class; the card offers whichever type is not present yet.
+// Add a doorbell trigger to a door. Every flow already starts with one badge-in
+// (entry) trigger (seeded by addDoorFlow), so the palette only adds doorbell
+// triggers; a door can hold several, each scoped differently. `type` is kept so
+// the call site reads self-documenting; doorbell is the only added type.
 function addTrigger(door, type) {
   const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
   if (!flow) return;
   collectDoorFlowCard(door);
-  const t = type === 'entry'
-    ? _newEntryTrigger()
-    : { type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: [], retract: [] } };
-  _triggersOf(flow).push(t);
+  _triggersOf(flow).push({ type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: [], retract: [] } });
   repaintDoorFlowCard(door);
 }
 
