@@ -1319,7 +1319,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
 <div class="tabs" id="tabBar">
   <div class="tab active" data-page="dashboard">Dashboard</div>
   <div class="tab" data-page="events">Live Events</div>
-  <div class="tab" data-page="config">Configuration</div>
+  <div class="tab" data-page="config">Automations</div>
   <div class="tab" data-page="designer">Visual Designer</div>
   <div class="tab" data-page="settings">Settings</div>
   <div class="tab" data-page="tools">Test Tools</div>
@@ -1457,7 +1457,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
           </div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             Give your UniFi groups friendly names to use in rules. This is
-            optional; you can always change it later in the Configuration tab.
+            optional; you can always change it later in the Automations tab.
           </div>
           <div id="wizGroupMappings"><div style="color:var(--text-muted)">Loading groups...</div></div>
         </div>
@@ -1473,7 +1473,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
             Rules are what make the orchestrator act. A simple first rule might
             be: when <em>Staff</em> badge at the <em>Front Door</em>, also unlock
             the <em>Inner Door</em>. You can build rules in the full editor on the
-            Configuration tab, then come back here to finish.
+            Automations tab, then come back here to finish.
           </div>
           <div id="wizRuleSummary"><div style="color:var(--text-muted)">Loading rules...</div></div>
         </div>
@@ -1622,7 +1622,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
   <!-- CONFIGURATION -->
   <div id="config" class="page">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <div style="font-size:15px;font-weight:600">Configuration</div>
+      <div style="font-size:15px;font-weight:600">Automations</div>
       <div style="display:flex;gap:8px;align-items:center">
         <span id="autoSyncPill" class="badge info" title="Background config sync status" style="font-size:11px">Auto-sync: …</span>
         <button class="btn btn-sm btn-secondary" onclick="loadConfig()">Refresh automations</button>
@@ -1659,10 +1659,6 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       <div class="config-body" id="configDoorbellRules">Loading...</div>
     </div>
 
-    <div class="config-section">
-      <div class="config-header">Event Source</div>
-      <div class="config-body" id="configEventSource">Loading...</div>
-    </div>
 
     <div class="config-section">
       <div class="config-header">
@@ -1678,7 +1674,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div>
         <div style="font-size:15px;font-weight:600">Visual Designer</div>
-        <div style="font-size:12px;color:var(--text-muted)">Build cascading door rules and the deadbolt add-on visually. Changes here fill in the Configuration tab, and vice versa.</div>
+        <div style="font-size:12px;color:var(--text-muted)">Build cascading door rules and the deadbolt add-on visually. Changes here fill in the Automations tab, and vice versa.</div>
       </div>
       <button class="btn btn-sm btn-secondary" onclick="if(window.openDesigner)window.openDesigner()">Refresh designer</button>
     </div>
@@ -1741,9 +1737,14 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
       </div>
 
       <div class="card" style="margin-top:16px">
+        <div class="card-title">Event source</div>
+        <div id="settingsEventSource">Loading...</div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
         <div class="card-title">Auto-Sync</div>
         <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
-          Periodic background job that detects local config edits and upstream UniFi controller changes (doors, users, group membership) and reloads in place. Read-only — never writes to <code>config.json</code> or the controller.
+          Periodic background job that detects local config edits and upstream UniFi controller changes (doors, users, group membership) and reloads in place. Read-only, never writes to <code>config.json</code> or the controller.
         </div>
         <div class="form-group">
           <label class="form-label">
@@ -1753,7 +1754,7 @@ select { cursor: pointer; appearance: none; background-image: url("data:image/sv
         <div class="form-group">
           <label class="form-label">Interval (seconds)</label>
           <input type="number" id="settingAutoSyncInterval" min="5" max="600" placeholder="15">
-          <div style="font-size:12px;color:var(--text-muted);margin-top:4px">Allowed range: 5 – 600 seconds. Default 15.</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:4px">Allowed range: 5 to 600 seconds. Default 15.</div>
         </div>
       </div>
 
@@ -2475,7 +2476,7 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     if (data.type === 'connected') return;
     addEventRow(data);
-    // Auto-refresh Configuration tab data when the background sync job
+    // Auto-refresh Automations tab data when the background sync job
     // reloads or detects controller drift, so the user sees fresh
     // door/user/group/rule data without clicking Refresh.
     if (data.type === 'system.auto_reload') {
@@ -2575,6 +2576,55 @@ async function loadConfig() {
 // ============================================================
 // Settings page
 // ============================================================
+// Single source of truth for the connection config shape, shared by Settings
+// save, the wizard, and the connection test, so these are written from one
+// place instead of three. The PUT deep-merges, so omitting a field preserves
+// the stored value: a blank host or token is never written (that would clobber
+// a working value), and the wizard omits server.host (it has no field for it)
+// rather than forcing 0.0.0.0 over a host set in Settings.
+function buildConnectionConfigBody(f) {
+  f = f || {};
+  const body = { server: {}, unifi: {} };
+  if (f.serverPort) body.server.port = parseInt(f.serverPort, 10) || 3000;
+  if (f.serverHost) body.server.host = f.serverHost;
+  if (f.port) body.unifi.port = parseInt(f.port, 10) || 12445;
+  if (f.host) body.unifi.host = f.host;
+  if (f.token) body.unifi.token = f.token;
+  return body;
+}
+async function persistConnectionSettings(fields) {
+  await api('PUT', '/api/config', buildConnectionConfigBody(fields));
+}
+
+// Pure builder for the Event Source editor. This wiring lives in Settings now,
+// so there is exactly one editable home for it.
+function buildEventSourceEditor(es) {
+  es = es || {};
+  const esMode = es.mode || 'websocket'; // websocket is the default when unset
+  const recon = (es.websocket && es.websocket.reconnect_interval_seconds) || 5;
+  return `
+    <div style="margin-bottom:12px">
+      <label class="form-label">Event source mode</label>
+      <select id="eventSourceMode" style="font-size:12px;padding:6px" onchange="toggleEventSourceFields()">
+        <option value="websocket" ${esMode === 'websocket' ? 'selected' : ''}>WebSocket (real-time notifications)</option>
+        <option value="alarm_manager" ${esMode === 'alarm_manager' ? 'selected' : ''}>Alarm Manager (internal event capture)</option>
+        <option value="api_webhook" ${esMode === 'api_webhook' ? 'selected' : ''}>API Webhook (external POST to /webhook)</option>
+      </select>
+    </div>
+    <div id="webhookFields" style="display:${esMode === 'api_webhook' ? 'block' : 'none'};margin-bottom:12px">
+      <div style="padding:12px;background:var(--bg-input);border-radius:var(--radius);border:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--text-secondary)">
+        Send POST requests with JSON body to: <strong style="color:var(--text-primary)">http://your-server:3000/webhook</strong>
+        <div style="margin-top:8px">Optional: add header X-Orchestrator-Signature: sha256=&lt;HMAC&gt; for authentication</div>
+      </div>
+    </div>
+    <div id="websocketFields" style="display:${esMode === 'websocket' ? 'block' : 'none'};margin-bottom:12px">
+      <label class="form-label">Reconnect interval (seconds)</label>
+      <input type="number" id="wsReconnectInterval" value="${recon}" min="1" max="60" style="font-size:12px;padding:6px" placeholder="5">
+    </div>
+    <button class="btn btn-secondary" onclick="saveEventSource()" style="margin-top:12px">Save event source</button>
+  `;
+}
+
 async function loadSettings() {
   try {
     const cfg = await api('GET', '/api/config');
@@ -2588,6 +2638,12 @@ async function loadSettings() {
     const as = cfg.auto_sync || {};
     document.getElementById('settingAutoSyncEnabled').checked = as.enabled !== false;
     document.getElementById('settingAutoSyncInterval').value = as.interval_seconds || 15;
+    // Event source now lives here (one editable home for the wiring).
+    const esEl = document.getElementById('settingsEventSource');
+    if (esEl) {
+      esEl.innerHTML = buildEventSourceEditor(cfg.event_source || {});
+      armDirtySave('#settingsEventSource', 'button[onclick^="saveEventSource"]');
+    }
     // Values were just repopulated programmatically (fires no events), so the
     // Save button hides until the user actually edits something.
     armDirtySave('#settings', '#saveSettingsBtn');
@@ -2600,19 +2656,23 @@ async function saveSettings() {
   const btn = document.getElementById('saveSettingsBtn');
   btn.disabled = true;
   try {
-    const server = { port: parseInt(document.getElementById('settingServerPort').value) || 3000, host: document.getElementById('settingServerHost').value || '0.0.0.0' };
-    const unifi = { host: document.getElementById('settingUnifiHost').value || '', port: parseInt(document.getElementById('settingUnifiPort').value) || 12445 };
-    const tokenVal = document.getElementById('settingUnifiToken').value.trim();
-    if (tokenVal !== '') unifi.token = tokenVal; // only send token when user provided one
-    const logging = { level: document.getElementById('settingLogLevel').value || 'info' };
+    // Connection keys (server + unifi) go through the shared builder so the
+    // wizard and Settings write the same shape. Blank host/token are omitted.
+    const body = buildConnectionConfigBody({
+      serverPort: document.getElementById('settingServerPort').value,
+      serverHost: document.getElementById('settingServerHost').value || '0.0.0.0',
+      host: document.getElementById('settingUnifiHost').value.trim(),
+      port: document.getElementById('settingUnifiPort').value,
+      token: document.getElementById('settingUnifiToken').value.trim(),
+    });
+    body.logging = { level: document.getElementById('settingLogLevel').value || 'info' };
     const intervalRaw = parseInt(document.getElementById('settingAutoSyncInterval').value, 10) || 15;
-    const interval = Math.min(600, Math.max(5, intervalRaw));
-    const auto_sync = {
+    body.auto_sync = {
       enabled: document.getElementById('settingAutoSyncEnabled').checked,
-      interval_seconds: interval
+      interval_seconds: Math.min(600, Math.max(5, intervalRaw)),
     };
 
-    await api('PUT', '/api/config', { server, unifi, logging, auto_sync });
+    await api('PUT', '/api/config', body);
     toast('Settings saved. Reloading service...', 'success');
     await api('POST', '/reload');
     // Refresh local state
@@ -2897,37 +2957,11 @@ function renderConfig() {
 
   document.getElementById('configDoorbellRules').innerHTML = dbHtml;
 
-  // Event Source Config
-  const es = configData?.event_source || {};
-  const esMode = es.mode || 'websocket'; // websocket is the default when unset
-  const eventSourceHtml = `
-    <div style="margin-bottom:12px">
-      <label class="form-label">Event Source Mode</label>
-      <select id="eventSourceMode" style="font-size:12px;padding:6px" onchange="toggleEventSourceFields()">
-        <option value="websocket" ${esMode === 'websocket' ? 'selected' : ''}>WebSocket (real-time notifications)</option>
-        <option value="alarm_manager" ${esMode === 'alarm_manager' ? 'selected' : ''}>Alarm Manager (internal event capture)</option>
-        <option value="api_webhook" ${esMode === 'api_webhook' ? 'selected' : ''}>API Webhook (external POST to /webhook)</option>
-      </select>
-    </div>
-    <div id="webhookFields" style="display:${esMode === 'api_webhook' ? 'block' : 'none'};margin-bottom:12px">
-      <div style="padding:12px;background:var(--bg-input);border-radius:var(--radius);border:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--text-secondary)">
-        Send POST requests with JSON body to: <strong style="color:var(--text-primary)">http://your-server:3000/webhook</strong>
-        <div style="margin-top:8px">Optional: Add header X-Orchestrator-Signature: sha256=&lt;HMAC&gt; for authentication</div>
-      </div>
-    </div>
-    <div id="websocketFields" style="display:${esMode === 'websocket' ? 'block' : 'none'};margin-bottom:12px">
-      <label class="form-label">Reconnect Interval (seconds)</label>
-      <input type="number" id="wsReconnectInterval" value="${es.websocket?.reconnect_interval_seconds || 5}" min="1" max="60" style="font-size:12px;padding:6px" placeholder="5">
-    </div>
-    <button class="btn btn-primary" onclick="saveEventSource()" style="margin-top:12px">Save Event Source</button>
-  `;
-  document.getElementById('configEventSource').innerHTML = eventSourceHtml;
-
   // Save buttons hide until their section actually changes (and hide again
-  // when a successful save re-renders the section through loadConfig).
+  // when a successful save re-renders the section through loadConfig). Event
+  // source moved to Settings, so it is armed there, not here.
   armDirtySave('#configGroupMappings', 'button[onclick^="saveGroupMappings"]');
   armDirtySave('#viewerMappingsSection', 'button[onclick^="saveViewerMappings"]');
-  armDirtySave('#configEventSource', 'button[onclick^="saveEventSource"]');
 }
 
 // Smart Deadbolt (Z-Wave) setup: pick the stick's serial/COM port and enable
@@ -4601,7 +4635,7 @@ async function saveEventSource() {
 
     await api('PUT', '/api/config', { event_source });
     toast('Event source saved', 'success');
-    await loadConfig();
+    await loadSettings();
   } catch (e) {
     toast(`Failed to save: ${e.message}`, 'error');
   }
@@ -4622,7 +4656,7 @@ function renderTestRules() {
 
   if (!hasRules) {
     container.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:12px 0">
-      No rules configured yet. Go to the <strong>Configuration</strong> tab to create access or visitor rules, then come back here to test them.
+      No rules configured yet. Go to the <strong>Automations</strong> tab to create access or visitor rules, then come back here to test them.
     </div>`;
     return;
   }
@@ -5361,7 +5395,7 @@ function buildWizardFinishHtml(summary) {
     + '<div style="font-size:22px;font-weight:700;color:var(--accent)">' + escapeHtml(String(value)) + '</div>'
     + '<div style="font-size:12px;color:var(--text-secondary)">' + escapeHtml(String(label)) + '</div></div>';
   const nudge = rules === 0
-    ? '<div class="help-blurb" style="margin-top:16px;margin-bottom:0;text-align:left">No rules yet. The orchestrator will connect and sync, but it will not automate anything until you add at least one rule on the Configuration tab.</div>'
+    ? '<div class="help-blurb" style="margin-top:16px;margin-bottom:0;text-align:left">No rules yet. The orchestrator will connect and sync, but it will not automate anything until you add at least one rule on the Automations tab.</div>'
     : '';
   return '<div class="card" style="text-align:center">'
     + '<div style="font-size:40px;margin-bottom:8px">&#127881;</div>'
@@ -5374,8 +5408,8 @@ function buildWizardFinishHtml(summary) {
     + '<div class="help-blurb" style="text-align:left;margin-top:16px;margin-bottom:0">'
     + '<strong>What you can do next:</strong>'
     + '<ul>'
-    + '<li>Fine-tune rules, doors, and group names on the <strong>Configuration</strong> tab.</li>'
-    + '<li>Add visitor and doorbell rules, backups, and alerts under <strong>Configuration</strong> and <strong>Settings</strong>.</li>'
+    + '<li>Fine-tune rules, doors, and group names on the <strong>Automations</strong> tab.</li>'
+    + '<li>Add visitor and doorbell rules, backups, and alerts under <strong>Automations</strong> and <strong>Settings</strong>.</li>'
     + '<li>Pair a smart deadbolt from <strong>Configuration &gt; Z-Wave</strong> once the hardware is connected.</li>'
     + '<li>Reopen this wizard any time from the <strong>Setup</strong> button in the top bar.</li>'
     + '</ul></div>'
@@ -5645,15 +5679,10 @@ async function persistConnection() {
   const port = portEl ? portEl.value.trim() : '';
   const token = tokenEl ? tokenEl.value.trim() : '';
   const serverPort = spEl ? spEl.value.trim() : '';
-  const body = {
-    server: { port: parseInt(serverPort, 10) || 3000, host: '0.0.0.0' },
-    unifi: { port: parseInt(port, 10) || 12445, verify_ssl: false, user_sync_interval_minutes: 5 }
-  };
-  // Omit a blank host so a stored, working host is never overwritten with '',
-  // which would trigger a full reload against an empty controller address.
-  if (host) body.unifi.host = host;
-  if (token) body.unifi.token = token; // never overwrite a stored token with blank
-  await api('PUT', '/api/config', body);
+  // Shared builder. serverHost is intentionally omitted (the wizard has no
+  // field for it), so the deep-merge preserves a host set in Settings instead
+  // of forcing 0.0.0.0 over it.
+  await persistConnectionSettings({ host, port, token, serverPort });
 }
 
 async function renderWizardSync() {
@@ -5717,7 +5746,7 @@ function renderWizardRuleStep() {
     + Number(count) + '</strong> access rule' + (count === 1 ? '' : 's') + '.</div></div>'
     + '<button class="btn btn-primary" onclick="wizardGoToConfig(\'rule\')">'
     + (count === 0 ? 'Create your first rule' : 'Manage rules') + '</button>'
-    + '<div style="font-size:12px;color:var(--text-muted);margin-top:10px">Rules open in the full editor on the Configuration tab. You can continue the wizard without adding one.</div>';
+    + '<div style="font-size:12px;color:var(--text-muted);margin-top:10px">Rules open in the full editor on the Automations tab. You can continue the wizard without adding one.</div>';
 }
 
 function renderWizardEventsStep() {
@@ -5759,7 +5788,7 @@ async function renderWizardFinish() {
   el.innerHTML = buildWizardFinishHtml({ doors, users, rules, eventMode: mode });
 }
 
-// Hand off to the full Configuration tab editor (the single source of truth for
+// Hand off to the full Automations tab editor (the single source of truth for
 // rules and mappings). We persist where we were so the Setup button can resume,
 // and deliberately do not duplicate those editors inside the wizard.
 function wizardGoToConfig(section) {
@@ -5777,7 +5806,7 @@ function wizardGoToConfig(section) {
     const anchor = document.getElementById(anchorId);
     if (anchor && anchor.scrollIntoView) anchor.scrollIntoView({ block: 'start' });
   }, 400);
-  toast('Opening the Configuration tab. Use the Setup button any time to return here.', 'info');
+  toast('Opening the Automations tab. Use the Setup button any time to return here.', 'info');
 }
 
 // ============================================================
@@ -5901,11 +5930,10 @@ async function testConnection() {
   if (testBtn) testBtn.disabled = true;
 
   try {
-    // Save the connection details so the orchestrator can use them. PUT
-    // auto-reloads the service, so no separate /reload call is needed.
-    await api('PUT', '/api/config', {
-      unifi: { host, port: parseInt(port, 10) || 12445, token, verify_ssl: false, user_sync_interval_minutes: 5 }
-    });
+    // Save the connection details so the orchestrator can use them, through
+    // the shared builder. PUT auto-reloads the service, so no separate /reload
+    // call is needed.
+    await persistConnectionSettings({ host, port, token });
 
     // Keep the client-side cache in step so the wizard treats the host as set.
     if (configData && typeof configData === 'object') {
@@ -5920,7 +5948,7 @@ async function testConnection() {
     const usersCount = (health.unifi && health.unifi.users_mapped) || 0;
 
     if (doorsCount > 0 || usersCount > 0) {
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">Connected! Found ${doorsCount} doors and ${usersCount} users. Click Next to continue.</span>`;
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">Connected. Found ${doorsCount} doors and ${usersCount} users. Click Next to continue.</span>`;
     } else {
       if (statusEl) statusEl.innerHTML = `<span style="color:var(--yellow)">Connected, but no doors or users were found yet. Check the UniFi controller IP and token, and that you can reach port ${escapeHtml(port)} from this machine. You can still continue.</span>`;
     }
@@ -6492,7 +6520,7 @@ setInterval(fetchHealth, 10000);
   function renderPalette() {
     panelEl.innerHTML = ''
       + '<div class="fd-panel-title">Design</div>'
-      + '<div class="fd-hint">Drag from a node\'s right dot onto another node to wire a rule, or add one below. Every change here fills in the matching manual fields on the Configuration tab.</div>'
+      + '<div class="fd-hint">Drag from a node\'s right dot onto another node to wire a rule, or add one below. Every change here fills in the matching manual fields on the Automations tab.</div>'
       + '<div class="fd-add">'
       + '<button class="btn btn-sm btn-primary" data-add="access">+ Access rule</button>'
       + '<button class="btn btn-sm btn-primary" data-add="visitor">+ Visitor rule</button>'
@@ -6612,7 +6640,7 @@ setInterval(fetchHealth, 10000);
     return h;
   }
   function doorChecklist(doors, selected) {
-    if (!doors.length) return '<div class="fd-hint">No doors discovered yet. Rediscover doors on the Configuration tab.</div>';
+    if (!doors.length) return '<div class="fd-hint">No doors discovered yet. Rediscover doors on the Automations tab.</div>';
     const sel = new Set(selected);
     return '<div class="fd-checks">' + doors.map((d) =>
       '<label class="fd-check' + (sel.has(d) ? ' on' : '') + '"><input type="checkbox" class="fd-door" value="' + esc(d) + '"' + (sel.has(d) ? ' checked' : '') + '>' + esc(d) + '</label>'
