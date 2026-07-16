@@ -22,6 +22,7 @@
 const https = require('https');
 const WebSocket = require('ws');
 const logger = require('./logger');
+const accessGating = require('./access-gating');
 
 class UniFiClient {
   constructor(config) {
@@ -38,6 +39,17 @@ class UniFiClient {
     this.userNames = new Map();      // userId -> fullName
     this.discoveredGroups = [];      // UniFi group names found during sync
     this.userData = new Map();       // userId -> {name, unifiGroupName, logicalGroupName}
+
+    // Access-policy caches (for keypad-PIN gating). Populated by
+    // syncAccessPolicies() from GET /users?expand[]=access_policy. Until that
+    // first succeeds, accessPolicyAvailable stays false and every gate fails
+    // OPEN (no code is ever revoked on missing data).
+    this.userDoorAccess = new Map();     // userId -> Set(doorId) allowed
+    this.userAccessComplete = new Map(); // userId -> bool (false = fail open)
+    this.accessPolicyAvailable = false;
+    this.accessPolicySyncedAt = null;
+    this.accessPolicyError = null;
+    this._lastAccessSyncSummary = null;
 
     // WebSocket
     this.ws = null;
@@ -164,6 +176,7 @@ class UniFiClient {
     try {
       await this.discoverDoors();
       await this.syncUserGroups();
+      await this.syncAccessPolicies();
       this.startPeriodicSync();
       this.connectionState = 'connected';
       logger.info('UniFi Access client initialized successfully');
@@ -440,12 +453,98 @@ class UniFiClient {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Access policies (for keypad-PIN gating): which doors each user may open.
+  //   GET /users?expand[]=access_policy  -> user.access_policies[].resources[]
+  //     resource = { type: 'door' | 'door_group', id }
+  //   GET /door_groups                   -> expand door_group resources
+  //
+  // Builds userDoorAccess (userId -> Set(doorId)) and userAccessComplete
+  // (userId -> bool). A user is marked INCOMPLETE when a policy references a
+  // resource we cannot resolve to concrete door ids (an unknown door group or
+  // an unrecognized resource type); the gate treats incomplete users as
+  // 'unknown' and never revokes their codes. On any failure the previous
+  // cache is kept and accessPolicyAvailable is left as-is (false until the
+  // first success), so a transient error never flips a user to "denied".
+  // ---------------------------------------------------------------------------
+
+  // Best-effort door-group -> door-id membership. UniFi exposes door groups at
+  // GET /door_groups; the member door ids live under a `resources`/`doors`
+  // array depending on controller version, so we read whichever is present.
+  // Returns Map(groupId -> Set(doorId)); empty on any failure (callers then
+  // treat door_group resources as unexpandable => users fail open).
+  async fetchDoorGroups() {
+    const map = new Map();
+    try {
+      const result = await this.request('GET', '/door_groups');
+      const groups = Array.isArray(result.data) ? result.data : [];
+      for (const g of groups) {
+        if (!g || !g.id) continue;
+        const doors = new Set();
+        const members = Array.isArray(g.resources) ? g.resources
+          : Array.isArray(g.doors) ? g.doors : [];
+        for (const m of members) {
+          const id = (m && (m.id || m.door_id)) || (typeof m === 'string' ? m : null);
+          if (id) doors.add(String(id));
+        }
+        map.set(String(g.id), doors);
+      }
+    } catch (err) {
+      logger.debug(`Door-group fetch failed (${err.message}); door_group access resources will be treated as unexpandable`);
+    }
+    return map;
+  }
+
+  async syncAccessPolicies() {
+    logger.debug('Syncing access policies...');
+    try {
+      const doorGroups = await this.fetchDoorGroups();
+      const users = await this.requestAllPages('/users?expand[]=access_policy');
+      const { allowedDoorsByUser, completeByUser } = accessGating.parseAccessPolicies(users, doorGroups);
+
+      // Atomic swap on success.
+      this.userDoorAccess = allowedDoorsByUser;
+      this.userAccessComplete = completeByUser;
+      this.accessPolicyAvailable = true;
+      this.accessPolicySyncedAt = new Date().toISOString();
+      this.accessPolicyError = null;
+
+      let incomplete = 0;
+      for (const complete of completeByUser.values()) if (!complete) incomplete++;
+      const summary = `Access policy sync complete: ${allowedDoorsByUser.size} users`
+        + (incomplete ? `, ${incomplete} with unresolved resources (those users are not gated)` : '');
+      const changed = summary !== this._lastAccessSyncSummary;
+      this._lastAccessSyncSummary = summary;
+      logger[changed ? 'info' : 'debug'](summary);
+    } catch (err) {
+      // Keep the prior cache; never flip anyone to denied on a transient error.
+      this.accessPolicyError = err.message;
+      logger.warn(`Access policy sync failed (${err.message}); keypad gating uses the last good data${this.accessPolicyAvailable ? '' : ' (none yet: gating is not enforced)'}`);
+    }
+  }
+
+  // Status snapshot for diagnostics/health.
+  accessPolicyStatus() {
+    let incomplete = 0;
+    for (const complete of this.userAccessComplete.values()) if (!complete) incomplete++;
+    return {
+      available: this.accessPolicyAvailable,
+      synced_at: this.accessPolicySyncedAt,
+      users: this.userDoorAccess.size,
+      incomplete_users: incomplete,
+      error: this.accessPolicyError,
+    };
+  }
+
   startPeriodicSync() {
     if (this.syncInterval) {
       clearInterval(this.syncInterval);
     }
     const ms = this.syncMinutes * 60 * 1000;
-    this.syncInterval = setInterval(() => this.syncUserGroups(), ms);
+    this.syncInterval = setInterval(() => {
+      this.syncUserGroups();
+      this.syncAccessPolicies();
+    }, ms);
     logger.info(`Periodic user group sync started: every ${this.syncMinutes} minutes`);
   }
 
@@ -469,6 +568,7 @@ class UniFiClient {
           logger.info('Health monitor: connectivity restored');
           await this.discoverDoors();
           await this.syncUserGroups();
+          await this.syncAccessPolicies();
           if (onStateChange) onStateChange('connected');
         }
       } catch (err) {

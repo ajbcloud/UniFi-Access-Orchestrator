@@ -80,6 +80,31 @@ test('aggregateKeypadUsers: confirmed null/false reads pending', () => {
   assert.equal(users[0].locks[0].status, 'pending');
 });
 
+test('aggregateKeypadUsers: verdicts surface blocked (denied) and unknown eligibility', () => {
+  const cfg = {
+    a: { user_codes: { 1: { user_id: 'u1', name: 'A', pin_code: '1111', updated_at: '2026-01-01T00:00:00Z', confirmed: true } } },
+    b: { user_codes: { 1: { user_id: 'u1', name: 'A', pin_code: '1111', updated_at: '2026-01-01T00:00:00Z', confirmed: true } } },
+    c: { user_codes: {} },
+  };
+  const relevant = [
+    { lock_id: 'a', label: 'A', gating_door: 'Door A' },
+    { lock_id: 'b', label: 'B', gating_door: 'Door B' },
+    { lock_id: 'c', label: 'C', gating_door: 'Door C' },
+  ];
+  const verdicts = new Map([
+    ['u1|a', 'allowed'],
+    ['u1|b', 'denied'],
+    ['u1|c', 'unknown'],
+  ]);
+  const users = aggregateKeypadUsers(cfg, relevant, verdicts);
+  const u1 = users.find((u) => u.user_id === 'u1');
+  const byLock = Object.fromEntries(u1.locks.map((l) => [l.lock_id, l]));
+  assert.equal(byLock.a.status, 'ok', 'allowed + holds current PIN stays ok');
+  assert.equal(byLock.b.status, 'blocked', 'denied overrides the code status');
+  assert.equal(byLock.c.status, 'missing', 'unknown keeps the code status');
+  assert.equal(byLock.c.eligibility, 'unknown', 'unknown is flagged, never blocked');
+});
+
 test('combinedLengthRule: tightest min/max, fixed length, and conflicts', () => {
   assert.deepEqual(
     combinedLengthRule([{ supported: true, min_length: 4, max_length: 8 }, { supported: true, min_length: 6, max_length: 10 }]),

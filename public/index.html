@@ -3421,11 +3421,23 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
     const l = locks.find((x) => x.lock_id === id);
     return (l && l.name) || id;
   };
+  const doorOf = (id) => {
+    const l = locks.find((x) => x.lock_id === id);
+    return (l && l.gating_door) || null;
+  };
   const statusBadge = (s) => {
-    if (s.status === 'ok') return `<span class="badge success" title="This lock holds the user's current PIN">${escapeHtml(lockName(s.lock_id))}</span>`;
-    if (s.status === 'pending') return `<span class="badge info" title="The PIN was queued to this lock; wake it at the keypad to finish the write">${escapeHtml(lockName(s.lock_id))}: pending</span>`;
-    if (s.status === 'differs') return `<span class="badge warning" title="This lock still holds an older, different PIN; save the PIN again to unify">${escapeHtml(lockName(s.lock_id))}: old PIN</span>`;
-    return `<span class="badge warning" title="This lock has no code for the user; save the PIN again to add it">${escapeHtml(lockName(s.lock_id))}: missing</span>`;
+    const nm = escapeHtml(lockName(s.lock_id));
+    if (s.status === 'blocked') {
+      const door = doorOf(s.lock_id);
+      const doorLabel = door ? `"${escapeHtml(door)}"` : "this lock's door";
+      return `<span class="badge error" title="This user's UniFi access does not include ${doorLabel}, so they get no code here${s.slot != null ? ' (an existing code was removed)' : ''}">${nm}: blocked</span>`;
+    }
+    if (s.status === 'ok') return `<span class="badge success" title="This lock holds the user's current PIN">${nm}</span>`;
+    if (s.status === 'pending') return `<span class="badge info" title="The PIN was queued to this lock; wake it at the keypad to finish the write">${nm}: pending</span>`;
+    if (s.status === 'differs') return `<span class="badge warning" title="This lock still holds an older, different PIN; save the PIN again to unify">${nm}: old PIN</span>`;
+    // 'missing' (or unknown eligibility): show a soft note
+    const unk = s.eligibility === 'unknown' ? ' (access not yet known)' : '';
+    return `<span class="badge warning" title="This lock has no code for the user; save the PIN again to add it${unk}">${nm}: missing</span>`;
   };
   const rows = (Array.isArray(a.users) ? a.users : []).map((u) => {
     const badges = (u.in_unifi ? ` <span class="badge success" title="The same PIN is set on this user's UniFi Access account">UniFi</span>` : ` <span class="badge warning" title="UniFi may hold a different PIN for this user; save the PIN again to sync">UniFi not synced</span>`)
@@ -3441,17 +3453,44 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
   const lenRule = rule.conflict
     ? 'your locks demand different fixed code lengths; no single PIN fits both'
     : (rule.fixed ? `${rule.fixed}-digit codes (a lock enforces one shared length)` : `${rule.min || 4} to ${rule.max || 10} digit codes`);
-  const userOpts = (Array.isArray(users) ? users : [])
+  // Picker users come from the aggregate itself (server-fresh on every
+  // refresh), falling back to the page-load usersData snapshot. The old
+  // snapshot-only sourcing left the picker empty for a whole session when
+  // the app booted before the controller synced (field report: a removed
+  // user could not be re-added without restarting the app).
+  const pickerUsers = (Array.isArray(a.available_users) && a.available_users.length)
+    ? a.available_users
+    : (Array.isArray(users) ? users : []);
+  const userOpts = pickerUsers
     .map((u) => `<option value="${escapeHtml(u.id)}">${escapeHtml(u.name || u.id)}</option>`)
     .join('');
+  const noUsersHint = !pickerUsers.length
+    ? `<span style="color:var(--text-muted)">UniFi users not synced yet; they appear automatically once the controller connects.</span>`
+    : '';
+  // Which locks gate on a door vs. reach everyone (no door associated).
+  const gated = usable.filter((l) => l.gating_door);
+  const gatingLine = gated.length
+    ? `Access-gated: ${gated.map((l) => `${escapeHtml(l.name || l.lock_id)} → ${escapeHtml(l.gating_door)}`).join(', ')}. A user only gets a code on a lock whose UniFi door their access allows.`
+    : '';
+  // Warn when gating cannot be trusted: access policies not synced, or some
+  // users have unresolved policies (they are treated as ungated, never blocked).
+  const ag = a.access_gating || {};
+  let banner = '';
+  if (gated.length && !ag.available) {
+    banner = `<div class="badge warning" style="display:block;margin-bottom:6px;padding:6px 8px">Access policies not synced yet${ag.error ? ` (${escapeHtml(ag.error)})` : ''}: gating can't be enforced, so no codes are blocked or removed. Codes still write to every lock until access data loads.</div>`;
+  } else if (gated.length && ag.incomplete_users) {
+    banner = `<div class="badge warning" style="display:block;margin-bottom:6px;padding:6px 8px">${ag.incomplete_users} user(s) have UniFi access policies this app can't fully read; those users are never blocked (they fail open). Everyone else is gated normally.</div>`;
+  }
   return `<div style="font-size:12px">`
     + `<div style="font-weight:600;margin-bottom:2px">Keypad users</div>`
-    + `<div style="color:var(--text-muted);margin-bottom:6px">One PIN per user. Saving writes the code to every paired lock (${usable.map((l) => escapeHtml(l.name || l.lock_id)).join(', ')}) and updates the user's UniFi Access PIN to match. ${escapeHtml(lenRule)}.</div>`
+    + `<div style="color:var(--text-muted);margin-bottom:6px">One PIN per user. Saving writes the code to every paired lock the user may access (${usable.map((l) => escapeHtml(l.name || l.lock_id)).join(', ')}) and updates the user's UniFi Access PIN to match. ${escapeHtml(lenRule)}.${gatingLine ? ' ' + gatingLine : ''}</div>`
+    + banner
     + (rows ? `<table style="border-collapse:collapse;font-size:12px"><tbody>${rows}</tbody></table>` : '')
     + `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">`
     + `<select id="kuUser" style="font-size:12px;padding:5px"${dis}><option value="">-- pick a user --</option>${userOpts}</select>`
     + `<input id="kuPin" type="text" inputmode="numeric" autocomplete="off" maxlength="10" placeholder="PIN" style="font-size:12px;padding:6px;width:90px"${dis}>`
     + `<button class="btn btn-sm btn-primary" onclick="saveKeypadUser()"${dis} title="Writes the code to every paired lock and updates this user's UniFi Access PIN to match.">Save PIN</button>`
+    + noUsersHint
     + `</div></div>`;
 }
 
@@ -3477,16 +3516,23 @@ async function saveKeypadUser() {
     }
     const results = r.results || [];
     const written = results.filter((x) => x.slot != null);
+    const blocked = results.filter((x) => x.blocked);
+    const revoked = blocked.filter((x) => x.revoked);
     const queued = written.filter((x) => x.confirmed === null).length;
-    toast(`PIN set for ${name} on ${written.length} of ${results.length} lock(s)${queued ? ` (${queued} queued; wake that lock at the keypad to finish)` : ''}.`, written.length === results.length ? 'success' : 'error');
+    toast(`PIN set for ${name} on ${written.length} of ${results.length} lock(s)`
+      + `${queued ? ` (${queued} queued; wake that lock at the keypad to finish)` : ''}`
+      + `${blocked.length ? `; ${blocked.length} blocked by UniFi access${revoked.length ? ` (${revoked.length} existing code removed)` : ''}` : ''}.`,
+      (written.length + blocked.length) === results.length ? 'success' : 'error');
     for (const row of results) {
       if (row.error) toast(`${row.lock_id}: ${row.error}`, 'error');
+      else if (row.blocked) toast(`${row.lock_id}: ${row.reason}${row.revoked ? ' — existing code removed' : ''}`, 'info');
     }
     if (r.unifi) {
       if (r.unifi.success && r.unifi.skipped) toast('UniFi already had this PIN; nothing to update there.', 'info');
       else if (r.unifi.success) toast(`UniFi PIN for ${name} updated to match.`, 'success');
       else if (r.unifi.permission_denied) toast('UniFi sync failed: the API token lacks user credential edit permission. Grant it in UniFi Access API settings, then save the PIN again.', 'error');
       else toast(`UniFi sync failed: ${r.unifi.error || 'unknown error'}. The lock codes still work; save the PIN again to retry.`, 'error');
+      if (r.unifi.hint) toast(r.unifi.hint, 'info');
     }
     pinEl.value = '';
     refreshZwaveDeadbolt();
@@ -3887,7 +3933,8 @@ function renderDeadboltRules() {
     <div id="deadboltTriggerRow" style="margin-bottom:14px">
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">
         Retract on entry: when someone badges in at a lock's trigger door, that deadbolt retracts.
-        Leave a lock unset to keep it manual-only.
+        Leave a lock unset to keep it manual-only. This door also gates keypad access:
+        only users whose UniFi access includes it get a keypad code on that lock.
       </div>`;
   if (!lockIds.length) {
     html += `<div style="font-size:12px;color:var(--text-muted)">Pair a lock first; each lock then gets its own trigger-door row here.</div>`;

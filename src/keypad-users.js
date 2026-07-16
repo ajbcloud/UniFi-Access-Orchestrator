@@ -50,16 +50,22 @@ function canonicalPins(locksCfg) {
  * only pin_length is exposed.
  *
  * @param {object} locksCfg       devices.zwave.locks
- * @param {Array}  relevantLocks  [{lock_id, label}] - bound, code-capable
- *                                locks the panel shows a status column for
+ * @param {Array}  relevantLocks  [{lock_id, label, gating_door}] - bound,
+ *                                code-capable locks shown as status columns
+ * @param {Map}    [verdicts]     optional Map("<userId>|<lockId>" -> verdict)
+ *                                from access-gating. 'denied' surfaces as a
+ *                                'blocked' status; 'unknown' adds an
+ *                                eligibility flag but keeps the code status.
  * @returns {Array<{user_id, name, pin_length, updated_at, in_unifi,
- *                  locks: Array<{lock_id, slot, status}>}>}
+ *                  locks: Array<{lock_id, slot, status, eligibility?}>}>}
  *   status per lock: 'ok' (holds the canonical PIN), 'pending' (canonical PIN
  *   written but the lock has not confirmed yet), 'differs' (holds an OLDER
- *   different PIN), 'missing' (no code on that lock).
+ *   different PIN), 'missing' (no code on that lock), 'blocked' (UniFi access
+ *   to the lock's door is denied).
  */
-function aggregateKeypadUsers(locksCfg, relevantLocks) {
+function aggregateKeypadUsers(locksCfg, relevantLocks, verdicts) {
   const canon = canonicalPins(locksCfg);
+  const verdictMap = verdicts instanceof Map ? verdicts : new Map();
   const users = [];
   for (const [userId, c] of canon) {
     const perLock = [];
@@ -77,7 +83,11 @@ function aggregateKeypadUsers(locksCfg, relevantLocks) {
       // confirmed (they predate the stricter bookkeeping).
       else if (found.confirmed === null || found.confirmed === false) status = 'pending';
       else status = 'ok';
-      perLock.push({ lock_id: rl.lock_id, slot, status });
+      const entry = { lock_id: rl.lock_id, slot, status };
+      const verdict = verdictMap.get(`${userId}|${rl.lock_id}`);
+      if (verdict === 'denied') entry.status = 'blocked';
+      else if (verdict === 'unknown') entry.eligibility = 'unknown';
+      perLock.push(entry);
     }
     users.push({
       user_id: userId,
@@ -191,11 +201,15 @@ function planUserSave(locksCfg, lockCaps, userId, pin) {
  * @param {string} newLockId
  * @param {object} cap       the new lock's userCodesCapability() result
  * @param {string} nowIso    timestamp for the new entries
+ * @param {Set}    [eligibleUserIds] when provided (access gating on), only
+ *                 these users are seeded; others are silently left out (the
+ *                 caller logs the access reason). Omit to seed everyone.
  */
-function planNewLockProvision(locksCfg, newLockId, cap, nowIso) {
+function planNewLockProvision(locksCfg, newLockId, cap, nowIso, eligibleUserIds) {
   const assignments = {};
   const skipped = [];
   if (!cap || !cap.supported) return { assignments, skipped };
+  const gated = eligibleUserIds instanceof Set;
   const existing = Object.assign({}, ((locksCfg || {})[newLockId] && locksCfg[newLockId].user_codes) || {});
   const usersOnNewLock = new Set(Object.values(existing).filter(Boolean).map((e) => e.user_id));
   const reserved = Array.isArray(cap.reserved_slots) ? cap.reserved_slots : [];
@@ -213,6 +227,7 @@ function planNewLockProvision(locksCfg, newLockId, cap, nowIso) {
   for (const [userId, c] of canonicalPins(locksCfg)) {
     if (usersOnNewLock.has(userId)) continue;
     if (c.source_lock === newLockId) continue;
+    if (gated && !eligibleUserIds.has(userId)) continue; // access gating: not permitted on this door
     if (cap.min_length && c.pin.length < cap.min_length) {
       skipped.push({ user_id: userId, name: c.name, reason: `PIN shorter than this lock's ${cap.min_length}-digit minimum` });
       continue;

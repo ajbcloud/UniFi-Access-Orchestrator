@@ -42,9 +42,10 @@ const { ZwavePairing } = require('./drivers/zwave-pairing');
 const { loadSecurityKeys, ensureSecurityKeys } = require('./drivers/zwave-keys');
 const { SustainedFlagMonitor } = require('./alert-monitors');
 const deadboltRules = require('./deadbolt-rules');
-const { planUnifiPinPush, markStaleAfterPush } = require('./user-code-sync');
+const { planUnifiPinPush, markStaleAfterPush, recordUnifiPin } = require('./user-code-sync');
 const { removeLockEntry, pruneGhostLocks } = require('./lock-cleanup');
 const keypadUsers = require('./keypad-users');
+const accessGating = require('./access-gating');
 const {
   redactSecrets,
   stripRedactedPlaceholders,
@@ -611,7 +612,22 @@ async function provisionUserCodesOnNewLock(lockId) {
     await new Promise((r) => { const t = setTimeout(r, PROVISION_POLL_MS); if (t.unref) t.unref(); });
   }
   const locksCfg = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
-  const plan = keypadUsers.planNewLockProvision(locksCfg, lockId, cap, new Date().toISOString());
+  // Access gating: if the new lock has a gating door, seed only users UniFi
+  // allows on that door. 'unknown' (access data not yet available) is deferred
+  // and logged, not seeded, since provisioning is additive and retryable via
+  // Rewrite Codes to Lock; a lock with no door association seeds everyone.
+  const gatingDoor = (deadboltRules.rulesForLock(config.deadbolt_rules, lockId) || {}).trigger_door || null;
+  let eligibleUserIds = null;
+  if (gatingDoor) {
+    const access = currentAccessModel();
+    eligibleUserIds = new Set();
+    for (const userId of keypadUsers.canonicalPins(locksCfg).keys()) {
+      const verdict = accessGating.doorAccessVerdict(access, userId, gatingDoor);
+      if (verdict === 'allowed' || verdict === 'ungated') eligibleUserIds.add(userId);
+      else logger.info(`Deadbolt: not seeding "${userId}" onto "${lockLabel(lockId)}" (${verdict === 'denied' ? `no UniFi access to "${gatingDoor}"` : 'access not yet known; retry with Rewrite Codes to Lock'})`);
+    }
+  }
+  const plan = keypadUsers.planNewLockProvision(locksCfg, lockId, cap, new Date().toISOString(), eligibleUserIds);
   const slots = Object.keys(plan.assignments);
   for (const s of plan.skipped) {
     logger.warn(`Deadbolt: cannot copy the keypad code for "${s.name || s.user_id}" to "${lockLabel(lockId)}": ${s.reason}`);
@@ -1756,17 +1772,21 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
     if (b.push_to_unifi === true) {
       unifi.attempted = true;
       const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
-      const plan = planUnifiPinPush(zwLocks, target.lockId, b.user_id, pin);
+      const plan = planUnifiPinPush(zwLocks, target.lockId, b.user_id, pin, config.unifi_pin_state);
       if (plan.action === 'skip_in_sync') {
         unifi.success = true;
         unifi.skipped = 'already in sync';
-        logger.info(`Deadbolt: UniFi already holds this PIN for "${name || b.user_id}" (pushed via "${plan.source_lock}"); skipping the push`);
+        logger.info(`Deadbolt: UniFi already holds this PIN for "${name || b.user_id}" (known via ${plan.source_lock ? `"${plan.source_lock}"` : 'the recorded UniFi PIN state'}); skipping the push`);
+        const now = new Date().toISOString();
         persistZwaveMutation((cfg) => {
           const lockId = target.lockId;
           const entry = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
             && cfg.devices.zwave.locks[lockId] && cfg.devices.zwave.locks[lockId].user_codes
             && cfg.devices.zwave.locks[lockId].user_codes[String(slot)];
           if (entry) entry.pushed_to_unifi = true;
+          // Backfill the durable user-level record (a legacy-inferred skip
+          // roots in a real push, so recording the same fact is safe).
+          recordUnifiPin(cfg, b.user_id, pin, now);
         });
       } else if (unifiClient && typeof unifiClient.assignUserPin === 'function') {
         const push = await unifiClient.assignUserPin(b.user_id, pin);
@@ -1775,6 +1795,7 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
         unifi.error = push.error || null;
         if (push.statusCode) unifi.status_code = push.statusCode;
         if (push.success) {
+          const now = new Date().toISOString();
           persistZwaveMutation((cfg) => {
             const lockId = target.lockId;
             const locks = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks;
@@ -1785,6 +1806,7 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
             // lock that recorded a DIFFERENT pushed PIN for them no longer
             // matches UniFi and must stop claiming it does.
             if (locks) markStaleAfterPush(locks, lockId, b.user_id, pin);
+            recordUnifiPin(cfg, b.user_id, pin, now);
           });
           if (plan.stale_locks.length) {
             unifi.note = `UniFi keeps one PIN per user; the PIN stored for ${plan.stale_locks.map((l) => `"${lockLabel(l)}"`).join(', ')} no longer matches UniFi`;
@@ -1794,6 +1816,9 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
       } else {
         unifi.success = false;
         unifi.error = 'UniFi client is not connected';
+      }
+      if (!unifi.success && /CODE_SYSTEM_ERROR/i.test(unifi.error || '')) {
+        unifi.hint = 'UniFi already has this exact PIN. If it is this user\'s existing PIN everything already matches; if another user holds it, choose a different PIN (UniFi PINs are unique per person).';
       }
     }
     broadcastEvent({
@@ -1904,6 +1929,32 @@ async function codeCapableLocks() {
   return rows;
 }
 
+// Snapshot the current UniFi door-access model for keypad-PIN gating. A user
+// only holds a code on a deadbolt whose gating door (deadbolt_rules.trigger_
+// door) their UniFi access allows. When access data is unavailable this
+// returns available:false, and every gate fails OPEN (no code is revoked).
+function currentAccessModel() {
+  return accessGating.buildAccess({
+    available: !!(unifiClient && unifiClient.accessPolicyAvailable),
+    doorsByName: (unifiClient && unifiClient.doors) || new Map(),
+    allowedDoorsByUser: (unifiClient && unifiClient.userDoorAccess) || new Map(),
+    completeByUser: (unifiClient && unifiClient.userAccessComplete) || new Map(),
+  });
+}
+
+// Access-gating status block for the keypad-users UI (warning banner data).
+function accessGatingStatus() {
+  const st = (unifiClient && typeof unifiClient.accessPolicyStatus === 'function')
+    ? unifiClient.accessPolicyStatus()
+    : { available: false, synced_at: null, users: 0, incomplete_users: 0, error: null };
+  return {
+    available: st.available,
+    synced_at: st.synced_at,
+    incomplete_users: st.incomplete_users,
+    error: st.error,
+  };
+}
+
 // Aggregate per-user view across all locks. Digits never leave the server.
 app.get('/api/deadbolt/keypad-users', async (req, res) => {
   try {
@@ -1911,7 +1962,22 @@ app.get('/api/deadbolt/keypad-users', async (req, res) => {
     const relevant = capable.filter((l) => l.cap && l.cap.supported !== false);
     const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
     const known = (unifiClient && unifiClient.userNames) || new Map();
-    const users = keypadUsers.aggregateKeypadUsers(zwLocks, relevant).map((u) => Object.assign(u, {
+    // Per-lock gating door + per-(user,lock) access verdicts, so the panel can
+    // show which users are blocked from which deadbolts and why.
+    const gatingDoorFor = (lockId) => {
+      const rule = deadboltRules.rulesForLock(config.deadbolt_rules, lockId);
+      return (rule && rule.trigger_door) || null;
+    };
+    const relevantForAgg = relevant.map((l) => ({ lock_id: l.lock_id, label: l.label, gating_door: gatingDoorFor(l.lock_id) }));
+    const access = currentAccessModel();
+    const base = keypadUsers.aggregateKeypadUsers(zwLocks, relevantForAgg);
+    const verdicts = new Map();
+    for (const u of base) {
+      for (const v of accessGating.classifyLocksForUser(u.user_id, relevant.map((l) => ({ lock_id: l.lock_id })), config.deadbolt_rules, access)) {
+        verdicts.set(`${u.user_id}|${v.lock_id}`, v.verdict);
+      }
+    }
+    const users = keypadUsers.aggregateKeypadUsers(zwLocks, relevantForAgg, verdicts).map((u) => Object.assign(u, {
       user_missing: !!(u.user_id && known.size && !known.has(u.user_id)),
     }));
     res.json({
@@ -1920,8 +1986,18 @@ app.get('/api/deadbolt/keypad-users', async (req, res) => {
         name: l.label,
         supported: !!(l.cap && l.cap.supported !== false),
         note: (l.cap && l.cap.note) || null,
+        gating_door: gatingDoorFor(l.lock_id),
       })),
       pin_rule: keypadUsers.combinedLengthRule(relevant.map((l) => l.cap)),
+      access_gating: accessGatingStatus(),
+      // Pickable users straight from the live sync (in-memory, zero extra
+      // I/O). The frontend picker sources from THIS on every refresh, so it
+      // self-heals after a boot that raced the controller and never goes
+      // stale after a Save/Remove (the old page-load /api/users snapshot
+      // could stay empty for a whole session).
+      available_users: [...known.entries()]
+        .map(([id, nm]) => ({ id, name: nm }))
+        .sort((a, b) => String(a.name).localeCompare(String(b.name))),
       users,
     });
   } catch (err) {
@@ -1951,14 +2027,50 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
       return res.status(503).json({ error: 'no paired lock supports keypad codes' });
     }
     const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
-    const plan = keypadUsers.planUserSave(
-      zwLocks,
-      capable.map((l) => ({ lock_id: l.lock_id, cap: l.cap })),
-      b.user_id, pin
-    );
     const known = (unifiClient && unifiClient.userNames) || new Map();
     const name = (typeof b.name === 'string' && b.name.trim()) || known.get(b.user_id) || null;
     const results = [];
+
+    // Access gating: split the code-capable locks into those this user may
+    // hold a code on (allowed / ungated / unknown -> fail open) and those they
+    // are confirmed NOT allowed on (denied -> block + revoke any existing
+    // code). A lock with no gating door is 'ungated' and behaves as before.
+    const access = currentAccessModel();
+    const verdicts = accessGating.classifyLocksForUser(
+      b.user_id, capable.map((l) => ({ lock_id: l.lock_id })), config.deadbolt_rules, access
+    );
+    const verdictByLock = new Map(verdicts.map((v) => [v.lock_id, v]));
+    const writable = capable.filter((l) => accessGating.WRITE_VERDICTS.has(verdictByLock.get(l.lock_id).verdict));
+    const denied = capable.filter((l) => accessGating.REVOKE_VERDICTS.has(verdictByLock.get(l.lock_id).verdict));
+
+    // Revoke first: a user who lost access to a door must not keep a working
+    // code on its deadbolt. Only fires on a CONFIRMED denial (never 'unknown').
+    for (const l of denied) {
+      const v = verdictByLock.get(l.lock_id);
+      const held = Object.entries((zwLocks[l.lock_id] && zwLocks[l.lock_id].user_codes) || {})
+        .find(([, e]) => e && e.user_id === b.user_id);
+      let revoked = false;
+      if (held) {
+        const slot = Number(held[0]);
+        try {
+          if (typeof l.driver.clearUserCode === 'function') await l.driver.clearUserCode(slot);
+        } catch (e) { /* clear is best-effort; the config removal is what gates access here */ }
+        persistZwaveMutation((cfg) => {
+          const uc = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
+            && cfg.devices.zwave.locks[l.lock_id] && cfg.devices.zwave.locks[l.lock_id].user_codes;
+          if (uc) delete uc[String(slot)];
+        });
+        revoked = true;
+        logger.info(`Deadbolt: revoked "${name || b.user_id}" from "${l.label}" (no UniFi access to "${v.door}")`);
+      }
+      results.push({ lock_id: l.lock_id, blocked: true, revoked, reason: `no UniFi access to "${v.door}"` });
+    }
+
+    const plan = keypadUsers.planUserSave(
+      zwLocks,
+      writable.map((l) => ({ lock_id: l.lock_id, cap: l.cap })),
+      b.user_id, pin
+    );
     for (const row of plan) {
       if (row.error) { results.push(row); continue; }
       const entry = capable.find((l) => l.lock_id === row.lock_id);
@@ -1987,16 +2099,23 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
       }
     }
     const written = results.filter((r) => r.slot != null);
-    if (!written.length) {
+    const revokedCount = results.filter((r) => r.revoked).length;
+    // A total failure is only when writable locks existed and none accepted
+    // AND there was no gating action. Being blocked/revoked everywhere is a
+    // legitimate gated outcome, not an error, and the UniFi push still runs.
+    if (!written.length && !denied.length) {
       return res.status(409).json({ error: 'no lock accepted the code', results });
     }
-    // Always keep UniFi in sync: one PIN per user everywhere. Skip the API
-    // call when UniFi already holds this exact PIN (re-assigning it errors
+    // Always keep UniFi in sync: one PIN per user everywhere. The PIN is the
+    // user's UniFi credential; UniFi readers enforce their own door access, so
+    // we push even if the user is gated off every deadbolt keypad. Skip the
+    // API call when UniFi already holds this exact PIN (re-assigning it errors
     // with CODE_SYSTEM_ERROR), then record which entries match UniFi.
     const unifi = { attempted: true, success: null, permission_denied: false, error: null };
     const pushPlan = planUnifiPinPush(
       (config.devices && config.devices.zwave && config.devices.zwave.locks) || {},
-      written[0].lock_id, b.user_id, pin
+      written[0] ? written[0].lock_id : null, b.user_id, pin,
+      config.unifi_pin_state
     );
     let synced = pushPlan.action === 'skip_in_sync';
     if (synced) {
@@ -2014,7 +2133,14 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
       unifi.success = false;
       unifi.error = 'UniFi client is not connected';
     }
+    // CODE_SYSTEM_ERROR is UniFi's "that PIN already exists" rejection. It is
+    // ambiguous (this user's own PIN = harmless, someone else's = pick a new
+    // one), so explain rather than guess; state is never written on failure.
+    if (!unifi.success && /CODE_SYSTEM_ERROR/i.test(unifi.error || '')) {
+      unifi.hint = 'UniFi already has this exact PIN. If it is this user\'s existing PIN everything already matches; if another user holds it, choose a different PIN (UniFi PINs are unique per person).';
+    }
     if (synced) {
+      const now = new Date().toISOString();
       persistZwaveMutation((cfg) => {
         const locks = (cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks) || {};
         for (const lock of Object.values(locks)) {
@@ -2025,15 +2151,19 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
             e.pushed_to_unifi = String(e.pin_code) === pin;
           }
         }
+        // Durable user-level memory: survives code deletion/revocation, so a
+        // later re-add of the same PIN skips the push UniFi would reject.
+        recordUnifiPin(cfg, b.user_id, pin, now);
       });
     }
     broadcastEvent({
       type: 'deadbolt.user_code',
       actor: 'GUI Admin',
-      location: written.map((r) => lockLabel(r.lock_id)).join(', '),
+      location: (written.length ? written : results).map((r) => lockLabel(r.lock_id)).join(', '),
       action: `PIN set for ${name || b.user_id} on ${written.length}/${results.length} lock(s)`
+        + (revokedCount ? `; revoked on ${revokedCount} (no door access)` : '')
         + `${unifi.success ? (unifi.skipped ? '; UniFi already in sync' : '; UniFi updated') : '; UniFi push FAILED'}`,
-      success: written.length === results.length && !!unifi.success,
+      success: written.length + revokedCount === results.length && !!unifi.success,
     });
     res.json({ user_id: b.user_id, name, results, unifi });
   } catch (err) {
