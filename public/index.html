@@ -4357,13 +4357,13 @@ function buildRetractEdgeRow(door, tIdx, edge, eIdx, locks) {
     <hr class="df-divider">
     <details>
       <summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">advanced</summary>
-      <div style="font-size:12px;color:var(--text-muted);margin-top:8px">Require result only retracts when the entry result matches; ACCESS is a normal granted entry. Mirror door unlocks also retracts when UniFi unlocks this door for a schedule or a manual unlock. Relock cooldown gives a normal entry a few seconds before the door's own re-secure can relock the bolt again.</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:8px">Require result only retracts when the entry result matches; ACCESS is a normal granted entry. Follow UniFi door unlocks also opens the deadbolt whenever UniFi unlocks this door on its own, from an unlock schedule (like a 7am to 7pm open window or First Person In) or a manual unlock, not just on a badge entry; the bolt still locks itself when the door re-secures. It needs a matching UniFi unlock schedule on this door. Relock cooldown gives a normal entry a few seconds before the door's own re-secure can relock the bolt again.</div>
       <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:12px;margin-top:8px">
         <label style="display:flex;align-items:center;gap:6px" title="Only entry events whose result matches trigger the retract. ACCESS is the normal granted-entry result.">
           require result <input type="text" id="dfReq_${sfx}" value="${escapeHtml(edge.require_result || 'ACCESS')}" style="width:110px;font-size:12px;padding:5px">
         </label>
-        <label style="display:flex;align-items:center;gap:6px" title="Also retract when UniFi reports this door unlocked outside an entry (a schedule or a manual unlock), mirroring the door state onto the deadbolt.">
-          <input type="checkbox" id="dfMirror_${sfx}"${edge.mirror_unlock ? ' checked' : ''}> mirror door unlocks
+        <label style="display:flex;align-items:center;gap:6px" title="Also open the deadbolt when UniFi unlocks this door on its own (an unlock schedule or a manual unlock), so the bolt follows the UniFi door state. Requires a UniFi unlock schedule on this door.">
+          <input type="checkbox" id="dfMirror_${sfx}"${edge.mirror_unlock ? ' checked' : ''}> follow UniFi door unlocks
         </label>
         <label style="display:flex;align-items:center;gap:6px" title="After a retract, ignore the door re-securing for this many seconds so a normal entry cannot immediately re-throw the bolt.">
           relock cooldown <input type="number" id="dfCooldown_${sfx}" value="${escapeHtml(edge.relock_cooldown_seconds == null ? 10 : edge.relock_cooldown_seconds)}" min="0" max="600" style="width:70px;font-size:12px;padding:5px"> s

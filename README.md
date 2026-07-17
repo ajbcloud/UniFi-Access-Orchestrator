@@ -339,7 +339,7 @@ Under **Door Flows**, pick a door and add it. Each door card reads as a sentence
 1. **Door.** The card identity: the door name plus a small chip summarizing what it drives ("1 deadbolt", "3 doors").
 2. **When.** "When [everyone | any group | a named group] enters." The group selector appears only when your site has mapped groups, so a simple site never sees it. Use **add doorbell trigger** to add a second block that fires when someone rings the doorbell.
 3. **Do this.** Add actions inside the trigger:
-   - **Retract deadbolt:** pick a paired lock, then choose after unlock: **stay unlocked** (the app leaves it open until something locks it) or **relock after** N seconds. Require result, mirror door unlocks, and the relock cooldown live under Advanced. Different doors can drive the same deadbolt differently.
+   - **Retract deadbolt:** pick a paired lock, then choose after unlock: **stay unlocked** (the app leaves it open until something locks it) or **relock after** N seconds. Require result, follow UniFi door unlocks (also open the deadbolt when a UniFi unlock schedule or manual unlock opens the door), and the relock cooldown live under Advanced. Different doors can drive the same deadbolt differently.
    - **Unlock other doors:** check the doors to momentarily unlock (a UniFi unlock, never a lock command), with a debounce and an optional delay. This action appears only when there is another door to unlock.
 
 When a door retracts a deadbolt, the card shows an inline note: keypad PINs on that deadbolt follow UniFi access to this door. That gating is a derived consequence of attaching the deadbolt to the door, so there is nothing extra to configure.

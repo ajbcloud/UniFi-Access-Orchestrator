@@ -82,7 +82,7 @@ test('advanced fields live under a details expander with their stored values', (
 test('advanced carries a plain-language explainer alongside the fields', () => {
   const out = load()('Front Door', 0, edge(), 0, LOCKS);
   assert.match(out, /Require result only retracts/, 'require_result explained in visible text, not just a tooltip');
-  assert.match(out, /Mirror door unlocks also retracts/);
+  assert.match(out, /Follow UniFi door unlocks also opens the deadbolt/);
   assert.match(out, /Relock cooldown gives a normal entry/);
 });
 
