@@ -78,6 +78,28 @@ test('parseAccessPolicies: groupsReferenced is false for door-only and unknown t
   assert.equal(groupsReferenced, false, 'no door_group resource means the door-groups banner never fires');
 });
 
+test('parseAccessPolicies: a disabled user gets an empty COMPLETE set (confirmed denied) and is not entitled', () => {
+  const users = [{ id: 'u1', status: 'DEACTIVATED', access_policies: [{ resources: [{ type: 'door', id: 'd-a' }] }] }];
+  const { allowedDoorsByUser, completeByUser, presentActiveIds } = parseAccessPolicies(users, {});
+  assert.equal(allowedDoorsByUser.get('u1').size, 0, 'a disabled user keeps no door access');
+  assert.equal(completeByUser.get('u1'), true, 'complete so the verdict is a confirmed denied, never unknown');
+  assert.equal(presentActiveIds.has('u1'), false, 'a disabled user is not entitled (departed-user sweep clears them)');
+});
+
+test('parseAccessPolicies: an ACTIVE user is entitled and keeps their access', () => {
+  const users = [{ id: 'u1', status: 'ACTIVE', access_policies: [{ resources: [{ type: 'door', id: 'd-a' }] }] }];
+  const { allowedDoorsByUser, presentActiveIds } = parseAccessPolicies(users, {});
+  assert.deepEqual([...allowedDoorsByUser.get('u1')], ['d-a']);
+  assert.equal(presentActiveIds.has('u1'), true);
+});
+
+test('parseAccessPolicies: a missing status is treated as active (older firmware never wrongly revoked)', () => {
+  const users = [{ id: 'u1', access_policies: [{ resources: [{ type: 'door', id: 'd-a' }] }] }];
+  const { allowedDoorsByUser, presentActiveIds } = parseAccessPolicies(users, {});
+  assert.deepEqual([...allowedDoorsByUser.get('u1')], ['d-a'], 'access preserved when the status field is absent');
+  assert.equal(presentActiveIds.has('u1'), true);
+});
+
 // ---- doorAccessVerdict ----------------------------------------------------
 
 function access({ available = true, doors = { 'Door A': 'd-a', 'Door B': 'd-b' }, doorsById, allowed = {}, complete = {} } = {}) {
@@ -142,6 +164,32 @@ test('doorAccessVerdict: a configured id absent from the registry with no resolv
   const a = access({ doors: {}, doorsById: {}, allowed: { u1: ['d-a'] }, complete: { u1: true } });
   assert.equal(doorAccessVerdict(a, 'u1', { id: 'd-x', name: 'Ghost' }), 'unknown',
     'an unresolvable door never denies (fail open)');
+});
+
+test('doorAccessVerdict: a user ABSENT from the fetch (deleted in UniFi) is DENIED, not unknown', () => {
+  // Pins the deleted-user contract: an absent user has no entry in either map,
+  // so completeByUser.get() is undefined (NOT === false, so not 'unknown') and
+  // the ternary falls through to 'denied'. A refactor that returns 'unknown'
+  // when allowed is undefined would fail this and let deleted users keep codes.
+  const a = access({ allowed: { alive: ['d-a'] }, complete: { alive: true } });
+  assert.equal(doorAccessVerdict(a, 'ghost', 'Door A'), 'denied');
+  assert.equal(REVOKE_VERDICTS.has(doorAccessVerdict(a, 'ghost', 'Door A')), true,
+    'a deleted user is confirmed-denied so the reconcile revokes their code');
+});
+
+test('doorAccessVerdict: a disabled user (via parseAccessPolicies) resolves to DENIED end to end', () => {
+  const parsed = parseAccessPolicies(
+    [{ id: 'u1', status: 'DEACTIVATED', access_policies: [{ resources: [{ type: 'door', id: 'd-a' }] }] }], {});
+  const a = buildAccess({
+    available: true,
+    doorsByName: { 'Door A': 'd-a' },
+    doorsById: { 'd-a': 'Door A' },
+    allowedDoorsByUser: parsed.allowedDoorsByUser,
+    completeByUser: parsed.completeByUser,
+    presentActiveIds: parsed.presentActiveIds,
+  });
+  assert.equal(doorAccessVerdict(a, 'u1', 'Door A'), 'denied',
+    'a disabled user is denied even though their raw policy still listed the door');
 });
 
 // ---- doorAccessVerdictUnion (the multi-door collapse) -----------------------

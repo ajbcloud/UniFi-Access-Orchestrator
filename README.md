@@ -546,7 +546,15 @@ Once a deadbolt is paired, the **Keypad Users** tab keeps deadbolt keypad codes 
 
 **How eligibility is decided.** A user only gets a code on a deadbolt whose triggering door they are allowed to open in UniFi Access. "Which door triggers which lock" comes from the retract actions you set under Door Flows; "who may open which door" comes from each user's UniFi access policies. A lock triggered by several doors admits a user allowed on ANY of them (the union rule).
 
-**Revocation is deliberately cautious.** A code is only removed when UniFi returns complete access data and that data confirms the user is denied on every gating door. If the access data is unavailable or references a door group the orchestrator could not expand, the verdict is "unknown", and unknown never revokes. An API hiccup can never mass-wipe your keypad codes.
+**Revocation runs automatically.** You do not have to do anything to pull a code. A background reconcile runs a few seconds after any UniFi access change (typically within 15 to 20 seconds) and removes codes that are no longer allowed:
+
+- **Access to a triggering door removed:** the code is cleared from that lock.
+- **User disabled in UniFi:** the code is cleared from every deadbolt.
+- **User deleted from UniFi:** the code is cleared from every deadbolt, and the user's leftover PIN bookkeeping is pruned so nothing lingers.
+
+**Revocation is deliberately cautious about uncertainty.** A code is only removed on a confirmed denial: UniFi returned complete access data and it shows the user has no access (or the user is gone or disabled). If the access data is unavailable or references a door group the orchestrator could not expand, the verdict is "unknown", and unknown never revokes. An API hiccup can never mass-wipe your keypad codes.
+
+**The UniFi-side PIN is left alone.** Revocation clears only the deadbolt keypad code. It never deletes the user's UniFi Access PIN, because that is a separate building-access credential and the revocation was already triggered by a change made in UniFi. Manage the UniFi PIN in UniFi.
 
 **Codes survive updates.** The Z-Wave network cache is kept in a persistent per-user folder (default `<config dir>/zwave-cache`, override with `devices.zwave.cache_dir` or the `ZWAVE_CACHE_DIR` environment variable) so an app update cannot wipe it. After every node interview the orchestrator verifies each saved slot and rewrites only the ones that drifted.
 

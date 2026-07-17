@@ -37,9 +37,25 @@ function parseAccessPolicies(users, doorGroups) {
   const groupToDoors = doorGroups instanceof Map ? doorGroups : new Map(Object.entries(doorGroups || {}));
   const allowedDoorsByUser = new Map();
   const completeByUser = new Map();
+  const presentActiveIds = new Set(); // present in this fetch AND status ACTIVE
   let groupsReferenced = false; // any user grants access through a door_group
   for (const user of users || []) {
     if (!user || !user.id) continue;
+    const id = String(user.id);
+    // A disabled/suspended UniFi user keeps no deadbolt access. A missing
+    // status is treated as active so older firmware without the field is never
+    // wrongly revoked. A non-ACTIVE user records an EMPTY allowed set that is
+    // still 'complete', so every gating door resolves to a confirmed 'denied'
+    // (revoke), never 'unknown' (fail open). They are also left out of
+    // presentActiveIds so the departed-user sweep clears their codes on
+    // ungated locks too.
+    const active = !user.status || user.status === 'ACTIVE';
+    if (!active) {
+      allowedDoorsByUser.set(id, new Set());
+      completeByUser.set(id, true);
+      continue;
+    }
+    presentActiveIds.add(id);
     const doors = new Set();
     let complete = true;
     const policies = Array.isArray(user.access_policies) ? user.access_policies : [];
@@ -62,10 +78,10 @@ function parseAccessPolicies(users, doorGroups) {
         }
       }
     }
-    allowedDoorsByUser.set(String(user.id), doors);
-    completeByUser.set(String(user.id), complete);
+    allowedDoorsByUser.set(id, doors);
+    completeByUser.set(id, complete);
   }
-  return { allowedDoorsByUser, completeByUser, groupsReferenced };
+  return { allowedDoorsByUser, completeByUser, presentActiveIds, groupsReferenced };
 }
 
 /**
@@ -91,6 +107,10 @@ function buildAccess(opts) {
     doorsById, // door id -> name; used to confirm a rule's trigger_door_id still exists
     allowedDoorsByUser: o.allowedDoorsByUser instanceof Map ? o.allowedDoorsByUser : new Map(),
     completeByUser: o.completeByUser instanceof Map ? o.completeByUser : new Map(),
+    // Present in the last successful fetch AND status ACTIVE. Used by the
+    // departed-user sweep to clear codes for users who were deleted or disabled
+    // in UniFi (absent here = departed). Empty when access data is unavailable.
+    presentActiveIds: o.presentActiveIds instanceof Set ? o.presentActiveIds : new Set(),
   };
 }
 
@@ -117,6 +137,12 @@ function doorAccessVerdict(access, userId, door) {
   }
   if (!doorId) return 'unknown'; // id not confirmed and name not discovered / renamed
   if (access.completeByUser.get(String(userId)) === false) return 'unknown';
+  // A user ABSENT from a successful fetch (deleted in UniFi) has no entry in
+  // either map: completeByUser.get() is undefined (not === false, so not
+  // 'unknown'), allowedDoorsByUser.get() is undefined, and the ternary below
+  // resolves to 'denied'. This is intentional (a deleted user is revoked) and
+  // is pinned by a unit test - do not "simplify" the ternary to return
+  // 'unknown' when allowed is undefined, or deleted users would fail open.
   const allowed = access.allowedDoorsByUser.get(String(userId));
   return allowed && allowed.has(doorId) ? 'allowed' : 'denied';
 }
