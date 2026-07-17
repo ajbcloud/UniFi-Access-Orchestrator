@@ -53,9 +53,10 @@ test('revokeHeldCode marks revoked only on a confirmed clear', () => {
 
 test('an unconfirmed clear arms a pending_clears marker that stores no PIN', () => {
   const body = fnBody(indexSrc, 'revokeHeldCode');
-  assert.match(body, /pending_clears\[String\(slot\)\] = \{ user_id: userId, requested_at: requestedAt, reason \}/,
-    'the marker records only user_id, requested_at, and reason');
-  // The marker branch must not capture a PIN. The whole function should never
+  assert.match(body, /pending_clears\[String\(slot\)\] = \{ user_id: userId, name, requested_at: requestedAt, reason \}/,
+    'the marker records user_id, name, requested_at, and reason');
+  // The marker carries the display name so a removal-in-progress row is not a
+  // bare id, but it must never capture a PIN: the whole function should never
   // reference a pin field, since a physical clear needs only the slot number.
   assert.ok(!/pin/i.test(body), 'revokeHeldCode must not touch any PIN');
 });

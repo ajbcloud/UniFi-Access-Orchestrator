@@ -75,7 +75,10 @@ function aggregateKeypadUsers(locksCfg, relevantLocks, verdicts) {
     const pc = ((locksCfg || {})[rl.lock_id] && locksCfg[rl.lock_id].pending_clears) || {};
     for (const m of Object.values(pc)) {
       if (m && m.user_id && !canon.has(m.user_id)) {
-        canon.set(m.user_id, { pin: '', name: null, updated_at: null, source_lock: null, pushed_to_unifi: false });
+        // Carry the removed user's name on the marker so a removal-in-progress
+        // row shows the person, not a bare user id (field report: a deleted
+        // user reappeared as a raw UUID that a second Remove could not clear).
+        canon.set(m.user_id, { pin: '', name: m.name || null, updated_at: null, source_lock: null, pushed_to_unifi: false });
       }
     }
   }
@@ -114,6 +117,11 @@ function aggregateKeypadUsers(locksCfg, relevantLocks, verdicts) {
       pin_length: c.pin.length,
       updated_at: c.updated_at || null,
       in_unifi: c.pushed_to_unifi,
+      // removal_pending: the user holds no code on any lock (already deleted)
+      // and a clear is still queued on at least one. The row stays visible so
+      // the operator can see the removal has not physically confirmed yet, but
+      // it is a removal-in-progress, not a live keypad user.
+      removal_pending: c.pin === '' && perLock.some((l) => l.revoke_pending),
       locks: perLock,
     });
   }
