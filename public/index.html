@@ -1392,7 +1392,7 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
   <button class="tab active" role="tab" data-page="dashboard" aria-selected="true" tabindex="0">Dashboard</button>
   <button class="tab" role="tab" data-page="events" aria-selected="false" tabindex="-1">Live Events</button>
   <button class="tab" role="tab" data-page="config" aria-selected="false" tabindex="-1">Automations</button>
-  <button class="tab" role="tab" data-page="keypad" aria-selected="false" tabindex="-1">Keypad Users</button>
+  <button class="tab" role="tab" data-page="keypad" aria-selected="false" tabindex="-1">User Settings</button>
   <button class="tab" role="tab" data-page="deadbolt" aria-selected="false" tabindex="-1">Devices</button>
   <button class="tab" role="tab" data-page="designer" aria-selected="false" tabindex="-1">Visual Designer</button>
   <button class="tab" role="tab" data-page="settings" aria-selected="false" tabindex="-1">Settings</button>
@@ -1720,17 +1720,21 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
   </div>
 
-  <!-- KEYPAD USERS -->
+  <!-- USER SETTINGS (keypad PINs + UniFi user groups) -->
   <div id="keypad" class="page">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div>
-        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Keypad Users</div>
-        <div style="font-size:12px;color:var(--text-muted)">One PIN per person, written to every deadbolt their UniFi door access allows and kept in sync with their UniFi PIN.</div>
+        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">User Settings</div>
+        <div style="font-size:12px;color:var(--text-muted)">Per-user keypad PINs and the UniFi group each user belongs to.</div>
       </div>
-      <button class="btn btn-sm btn-secondary" onclick="renderKeypadUsers()">Refresh</button>
+      <button class="btn btn-sm btn-secondary" onclick="renderKeypadUsers(); renderUserGroups();">Refresh</button>
     </div>
     <div class="config-section">
       <div class="config-body" id="kuPanel"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-title" role="heading" aria-level="2">User Groups</div>
+      <div class="config-body" id="configUsers"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
     </div>
   </div>
 
@@ -1870,11 +1874,6 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
         </div>
         <div id="backupInfo" style="font-size:12px;color:var(--text-muted);margin-bottom:12px"></div>
         <div id="backupsList"></div>
-      </div>
-
-      <div class="card" style="margin-top:16px">
-        <div class="card-title" role="heading" aria-level="2">User Groups</div>
-        <div class="config-body" id="configUsers"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
       </div>
     </div>
 
@@ -2114,7 +2113,7 @@ function activateTab(tabEl) {
   if (page) page.classList.add('active');
   if (tabEl.dataset.page === 'settings') { loadSettings(); loadBackups(); }
   if (tabEl.dataset.page === 'designer' && window.openDesigner) window.openDesigner();
-  if (tabEl.dataset.page === 'keypad') renderKeypadUsers();
+  if (tabEl.dataset.page === 'keypad') { renderKeypadUsers(); renderUserGroups(); }
   if (tabEl.dataset.page === 'deadbolt') renderDeadboltDevices();
 }
 window.activateTab = activateTab;
@@ -3119,9 +3118,9 @@ async function restoreFromBackup(filename) {
 }
 
 // Door Mappings and User Groups were one renderConfig pass while both lived on
-// the Automations tab. They now live on different pages (Devices and Settings),
-// so each has its own owner; the thin renderConfig wrapper keeps every existing
-// loadConfig call site working unchanged.
+// the Automations tab. They now live on different pages (Devices and User
+// Settings), so each has its own owner; the thin renderConfig wrapper keeps
+// every existing loadConfig call site working unchanged.
 function renderConfig() {
   renderDoorMappings();
   renderUserGroups();
@@ -3153,8 +3152,8 @@ function renderDoorMappings() {
   }
 }
 
-// Owner of #configUsers (Settings tab): users grouped by logical group plus
-// the Group Mappings form.
+// Owner of #configUsers (User Settings tab): users grouped by logical group
+// plus the Group Mappings form.
 function renderUserGroups() {
   const el = document.getElementById('configUsers');
   if (!el) return;
@@ -6623,9 +6622,9 @@ async function renderWizardFinish() {
 function wizardGoToConfig(section) {
   persistWizardState({ last_step: wizardState.step });
   hideSetupWizard(true);
-  // User Groups lives on the Settings tab now; everything else lands on the
-  // Automations tab's Door Flows editor.
-  const page = section === 'groups' ? 'settings' : 'config';
+  // User Groups lives on the User Settings tab now; everything else lands on
+  // the Automations tab's Door Flows editor.
+  const page = section === 'groups' ? 'keypad' : 'config';
   activateTab(document.querySelector(`#tabBar [data-page="${page}"]`));
   loadConfig();
   const anchorId = section === 'groups' ? 'configUsers' : 'configDoorFlows';
@@ -6633,7 +6632,7 @@ function wizardGoToConfig(section) {
     const anchor = document.getElementById(anchorId);
     if (anchor && anchor.scrollIntoView) anchor.scrollIntoView({ block: 'start' });
   }, 400);
-  toast(`Opening the ${page === 'settings' ? 'Settings' : 'Automations'} tab. Use the Setup button any time to return here.`, 'info');
+  toast(`Opening the ${page === 'keypad' ? 'User Settings' : 'Automations'} tab. Use the Setup button any time to return here.`, 'info');
 }
 
 // ============================================================
