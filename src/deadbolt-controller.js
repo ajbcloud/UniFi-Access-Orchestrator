@@ -103,6 +103,7 @@ class DeadboltController {
     this._cascadeLastFired = new Map(); // trigger door (normalized) -> ts
     this._relockTimer = null;       // pending per-edge relock (at most one; last writer wins)
     this._relockEdge = null;        // the edge that armed the pending relock (for logs)
+    this._bootFailsafeListener = null; // one-shot state-change listener for the boot relock backstop
     this._cascadeTimers = new Set(); // pending delayed cascade unlocks (cleared on destroy)
     this._destroyed = false;
     this.stats = {
@@ -170,6 +171,10 @@ class DeadboltController {
     this._cascadeTimers.clear();
     if (this.lockDriver && typeof this.lockDriver.removeListener === 'function') {
       this.lockDriver.removeListener('state-change', this._onDriverStateChange);
+      if (this._bootFailsafeListener) {
+        this.lockDriver.removeListener('state-change', this._bootFailsafeListener);
+        this._bootFailsafeListener = null;
+      }
     }
   }
 
@@ -592,6 +597,62 @@ class DeadboltController {
       if (snap && snap.boltState === 'locked') return;
     } catch (e) { /* snapshot unavailable: proceed with the lock attempt */ }
     this._lock(`edge relock after ${edge.relock_seconds}s (${reason})`);
+  }
+
+  // Boot fail-safe backstop. The software relock timer lives only in memory and
+  // is lost on any process restart, config reload, or driver auto-restart, so a
+  // door that was unlocked awaiting relock when the app went down would stay
+  // unlocked forever (hardware auto-relock is deliberately off for flow-wired
+  // locks). Called once per (re)build: if this lock owns a software relock and
+  // its bolt is found unlocked, re-arm the normal relock window so it secures
+  // within its configured time. Acts on the first DEFINITIVE bolt reading (an
+  // authoritative live read for reachable locks; the state-change listener for
+  // sleeping locks that report later). Never fights a live relock or a fresh
+  // unlock (guarded by _relockTimer) and never touches stay_unlocked locks.
+  armBootFailsafe(reason) {
+    const relockEdge = this.edges.find((e) =>
+      e.after_unlock === 'relock_after'
+      && Number.isFinite(e.relock_seconds) && e.relock_seconds > 0);
+    if (this._destroyed || !this.lockDriver || !relockEdge) return;
+
+    let acted = false;
+    const cleanup = () => {
+      if (this._bootFailsafeListener && typeof this.lockDriver.removeListener === 'function') {
+        this.lockDriver.removeListener('state-change', this._bootFailsafeListener);
+      }
+      this._bootFailsafeListener = null;
+    };
+
+    const decide = (boltState) => {
+      if (acted || this._destroyed) return;
+      if (!boltState || boltState === 'unknown') return; // wait for a definitive reading
+      acted = true;
+      cleanup();
+      // 'locked' = already secure; 'jammed' = ambiguous, do not fight a jam.
+      if (boltState === 'unlocked' && !this._relockTimer) {
+        this.log.info && this.log.info(
+          `deadbolt: boot fail-safe found the bolt unlocked with no pending relock; re-arming relock in ${relockEdge.relock_seconds}s (${reason})`);
+        this._armAfterUnlock(relockEdge, reason);
+      }
+    };
+
+    // Cover sleeping/late locks: the first definitive report drives the decision.
+    if (typeof this.lockDriver.on === 'function') {
+      this._bootFailsafeListener = (snap) => decide(snap && snap.boltState);
+      this.lockDriver.on('state-change', this._bootFailsafeListener);
+    }
+
+    // Authoritative read now: reachable locks decide immediately; unreachable
+    // ones return cached/unknown and fall through to the listener above.
+    Promise.resolve()
+      .then(() => (typeof this.lockDriver.readBoltState === 'function'
+        ? this.lockDriver.readBoltState()
+        : (this.lockDriver.snapshot && this.lockDriver.snapshot().boltState)))
+      .then((boltState) => decide(boltState))
+      .catch(() => {
+        try { decide(this.lockDriver.snapshot && this.lockDriver.snapshot().boltState); }
+        catch (e) { /* nothing readable; the listener still covers a later report */ }
+      });
   }
 
   // ---- actions (fire-and-forget so ingestion never blocks) ---------------

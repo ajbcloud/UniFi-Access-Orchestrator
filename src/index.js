@@ -569,7 +569,15 @@ function buildDeadboltControllers() {
       Object.assign({}, config, { edges, cascade_rules: { rules: [] } }),
       Object.assign({ lockDriver: lockDrivers.get(lockId) || null }, deps)
     );
-    if (controller.enabled) deadboltControllers.set(lockId, controller);
+    if (controller.enabled) {
+      deadboltControllers.set(lockId, controller);
+      // Boot fail-safe backstop: the software relock timer is in-memory and is
+      // lost whenever controllers are (re)built (restart, config reload, driver
+      // auto-restart). This chokepoint covers every such path — if the lock owns
+      // a software relock and its bolt is found unlocked, re-arm the relock so a
+      // dropped timer can never leave an app-managed door unlocked.
+      controller.armBootFailsafe('fail-safe: door found unlocked after a restart/reload');
+    }
   }
   // One dedicated controller (lockDriver: null, never a lock command) owns every
   // scoped/unscoped UNLOCK action across all triggers (entry cascades, group
