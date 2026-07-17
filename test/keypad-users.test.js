@@ -15,6 +15,7 @@ const {
   planUserSave,
   planNewLockProvision,
   planReconciliation,
+  planDepartedUserPrune,
 } = require('../src/keypad-users');
 
 const CAP = { supported: true, slots: 30, min_length: 4, max_length: 8 };
@@ -124,6 +125,44 @@ test('planReconciliation: accepts a bare verdict string', () => {
   const plan = planReconciliation(cfg, [{ lock_id: 'a', gating_door: 'Door A' }], new Map([['u1|a', 'denied']]));
   assert.equal(plan.length, 1);
   assert.equal(plan[0].slot, 4);
+});
+
+// ---- planDepartedUserPrune ------------------------------------------------
+
+test('planDepartedUserPrune: a departed user is swept off EVERY lock, gated and ungated', () => {
+  const cfg = {
+    gated: { user_codes: { 1: { user_id: 'gone', pin_code: '1111' } } },
+    ungated: { user_codes: { 2: { user_id: 'gone', pin_code: '2222' } } },
+  };
+  const entitled = new Set(['alice']); // 'gone' is absent -> departed
+  const out = planDepartedUserPrune(cfg, {}, entitled);
+  assert.equal(out.revocations.length, 2, 'both the gated and the ungated code are revoked');
+  assert.deepEqual(out.revocations.map((r) => r.lock_id).sort(), ['gated', 'ungated']);
+  assert.ok(out.revocations.every((r) => r.user_id === 'gone' && /no longer active/i.test(r.reason)));
+});
+
+test('planDepartedUserPrune: an entitled (active, present) user is left untouched', () => {
+  const cfg = { front: { user_codes: { 1: { user_id: 'alice', pin_code: '1111' } } } };
+  const out = planDepartedUserPrune(cfg, {}, new Set(['alice']));
+  assert.deepEqual(out.revocations, [], 'a still-active user keeps their code');
+  assert.deepEqual(out.pinStateKeysToDelete, []);
+});
+
+test('planDepartedUserPrune: a departed user\'s unifi_pin_state bookkeeping is marked for deletion', () => {
+  const cfg = { front: { user_codes: {} } };
+  const pinState = { gone: { pin_code: '9999' }, alice: { pin_code: '1111' } };
+  const out = planDepartedUserPrune(cfg, pinState, new Set(['alice']));
+  assert.deepEqual(out.pinStateKeysToDelete, ['gone'], 'only the departed user\'s record is pruned');
+});
+
+test('planDepartedUserPrune: an empty entitled set is the CALLER\'s guard, but here it treats everyone as departed', () => {
+  // The pure helper cannot see fetch state; the caller must never invoke it
+  // with an empty entitled set on a successful fetch. This test documents that
+  // contract: with no entitled ids, everyone looks departed.
+  const cfg = { front: { user_codes: { 1: { user_id: 'alice', pin_code: '1111' } } } };
+  const out = planDepartedUserPrune(cfg, { alice: {} }, new Set());
+  assert.equal(out.revocations.length, 1);
+  assert.deepEqual(out.pinStateKeysToDelete, ['alice']);
 });
 
 test('aggregateKeypadUsers: code_present reflects a held slot', () => {

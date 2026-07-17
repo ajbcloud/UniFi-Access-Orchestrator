@@ -46,6 +46,7 @@ class UniFiClient {
     // OPEN (no code is ever revoked on missing data).
     this.userDoorAccess = new Map();     // userId -> Set(doorId) allowed
     this.userAccessComplete = new Map(); // userId -> bool (false = fail open)
+    this.presentActiveIds = new Set();   // userIds present AND active in last fetch
     this.accessPolicyAvailable = false;
     this.accessPolicySyncedAt = null;
     this.accessPolicyError = null;
@@ -513,12 +514,15 @@ class UniFiClient {
     try {
       const doorGroups = await this.fetchDoorGroups();
       const users = await this.requestAllPages('/users?expand[]=access_policy');
-      const { allowedDoorsByUser, completeByUser, groupsReferenced } = accessGating.parseAccessPolicies(users, doorGroups);
+      const { allowedDoorsByUser, completeByUser, presentActiveIds, groupsReferenced } = accessGating.parseAccessPolicies(users, doorGroups);
       this.accessPolicyGroupsReferenced = !!groupsReferenced;
 
       // Atomic swap on success.
       this.userDoorAccess = allowedDoorsByUser;
       this.userAccessComplete = completeByUser;
+      // Present in this fetch AND active. Drives the departed-user sweep: any
+      // stored keypad user NOT in this set was deleted or disabled in UniFi.
+      this.presentActiveIds = presentActiveIds || new Set();
       this.accessPolicyAvailable = true;
       this.accessPolicySyncedAt = new Date().toISOString();
       this.accessPolicyError = null;
@@ -558,9 +562,13 @@ class UniFiClient {
     const parts = [];
     const entries = [...this.userDoorAccess.entries()]
       .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    const active = this.presentActiveIds instanceof Set ? this.presentActiveIds : new Set();
     for (const [uid, set] of entries) {
       const doors = [...set].sort().join(',');
-      parts.push(`${uid}=${doors}:${this.userAccessComplete.get(uid) ? 1 : 0}`);
+      // Include the active flag so a disable (which zeroes a user's door set to
+      // the same '' as an existing no-access user) still changes the hash and
+      // triggers a reconcile/sweep.
+      parts.push(`${uid}=${doors}:${this.userAccessComplete.get(uid) ? 1 : 0}:${active.has(String(uid)) ? 1 : 0}`);
     }
     return parts.join('|');
   }

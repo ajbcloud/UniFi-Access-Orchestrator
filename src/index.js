@@ -1286,36 +1286,78 @@ async function reconcileAccessRevocations(trigger) {
     await retryPendingClears(); // finish any queued clears first
     const capable = await codeCapableLocks();
     const relevant = capable.filter((l) => l.cap && l.cap.supported !== false);
-    if (!relevant.length) return;
     const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
-    const userIds = new Set();
-    for (const l of relevant) {
-      for (const e of Object.values((zwLocks[l.lock_id] && zwLocks[l.lock_id].user_codes) || {})) {
-        if (e && e.user_id) userIds.add(e.user_id);
+
+    const revocations = [];
+
+    // Departed-user sweep FIRST: users deleted or disabled in UniFi are cleared
+    // off EVERY lock (gated OR ungated), and their durable unifi_pin_state
+    // record is pruned. A departed user is one NOT in presentActiveIds (present
+    // in the last successful fetch AND active). Guard: access.available is
+    // already checked above; require a NON-EMPTY active set so a bogus/empty
+    // fetch never treats everyone as departed and wipes every code.
+    let pinStateKeysToDelete = [];
+    const entitled = access.presentActiveIds instanceof Set ? access.presentActiveIds : new Set();
+    if (entitled.size) {
+      const prune = keypadUsers.planDepartedUserPrune(zwLocks, config.unifi_pin_state || {}, entitled);
+      for (const item of prune.revocations) revocations.push(item);
+      pinStateKeysToDelete = prune.pinStateKeysToDelete;
+    }
+
+    // Door-access reconciliation: still-active users who lost a gating door.
+    if (relevant.length) {
+      const userIds = new Set();
+      for (const l of relevant) {
+        for (const e of Object.values((zwLocks[l.lock_id] && zwLocks[l.lock_id].user_codes) || {})) {
+          if (e && e.user_id) userIds.add(e.user_id);
+        }
+      }
+      if (userIds.size) {
+        const verdictMap = new Map();
+        for (const userId of userIds) {
+          // classifyLocksForUser returns the COLLAPSED union verdict per lock
+          // (allowed on ANY gating door wins; unknown fails open) - the reconcile
+          // revoke planner must never see a raw per-door 'denied'.
+          const verdicts = accessGating.classifyLocksForUser(
+            userId, relevant.map((l) => ({ lock_id: l.lock_id })), config.door_flows, access);
+          for (const v of verdicts) verdictMap.set(`${userId}|${v.lock_id}`, { verdict: v.verdict, door: v.doors.join('", "') });
+        }
+        for (const item of keypadUsers.planReconciliation(
+          zwLocks, relevant.map((l) => ({ lock_id: l.lock_id })), verdictMap)) {
+          revocations.push(item);
+        }
       }
     }
-    if (!userIds.size) return;
-    const verdictMap = new Map();
-    for (const userId of userIds) {
-      // classifyLocksForUser returns the COLLAPSED union verdict per lock
-      // (allowed on ANY gating door wins; unknown fails open) - the reconcile
-      // revoke planner must never see a raw per-door 'denied'.
-      const verdicts = accessGating.classifyLocksForUser(
-        userId, relevant.map((l) => ({ lock_id: l.lock_id })), config.door_flows, access);
-      for (const v of verdicts) verdictMap.set(`${userId}|${v.lock_id}`, { verdict: v.verdict, door: v.doors.join('", "') });
-    }
-    const plan = keypadUsers.planReconciliation(
-      zwLocks, relevant.map((l) => ({ lock_id: l.lock_id })), verdictMap);
-    if (!plan.length) return;
+
+    // Execute, deduped by lock+slot (a departed user on a gated lock lands in
+    // both plans). Prune-first ordering means departed users keep the accurate
+    // "no longer active" reason.
     const byId = new Map(capable.map((l) => [l.lock_id, l]));
+    const seen = new Set();
     const done = [];
-    for (const item of plan) {
+    for (const item of revocations) {
+      const key = `${item.lock_id}|${item.slot}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       const le = byId.get(item.lock_id);
-      if (!le) continue;
+      if (!le) continue; // lock has no live driver right now; leave the entry
       done.push(await revokeHeldCode(
         { lockId: item.lock_id, driver: le.driver, label: le.label },
         item.slot, item.user_id, item.reason));
     }
+
+    // Prune departed users' durable UniFi-PIN bookkeeping. The code itself was
+    // cleared above; this record must not linger for a user who is gone. (We do
+    // NOT touch the UniFi-side PIN - that credential is UniFi's to manage, and
+    // the change that triggered this reconcile came from UniFi in the first
+    // place.)
+    if (pinStateKeysToDelete.length) {
+      persistZwaveMutation((cfg) => {
+        if (!cfg.unifi_pin_state) return;
+        for (const uid of pinStateKeysToDelete) delete cfg.unifi_pin_state[uid];
+      });
+    }
+
     if (!done.length) return;
     const confirmed = done.filter((r) => r.revoked).length;
     const pending = done.filter((r) => r.revoke_pending).length;
@@ -1323,7 +1365,7 @@ async function reconcileAccessRevocations(trigger) {
       type: 'deadbolt.user_code',
       actor: 'Access Reconciler',
       location: [...new Set(done.map((r) => lockLabel(r.lock_id)))].join(', '),
-      action: `Access sync revoked ${confirmed} keypad code(s) for users who lost UniFi door access`
+      action: `Access sync revoked ${confirmed} keypad code(s) for users who lost UniFi access or were removed`
         + (pending ? `; ${pending} clear(s) queued to retry when the lock responds` : ''),
       success: pending === 0,
     });
@@ -2109,6 +2151,19 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
   if (!b.user_id || typeof b.user_id !== 'string') {
     return res.status(400).json({ error: 'user_id is required (pick a synced UniFi user)' });
   }
+  // Access gate (mirrors the /keypad-users path): never write a code to a lock
+  // the user is confirmed-denied on. The write policy allows allowed/ungated/
+  // unknown and blocks only a confirmed 'denied'. This low-level endpoint was
+  // previously ungated; the shipped UI uses /keypad-users, but any admin-key
+  // holder can call this, so gate it here too.
+  const [writeVerdict] = accessGating.classifyLocksForUser(
+    b.user_id, [{ lock_id: target.lockId }], config.door_flows, currentAccessModel());
+  if (writeVerdict && accessGating.REVOKE_VERDICTS.has(writeVerdict.verdict)) {
+    const doorTxt = (writeVerdict.doors && writeVerdict.doors.length)
+      ? ` to "${writeVerdict.doors.join('", "')}"`
+      : " to this lock's trigger door";
+    return res.status(403).json({ error: `this user has no UniFi access${doorTxt}; refusing to write a keypad code here` });
+  }
   const pin = typeof b.pin === 'string' ? b.pin.trim() : '';
   if (!/^[0-9]{4,10}$/.test(pin)) {
     return res.status(400).json({ error: 'pin must be 4 to 10 digits' });
@@ -2351,6 +2406,7 @@ function currentAccessModel() {
     doorsById: (unifiClient && unifiClient.doorsById) || new Map(),
     allowedDoorsByUser: (unifiClient && unifiClient.userDoorAccess) || new Map(),
     completeByUser: (unifiClient && unifiClient.userAccessComplete) || new Map(),
+    presentActiveIds: (unifiClient && unifiClient.presentActiveIds) || new Set(),
   });
 }
 

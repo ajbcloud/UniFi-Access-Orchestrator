@@ -318,6 +318,50 @@ function planReconciliation(locksCfg, relevantLocks, verdictByUserLock) {
   return out;
 }
 
+/**
+ * Which stored keypad records belong to users who have DEPARTED UniFi (deleted,
+ * or disabled/suspended). Unlike planReconciliation (which is door-scoped and
+ * only revokes on a lock the user lost access to), this sweeps a departed user
+ * off EVERY lock, gated or ungated, and clears their durable unifi_pin_state
+ * bookkeeping so nothing lingers. A "departed" user is simply one NOT in
+ * entitledIds (present in the last successful fetch AND active). Pure: the app
+ * owns the drivers and persistence.
+ *
+ * SAFETY: the caller must only invoke this on a SUCCESSFUL fetch and with a
+ * NON-EMPTY entitledIds; an empty set here would treat everyone as departed and
+ * wipe every code. This function does not enforce that (it cannot see fetch
+ * state); it is the caller's guard. Given those guards, a user absent from
+ * entitledIds is a confirmed departure, never mere uncertainty.
+ *
+ * @param {object} locksCfg        devices.zwave.locks
+ * @param {object} unifiPinState   config.unifi_pin_state (userId -> record)
+ * @param {Set|Array} entitledIds  user ids still present AND active in UniFi
+ * @returns {{ revocations: Array<{user_id, lock_id, slot, reason}>,
+ *             pinStateKeysToDelete: string[] }}
+ */
+function planDepartedUserPrune(locksCfg, unifiPinState, entitledIds) {
+  const entitled = entitledIds instanceof Set ? entitledIds : new Set(entitledIds || []);
+  const revocations = [];
+  const departedWithState = new Set();
+  for (const [lockId, lock] of Object.entries(locksCfg || {})) {
+    const codes = (lock && lock.user_codes) || {};
+    for (const [slot, e] of Object.entries(codes)) {
+      if (!e || !e.user_id) continue;
+      if (entitled.has(String(e.user_id))) continue;
+      revocations.push({
+        user_id: e.user_id,
+        lock_id: lockId,
+        slot: Number(slot),
+        reason: 'user no longer active in UniFi',
+      });
+    }
+  }
+  for (const userId of Object.keys(unifiPinState || {})) {
+    if (!entitled.has(String(userId))) departedWithState.add(String(userId));
+  }
+  return { revocations, pinStateKeysToDelete: [...departedWithState] };
+}
+
 module.exports = {
   canonicalPins,
   aggregateKeypadUsers,
@@ -325,4 +369,5 @@ module.exports = {
   planUserSave,
   planNewLockProvision,
   planReconciliation,
+  planDepartedUserPrune,
 };
