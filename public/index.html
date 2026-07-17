@@ -3736,6 +3736,10 @@ function keypadLockBadge(s, lockName, doorNames) {
   if (s.status === 'ok') return `<span class="badge success" title="This lock holds the user's current PIN">${nm}</span>`;
   if (s.status === 'pending') return `<span class="badge info" title="The PIN was queued to this lock; wake it at the keypad to finish the write">${nm}: pending</span>`;
   if (s.status === 'differs') return `<span class="badge warning" title="This lock still holds an older, different PIN; save the PIN again to unify">${nm}: old PIN</span>`;
+  // A clear was sent but the lock has not confirmed: the code entry is gone
+  // but the physical code may still be live until the lock next responds. Say
+  // so plainly rather than showing a bare "missing".
+  if (s.revoke_pending) return `<span class="badge warning" title="A code clear was sent to this lock but it has not confirmed yet; the code may still open the lock until it responds. Use the lock once to wake it and finish the removal.">${nm}: removal pending</span>`;
   // 'missing' (or unknown eligibility): show a soft note
   const unk = s.eligibility === 'unknown' ? ' (access not yet known)' : '';
   return `<span class="badge warning" title="This lock has no code for the user; save the PIN again to add it${unk}">${nm}: missing</span>`;
@@ -3791,8 +3795,13 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
   };
   const statusBadge = (s) => keypadLockBadge(s, lockName(s.lock_id), doorsOf(s.lock_id));
   const rows = (Array.isArray(a.users) ? a.users : []).map((u) => {
-    const badges = (u.in_unifi ? ` <span class="badge success" title="The same PIN is set on this user's UniFi Access account">UniFi</span>` : ` <span class="badge warning" title="UniFi may hold a different PIN for this user; save the PIN again to sync">UniFi not synced</span>`)
-      + (u.user_missing ? ` <span class="badge warning" title="This user is no longer in the UniFi sync; the code still opens the deadbolts until removed">user missing</span>` : '');
+    // A removal-in-progress user (code deleted everywhere, a lock has not yet
+    // confirmed the clear) is not a live keypad user, so the UniFi-sync badge
+    // is just noise here. Show a single honest "removal pending" chip instead.
+    const badges = u.removal_pending
+      ? ` <span class="badge warning" title="This user's keypad code has been removed; a lock has not confirmed the clear yet. Use the lock once to wake it; the row disappears once every lock confirms. Their UniFi PIN is untouched.">removal pending</span>`
+      : (u.in_unifi ? ` <span class="badge success" title="The same PIN is set on this user's UniFi Access account">UniFi</span>` : ` <span class="badge warning" title="UniFi may hold a different PIN for this user; save the PIN again to sync">UniFi not synced</span>`)
+        + (u.user_missing ? ` <span class="badge warning" title="This user is no longer in the UniFi sync; the code still opens the deadbolts until removed">user missing</span>` : '');
     const perLock = (u.locks || []).map(statusBadge).join(' ');
     const uidArg = escapeHtml(JSON.stringify(String(u.user_id)));
     return `<tr><td style="padding:4px 10px 4px 0">${escapeHtml(u.name || u.user_id || 'unnamed')}${badges}</td>`
@@ -3929,7 +3938,13 @@ async function removeKeypadUser(userId) {
   try {
     const r = await api('DELETE', `/api/deadbolt/keypad-users/${encodeURIComponent(userId)}`);
     if (r.error) { toast(r.error, 'error'); return; }
-    toast(`Keypad code removed on ${(r.results || []).length} lock(s).`, 'success');
+    const results = r.results || [];
+    const pending = results.filter((x) => x.revoke_pending).length;
+    if (pending) {
+      toast(`Removed on ${results.length - pending} of ${results.length} lock(s). ${pending} did not confirm (asleep); use the lock once to finish. The row clears when every lock confirms.`, 'info');
+    } else {
+      toast(`Keypad code removed on ${results.length} lock(s).`, 'success');
+    }
     // Unguarded targeted repaint: the removed user must reappear in the
     // picker immediately so they can be re-added without a page reload.
     repaintOwned('keypad');

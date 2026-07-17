@@ -192,6 +192,30 @@ test('aggregateKeypadUsers: revoke_pending reflects a pending_clears marker', ()
   assert.equal(lock.code_present, false, 'the managed entry was already removed');
 });
 
+test('aggregateKeypadUsers: a removal-in-progress row keeps its name and flags removal_pending', () => {
+  const cfg = {
+    a: {
+      user_codes: {},
+      pending_clears: { 3: { user_id: 'u1', name: 'Lisa Curtis', requested_at: '2026-01-01T00:00:00Z', reason: 'removed by admin' } },
+    },
+  };
+  const u1 = aggregateKeypadUsers(cfg, [{ lock_id: 'a', label: 'A' }]).find((u) => u.user_id === 'u1');
+  assert.ok(u1, 'the user pending removal is still listed');
+  assert.equal(u1.name, 'Lisa Curtis', 'the name is carried on the marker, not dropped to a bare id');
+  assert.equal(u1.removal_pending, true, 'a code-less user with a queued clear is flagged removal_pending');
+  assert.equal(u1.pin_length, 0, 'no code is held anywhere');
+});
+
+test('aggregateKeypadUsers: a user still holding a code elsewhere is NOT removal_pending', () => {
+  const cfg = {
+    a: { user_codes: { 1: { user_id: 'u1', name: 'Lisa', pin_code: '1111', updated_at: '2026-01-01T00:00:00Z', confirmed: true } } },
+    b: { user_codes: {}, pending_clears: { 2: { user_id: 'u1', name: 'Lisa', requested_at: '2026-01-01T00:00:00Z', reason: 'x' } } },
+  };
+  const u1 = aggregateKeypadUsers(cfg, [{ lock_id: 'a', label: 'A' }, { lock_id: 'b', label: 'B' }]).find((u) => u.user_id === 'u1');
+  assert.equal(u1.removal_pending, false, 'a partial removal (code still on another lock) is not a full removal');
+  assert.ok(u1.locks.some((l) => l.revoke_pending), 'the pending lock is still surfaced');
+});
+
 test('aggregateKeypadUsers: verdicts surface blocked (denied) and unknown eligibility', () => {
   const cfg = {
     a: { user_codes: { 1: { user_id: 'u1', name: 'A', pin_code: '1111', updated_at: '2026-01-01T00:00:00Z', confirmed: true } } },

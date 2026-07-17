@@ -1211,12 +1211,18 @@ async function revokeHeldCode({ lockId, driver, label }, slot, userId, reason) {
     const lock = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
       && cfg.devices.zwave.locks[lockId];
     if (!lock) return;
+    // Read the display name before deleting so an unconfirmed clear can carry
+    // it on the marker; fall back to any name already on a prior marker (a
+    // retry of an already-pending clear has no user_codes entry left to read).
+    const held = lock.user_codes && lock.user_codes[String(slot)];
+    const priorMarker = lock.pending_clears && lock.pending_clears[String(slot)];
+    const name = (held && held.name) || (priorMarker && priorMarker.name) || null;
     if (lock.user_codes) delete lock.user_codes[String(slot)];
     if (revoked) {
       if (lock.pending_clears) delete lock.pending_clears[String(slot)];
     } else {
       lock.pending_clears = lock.pending_clears || {};
-      lock.pending_clears[String(slot)] = { user_id: userId, requested_at: requestedAt, reason };
+      lock.pending_clears[String(slot)] = { user_id: userId, name, requested_at: requestedAt, reason };
     }
   });
   if (revoked) {
@@ -2666,9 +2672,24 @@ app.delete('/api/deadbolt/keypad-users/:user_id', async (req, res) => {
   try {
     const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
     const holdings = [];
+    const seen = new Set();
     for (const [lockId, lock] of Object.entries(zwLocks)) {
       for (const [slot, e] of Object.entries((lock && lock.user_codes) || {})) {
-        if (e && e.user_id === userId) holdings.push({ lock_id: lockId, slot: Number(slot), name: (e && e.name) || null });
+        if (e && e.user_id === userId) {
+          holdings.push({ lock_id: lockId, slot: Number(slot), name: (e && e.name) || null });
+          seen.add(`${lockId}|${slot}`);
+        }
+      }
+    }
+    // Also act on any slot whose code is already deleted but whose clear never
+    // confirmed (a pending_clears marker). Without this a second Remove on a
+    // removal-in-progress user hit "no saved keypad code" and could never clear
+    // the row; now it re-attempts the physical clear so the marker resolves.
+    for (const [lockId, lock] of Object.entries(zwLocks)) {
+      for (const [slot, m] of Object.entries((lock && lock.pending_clears) || {})) {
+        if (m && m.user_id === userId && !seen.has(`${lockId}|${slot}`)) {
+          holdings.push({ lock_id: lockId, slot: Number(slot), name: (m && m.name) || null });
+        }
       }
     }
     if (!holdings.length) {
