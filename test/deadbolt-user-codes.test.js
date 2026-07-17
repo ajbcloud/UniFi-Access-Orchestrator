@@ -157,6 +157,50 @@ test('picker falls back to the users param when available_users is absent/empty'
   assert.match(empty, /value="u-1"/, 'empty server list also falls back');
 });
 
+test('picker hides users who already have a keypad PIN, keeps the rest', () => {
+  const build = load();
+  const out = build({
+    locks: LOCKS,
+    pin_rule: RULE,
+    available_users: [{ id: 'u-1', name: 'Alice' }, { id: 'u-2', name: 'Bob' }],
+    users: [{
+      user_id: 'u-1', name: 'Alice', pin_length: 4, in_unifi: true, user_missing: false,
+      locks: [{ lock_id: 'front_deadbolt', slot: 1, status: 'ok' }],
+    }],
+  }, USERS, false);
+  assert.ok(!/<option value="u-1"/.test(out), 'a user with a PIN is not selectable');
+  assert.match(out, /<option value="u-2"/, 'a user without a PIN stays selectable');
+});
+
+test('picker hides a user whose removal has not finished yet', () => {
+  const build = load();
+  const out = build({
+    locks: LOCKS,
+    pin_rule: RULE,
+    available_users: [{ id: 'u-1', name: 'Alice' }],
+    users: [{
+      user_id: 'u-1', name: 'Alice', pin_length: 0, in_unifi: false, removal_pending: true,
+      locks: [{ lock_id: 'front_deadbolt', slot: null, status: 'missing', code_present: false, revoke_pending: true }],
+    }],
+  }, USERS, false);
+  assert.ok(!/<option value="u-1"/.test(out), 'a removal-in-progress user is not re-selectable until fully removed');
+});
+
+test('picker hint when every synced user already has a PIN', () => {
+  const build = load();
+  const out = build({
+    locks: LOCKS,
+    pin_rule: RULE,
+    available_users: [{ id: 'u-1', name: 'Alice' }],
+    users: [{
+      user_id: 'u-1', name: 'Alice', pin_length: 4, in_unifi: true, user_missing: false,
+      locks: [{ lock_id: 'front_deadbolt', slot: 1, status: 'ok' }],
+    }],
+  }, USERS, false);
+  assert.ok(!out.includes('UniFi users not synced yet'), 'not the not-synced hint (users do exist)');
+  assert.match(out, /Every synced user already has a PIN/, 'explains why the picker is empty');
+});
+
 test('picker shows a not-synced hint when both user sources are empty', () => {
   const build = load();
   const out = build({ locks: LOCKS, pin_rule: RULE, available_users: [], users: [] }, [], false);
