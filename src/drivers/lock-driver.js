@@ -93,6 +93,18 @@ class LockDriver extends EventEmitter {
       securityClass: null,
     };
   }
+
+  /**
+   * Read the current bolt position WITHOUT actuating the bolt. Drivers that can
+   * query the device live (e.g. a Z-Wave Door Lock CC GET) should override this
+   * to return an authoritative reading; the default returns the last-known
+   * cached state. Used by the boot fail-safe relock backstop.
+   * @returns {Promise<string>} one of LockState
+   */
+  async readBoltState() {
+    const snap = typeof this.snapshot === 'function' ? this.snapshot() : await this.getState();
+    return (snap && snap.boltState) || LockState.UNKNOWN;
+  }
 }
 
 module.exports = { LockDriver, LockState };

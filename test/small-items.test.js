@@ -41,10 +41,10 @@ test('terminology: no exclamation points in save confirmations', () => {
   assert.ok(!/saved!/.test(html), 'system confirmations do not shout');
 });
 
-test('decorative stat icons are hidden from assistive tech', () => {
-  // Every dashboard stat icon should be aria-hidden so a screen reader does
-  // not read the emoji glyph as content.
+test('dashboard stat cards render without decorative icons', () => {
+  // The decorative stat-card icons were removed by design; the cards now show
+  // only the label + value. Assert none linger — a stray emoji glyph would be
+  // read by a screen reader as content.
   const statIcons = html.match(/<div class="stat-icon[^"]*"[^>]*>/g) || [];
-  assert.ok(statIcons.length >= 4, 'found the stat icons');
-  assert.ok(statIcons.every((s) => s.includes('aria-hidden="true"')), 'each stat icon is aria-hidden');
+  assert.strictEqual(statIcons.length, 0, 'stat-icon tiles were removed');
 });

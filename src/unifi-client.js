@@ -816,6 +816,17 @@ class UniFiClient {
     }, seconds * 1000);
   }
 
+  // Clear a pending reconnect timer. The watchdog's soft stage calls this
+  // before forcing a fresh startEventSource() so a queued scheduleReconnect and
+  // the forced connect cannot fire two parallel sockets. connectWebSocket
+  // already terminates the previous socket, so this only guards the timer.
+  cancelReconnect() {
+    if (this.wsReconnectTimer) {
+      clearTimeout(this.wsReconnectTimer);
+      this.wsReconnectTimer = null;
+    }
+  }
+
   // Register a passive observer that receives every parsed WebSocket event
   // before whitelisting. Used by event capture and the deadbolt controller.
   setRawTap(fn) {

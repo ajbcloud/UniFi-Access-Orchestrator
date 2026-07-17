@@ -718,6 +718,17 @@ class ZwaveLock extends LockDriver {
     await this._readBattery();
   }
 
+  // Read-only bolt position for the boot fail-safe backstop. Does a live Door
+  // Lock CC GET when the node is reachable (which updates _state and emits a
+  // state-change), and otherwise returns the last-known cached state. Never
+  // actuates the bolt.
+  async readBoltState() {
+    try {
+      if (this._shouldLiveRead()) await this._seedState();
+    } catch (e) { /* fall back to cached state below */ }
+    return this._state.boltState;
+  }
+
   async _commandSet(mode) {
     const dl = this._doorLockCC();
     if (!dl || typeof dl.set !== 'function') throw new Error('Door Lock CC unavailable');

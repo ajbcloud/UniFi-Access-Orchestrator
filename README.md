@@ -641,7 +641,7 @@ Most settings can be edited from the dashboard, but everything lives in `config.
 | `auto_lock` | SIP phone buttons (see [SIP Phone Buttons](#sip-phone-buttons-auto-lock)) |
 | `backup` | `interval_days` and `max_backups` for automatic config backups |
 | `logging` | `level`, `file_path`, `max_files`, `max_size` |
-| `watchdog` | `inactivity_timeout_minutes`: restart the event source if no events arrive within the window (0 disables it) |
+| `watchdog` | Monitors event-**source health**, not door activity, so a quiet-but-connected controller never triggers a restart. `inactivity_timeout_minutes` (0 disables): how long the source may stay unhealthy before a full app restart. `reconnect_after_minutes`: after this long unhealthy it first forces an in-process event-source reconnect (loses nothing), escalating to a restart only if that doesn't recover (defaults to half the timeout, capped at 5 min, if omitted). In webhook mode the window is arrival-based (re-register at the window, restart at twice the window). |
 | `auto_sync` | Background user-group sync: `enabled` and `interval_seconds` |
 | `self_trigger_prevention` | The marker the orchestrator stamps on its own unlocks so it never reacts to itself |
 

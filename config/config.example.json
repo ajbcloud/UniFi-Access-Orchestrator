@@ -53,7 +53,8 @@
     "max_size": "10m"
   },
   "watchdog": {
-    "inactivity_timeout_minutes": 60
+    "inactivity_timeout_minutes": 60,
+    "reconnect_after_minutes": 5
   },
   "auto_sync": {
     "enabled": true,

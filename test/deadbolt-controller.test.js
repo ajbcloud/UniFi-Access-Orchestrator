@@ -757,3 +757,121 @@ test('edge mode: destroy() clears the timer and the driver listener', async () =
   await wait(90);
   assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 0, 'nothing fires after destroy');
 });
+
+// ---------------------------------------------------------------------------
+// Boot fail-safe relock backstop (armBootFailsafe): the software relock timer
+// is in-memory and lost on any restart/reload/driver-restart, so a door left
+// unlocked awaiting relock would stay unlocked. The backstop re-arms the relock
+// window when it finds an app-owned-relock lock unlocked, acting on the first
+// definitive bolt reading.
+// ---------------------------------------------------------------------------
+
+test('boot fail-safe: an app-owned relock lock found unlocked re-arms the relock', async () => {
+  const { ctl, lock } = makeEdgeController(
+    [{ trigger_door: 'Front Door', after_unlock: 'relock_after', relock_seconds: 0.05 }],
+    { initial: LockState.UNLOCKED });
+  await lock.init();
+  ctl.armBootFailsafe('boot fail-safe');
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, true, 're-armed a relock for the orphaned-open bolt');
+  await wait(90);
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 1, 'exactly one relock fired');
+  assert.equal(lock._state, LockState.LOCKED);
+  ctl.destroy();
+});
+
+test('boot fail-safe: a lock found already locked does nothing', async () => {
+  const { ctl, lock } = makeEdgeController(
+    [{ trigger_door: 'Front Door', after_unlock: 'relock_after', relock_seconds: 0.05 }],
+    { initial: LockState.LOCKED });
+  await lock.init();
+  ctl.armBootFailsafe('boot fail-safe');
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, false, 'no relock armed');
+  await wait(60);
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 0, 'no lock issued');
+  ctl.destroy();
+});
+
+test('boot fail-safe: waits for a definitive reading, then re-arms on a late unlocked report', async () => {
+  const { ctl, lock } = makeEdgeController(
+    [{ trigger_door: 'Front Door', after_unlock: 'relock_after', relock_seconds: 0.05 }],
+    { initial: LockState.UNKNOWN });
+  await lock.init();
+  ctl.armBootFailsafe('boot fail-safe');
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, false, 'unknown bolt: waits, does not act');
+  lock.emit('state-change', { boltState: LockState.UNLOCKED }); // driver reports late
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, true, 'late unlocked report re-arms the relock');
+  await wait(90);
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 1, 'one relock fired');
+  ctl.destroy();
+});
+
+test('boot fail-safe: a late locked report is a no-op', async () => {
+  const { ctl, lock } = makeEdgeController(
+    [{ trigger_door: 'Front Door', after_unlock: 'relock_after', relock_seconds: 0.05 }],
+    { initial: LockState.UNKNOWN });
+  await lock.init();
+  ctl.armBootFailsafe('boot fail-safe');
+  await flush();
+  lock.emit('state-change', { boltState: LockState.LOCKED });
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, false, 'no relock for a locked bolt');
+  await wait(60);
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 0, 'no lock issued');
+  ctl.destroy();
+});
+
+test('boot fail-safe: stay_unlocked-only and lock_default-only locks are never swept', async () => {
+  for (const mode of ['stay_unlocked', 'lock_default']) {
+    const { ctl, lock } = makeEdgeController(
+      [{ trigger_door: 'Front Door', after_unlock: mode, relock_seconds: 0.05 }],
+      { initial: LockState.UNLOCKED });
+    await lock.init();
+    ctl.armBootFailsafe('boot fail-safe');
+    await flush();
+    assert.equal(ctl.getStatus().relock_pending, false, `${mode}: no relock armed`);
+    await wait(60);
+    assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 0, `${mode}: no lock issued`);
+    ctl.destroy();
+  }
+});
+
+test('boot fail-safe: does not double-arm when a live relock is already pending', async () => {
+  const { ctl, lock } = makeEdgeController(
+    [{ trigger_door: 'Front Door', after_unlock: 'relock_after', relock_seconds: 0.08 }]);
+  await lock.init();
+  ctl.observe(entryGrant('Front Door')); // a real unlock arms a relock
+  await flush();
+  assert.equal(ctl.getStatus().relock_pending, true, 'live relock pending');
+  ctl.armBootFailsafe('boot fail-safe'); // must not add a second relock
+  await flush();
+  await wait(120);
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 1, 'still exactly one relock');
+  ctl.destroy();
+});
+
+test('boot fail-safe: destroy() removes the one-shot listener and prevents action', async () => {
+  const { ctl, lock } = makeEdgeController(
+    [{ trigger_door: 'Front Door', after_unlock: 'relock_after', relock_seconds: 0.05 }],
+    { initial: LockState.UNKNOWN });
+  await lock.init();
+  ctl.armBootFailsafe('boot fail-safe');
+  await flush();
+  assert.ok(ctl._bootFailsafeListener, 'listener armed while waiting for a definitive reading');
+  ctl.destroy();
+  assert.equal(ctl._bootFailsafeListener, null, 'destroy cleared the boot fail-safe listener');
+  lock.emit('state-change', { boltState: LockState.UNLOCKED });
+  await wait(60);
+  assert.equal(lock.calls.filter((c) => c.action === 'lock').length, 0, 'no action after destroy');
+});
+
+test('readBoltState (base/FakeLock) returns the cached bolt state without actuating', async () => {
+  const lock = new FakeLock({ initial: LockState.UNLOCKED });
+  assert.equal(await lock.readBoltState(), LockState.UNLOCKED);
+  assert.equal(lock.calls.length, 0, 'reading position issues no actuation');
+  await lock.lock('x');
+  assert.equal(await lock.readBoltState(), LockState.LOCKED);
+});
