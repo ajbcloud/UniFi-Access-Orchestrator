@@ -4,6 +4,8 @@ Automate multi-door unlocks for [Ubiquiti UniFi Access](https://ui.com/door-acce
 
 Built for multi-tenant commercial buildings where different tenants need different door sequences.
 
+Beyond door-to-door unlocks it can also drive a Z-Wave smart deadbolt (retract on entry, re-lock on secured), keep keypad PINs in sync with UniFi Access one PIN per person, and send out-of-band alerts to a webhook, Slack or Teams, or email when a lock fails, jams, or drops offline. It runs as a Windows/macOS/Linux desktop app or as a headless service on a Raspberry Pi.
+
 ---
 
 ## Table of Contents
@@ -19,6 +21,10 @@ Built for multi-tenant commercial buildings where different tenants need differe
 - [Testing Your Setup](#testing-your-setup)
 - [Dashboard Guide](#dashboard-guide)
 - [Pairing the Smart Deadbolt (Z-Wave)](#pairing-the-smart-deadbolt-z-wave)
+- [Keypad PIN Sync](#keypad-pin-sync)
+- [Notifications and Alerts](#notifications-and-alerts)
+- [SIP Phone Buttons (Auto-Lock)](#sip-phone-buttons-auto-lock)
+- [Configuration Reference](#configuration-reference)
 - [Troubleshooting](#troubleshooting)
 - [Building from Source](#building-from-source)
 - [API Reference](#api-reference)
@@ -131,6 +137,8 @@ If you would rather have the controller push events with **Alarm Manager webhook
 |------|----------|
 | Configuration | `%APPDATA%\unifi-access-orchestrator\config.json` |
 | Logs | `%APPDATA%\unifi-access-orchestrator\logs\` |
+| Config backups | `%APPDATA%\unifi-access-orchestrator\backups\` |
+| Z-Wave cache | `%APPDATA%\unifi-access-orchestrator\zwave-cache\` |
 
 You can open these folders from the tray icon's right-click menu.
 
@@ -491,21 +499,23 @@ curl http://DEVICE_IP:3000/health
 
 ## Dashboard Guide
 
-The dashboard has seven tabs:
+The dashboard has eight tabs:
 
 **Dashboard** - Overview showing door count, user count, events received, unlocks triggered, last event details, and system info (memory, uptime, event source mode). When a Z-Wave deadbolt is paired, a Smart Deadbolt card also appears with live bolt state, battery, and link, listing every door that triggers each lock.
 
 **Live Events** - Real-time scrolling feed of every event. Each row shows the timestamp, event type (color-coded), who triggered it, which door, what the orchestrator did, and whether it succeeded. Events stream in automatically via Server-Sent Events.
 
-**Automations** - Everything starts at the door. Door mappings, user groups, then **Door Flows** (pick a door, choose who and what triggers it, then say what happens: retract a deadbolt with its own after-unlock behavior, unlock other doors, or both; a doorbell is a second trigger on the same door) and **Deadbolt Devices** (hardware only: pair, test, health check, unpair). Buttons to rediscover doors and reload the service.
+**Automations** - Everything starts at the door. Door mappings, user groups, then **Door Flows** (pick a door, choose who and what triggers it, then say what happens: retract a deadbolt with its own after-unlock behavior, unlock other doors, or both; a doorbell is a second trigger on the same door). Buttons to rediscover doors and reload the service.
 
-**Keypad Users** - One PIN per person, written to every deadbolt the user's UniFi door access allows and kept in sync with their UniFi Access PIN. A lock triggered by several doors admits a user who is allowed on ANY of them.
+**Keypad Users** - One PIN per person, written to every deadbolt the user's UniFi door access allows and kept in sync with their UniFi Access PIN. A lock triggered by several doors admits a user who is allowed on ANY of them. See [Keypad PIN Sync](#keypad-pin-sync).
+
+**Devices** - The hardware side of the Z-Wave deadbolts: enable the transport and pick the serial port, pair and unpair locks, run a Health Check, test lock and unlock, and watch live bolt state, battery, and link. Pairing, diagnostics, and node re-interview all live here. See [Pairing the Smart Deadbolt (Z-Wave)](#pairing-the-smart-deadbolt-z-wave).
 
 **Visual Designer** - The door flows as a read-only node graph. Click a node or edge to see its details and deep-link to the door's card, the one place edits happen. See [Visual Designer](#visual-designer).
 
-**Settings** - Server port and host, controller connection and API token, auto-sync interval, log level, and backup/restore.
+**Settings** - Server port and host, controller connection and API token, auto-sync interval, log level, notifications and alerts, start-at-login, and backup/restore.
 
-**Test Tools** - Click any door to test-unlock it. Simulate events with configurable parameters. Quick action buttons for force sync, reload, and health check.
+**Test Tools** - Click any door to test-unlock it. Simulate events with configurable parameters. Preflight checks and a rule simulator let you dry-run a payload against your door flows before it goes live. Quick action buttons for force sync, reload, and health check.
 
 ---
 
@@ -527,6 +537,117 @@ Notes:
 - The app generates and stores Z-Wave security keys in its config file on first pairing. Back up the config, and never delete `devices.zwave.security_keys` after pairing, or the lock will need to be excluded and re-paired.
 - If pairing fails with a "joined WITHOUT S2 security" message, the PIN was likely mistyped or the signal was weak: run Unpair, move the stick close to the lock, and pair again.
 - Keypad PIN gating follows whether a user's UniFi access includes at least one of the lock's trigger doors (set in Door Flows), but it does not follow UniFi access time schedules. A synced deadbolt PIN works 24/7, so a user whose UniFi access is time restricted still has a working deadbolt PIN outside those hours. This is a known limitation.
+
+---
+
+## Keypad PIN Sync
+
+Once a deadbolt is paired, the **Keypad Users** tab keeps deadbolt keypad codes in step with UniFi Access, one PIN per person. You set a single PIN for a user and the orchestrator writes it to every deadbolt that person is allowed to open, and keeps it matched to their UniFi Access PIN.
+
+**How eligibility is decided.** A user only gets a code on a deadbolt whose triggering door they are allowed to open in UniFi Access. "Which door triggers which lock" comes from the retract actions you set under Door Flows; "who may open which door" comes from each user's UniFi access policies. A lock triggered by several doors admits a user allowed on ANY of them (the union rule).
+
+**Revocation is deliberately cautious.** A code is only removed when UniFi returns complete access data and that data confirms the user is denied on every gating door. If the access data is unavailable or references a door group the orchestrator could not expand, the verdict is "unknown", and unknown never revokes. An API hiccup can never mass-wipe your keypad codes.
+
+**Codes survive updates.** The Z-Wave network cache is kept in a persistent per-user folder (default `<config dir>/zwave-cache`, override with `devices.zwave.cache_dir` or the `ZWAVE_CACHE_DIR` environment variable) so an app update cannot wipe it. After every node interview the orchestrator verifies each saved slot and rewrites only the ones that drifted.
+
+Time limits are not enforced on the deadbolt. A synced PIN works 24/7 even if the user's UniFi access is time restricted (see the note in the pairing section).
+
+---
+
+## Notifications and Alerts
+
+The orchestrator can send an out-of-band alert when something needs a human: a deadbolt retract failed and left someone locked out, a lock jammed, a lock went offline, the controller connection dropped, a battery ran low. This matters most on an unattended box in a rack, where nobody is watching the dashboard. Configure it under **Settings**, or directly in the `alerts` block of `config.json`.
+
+### Channels
+
+Any subset can be enabled at once. A single alert fans out to every configured channel, and one dead channel never silences the others.
+
+- **Webhook** - a generic JSON `POST` to any URL you choose (an on-prem collector, an ntfy-style relay, your own script).
+- **Chat** - a Slack or Teams incoming webhook. Set `chat.type` to `slack` or `teams`; the payload is formatted for that service.
+- **Email** - SMTP through [nodemailer](https://nodemailer.com/). This is an optional dependency: an install without it still runs, and the email channel simply reports itself unavailable.
+
+```json
+"alerts": {
+  "enabled": true,
+  "webhook_url": "https://collector.example.com/hook",
+  "chat": { "type": "slack", "webhook_url": "https://hooks.slack.com/services/XXX" },
+  "email": {
+    "smtp_host": "smtp.example.com",
+    "smtp_port": 587,
+    "smtp_secure": false,
+    "smtp_user": "alerts@example.com",
+    "smtp_password": "app-password",
+    "from": "alerts@example.com",
+    "to": ["oncall@example.com"]
+  },
+  "on": [],
+  "min_interval_seconds": 60,
+  "offline_grace_seconds": 60
+}
+```
+
+- `enabled` is the master switch. With it off, nothing is sent.
+- `on` is an allowlist of alert types to send. Leave it empty to send all of them.
+- `min_interval_seconds` is a per-type de-dupe window, so a flapping lock cannot spam you (default 60).
+- `offline_grace_seconds` is how long a lock or the controller must stay down before the sustained-offline alert fires (default 60), so a brief blip stays quiet.
+
+The SMTP password field is named to match the config redaction rule, so `GET /api/config` never returns it in the clear.
+
+### Alert types
+
+Every alert carries a plain-language `severity` so a receiver can route it without knowing the type strings.
+
+| Severity | Types |
+|----------|-------|
+| critical | `deadbolt_retract_failed`, `deadbolt_lock_failed`, `deadbolt_jammed`, `deadbolt_no_transport` |
+| warning | `cascade_failed`, `deadbolt_lock_offline`, `deadbolt_low_battery`, `controller_disconnected` |
+| info | `deadbolt_lock_online`, `controller_reconnected` |
+
+The offline and online pairs are edge triggered: the down alert fires once after the grace window, and the matching recovery alert fires when the lock or controller comes back.
+
+---
+
+## SIP Phone Buttons (Auto-Lock)
+
+Some intercoms and desk phones (for example Yealink) can fire a plain `GET` request from a DSS/programmable key but cannot send headers or a body. The `auto_lock` block maps each such button to a door and action so those phones can trigger the orchestrator directly.
+
+```json
+"auto_lock": {
+  "shared_token": "a-long-random-string",
+  "buttons": [
+    { "id": "front-unlock", "door": "Front Door", "action": "unlock" }
+  ]
+}
+```
+
+The phone calls `http://ORCHESTRATOR_IP:3000/auto-lock/front-unlock?token=a-long-random-string`. Because these endpoints answer a bare GET, set a `shared_token` and keep it secret. The orchestrator never logs the URL or the token.
+
+---
+
+## Configuration Reference
+
+Most settings can be edited from the dashboard, but everything lives in `config.json`. `config/config.example.json` is a minimal starting point; `config/config.deadbolt.example.json` shows a full deadbolt setup. The top-level blocks:
+
+| Block | What it controls |
+|-------|------------------|
+| `server` | `port`, `host`, `admin_api_key`, and `start_at_login` (packaged app registers to start at login; default on, set `false` to opt out) |
+| `unifi` | Controller `host`, `port` (12445), `token`, `verify_ssl`, and `user_sync_interval_minutes` |
+| `event_source` | `mode` (`websocket` or `api_webhook`) and the settings for each: websocket reconnect interval, or the Alarm Manager webhook `endpoint_url`, `events`, `secret`, and `replay_window_seconds` |
+| `resolver` | `strategy_order`, `unifi_group_to_group` (map UniFi group names to short logical names), and `manual_overrides` |
+| `doors` | Discovered door name-to-ID mappings |
+| `door_flows` | The one place automation lives: per door, its `triggers` and their `actions` (see [Configuring Doors](#configuring-doors-the-door-flow)) |
+| `devices.zwave` | The Z-Wave transport and paired locks: `enabled`, `serial_path`, `cache_dir`, `security_keys` (never delete these after pairing), and per-lock settings under `locks` |
+| `alerts` | Notifications and alerting (see [Notifications and Alerts](#notifications-and-alerts)) |
+| `auto_lock` | SIP phone buttons (see [SIP Phone Buttons](#sip-phone-buttons-auto-lock)) |
+| `backup` | `interval_days` and `max_backups` for automatic config backups |
+| `logging` | `level`, `file_path`, `max_files`, `max_size` |
+| `watchdog` | `inactivity_timeout_minutes`: restart the event source if no events arrive within the window (0 disables it) |
+| `auto_sync` | Background user-group sync: `enabled` and `interval_seconds` |
+| `self_trigger_prevention` | The marker the orchestrator stamps on its own unlocks so it never reacts to itself |
+
+Each entry under `devices.zwave.locks` accepts, in addition to `name`, `manufacturer`, and `model_key`: `verify_timeout_ms`, `verify_retries`, `retry_backoff_ms`, `early_verify_read_ms`, `poll_minutes` (periodic bolt and battery refresh), `low_battery_pct` (the threshold for the low-battery alert), and `auto_relock`.
+
+Secrets (the UniFi token, webhook and alert secrets, the SMTP password, the auto-lock token, the admin API key) are redacted from `GET /api/config`, and `PUT /api/config` strips the redaction placeholders back out on save, so editing config through the dashboard never overwrites a secret with its masked form.
 
 ---
 
@@ -620,23 +741,88 @@ Built files appear in the `dist/` directory.
 
 ## API Reference
 
-The orchestrator exposes these HTTP endpoints on its configured port (default 3000):
+The orchestrator exposes these HTTP endpoints on its configured port (default 3000). The list has grown well past the core routes; the full set is grouped below.
+
+**Core and events**
 
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/webhook` | Receives events from Alarm Manager or API webhook |
 | GET | `/health` | Service status, door/user counts, event stats, memory usage |
-| GET | `/api/events/stream` | Server-Sent Events stream for real-time event feed |
-| GET | `/api/events/history` | Last 200 events from memory |
+| GET | `/api/events/stream` | Server-Sent Events stream for the real-time event feed |
+| GET | `/api/events/history` | Recent events from memory |
+| POST | `/reload` | Reload config.json without restarting the service |
+| GET | `/api/diagnostics` | One-file support bundle: config (redacted), driver state, self-heal state, log tails |
+
+**Config and automation**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/config` | Current running config (all secrets redacted) |
+| PUT | `/api/config` | Save config changes to disk |
+| GET | `/api/door-flows` | The door flows (automation) shape |
+| PUT | `/api/door-flows` | Save door flow changes |
+| GET | `/api/doors` | Discovered and configured doors |
+| GET | `/api/users` | Cached users with group mappings |
+| GET | `/api/groups/discovered` | Discovered UniFi groups and users |
+| POST | `/api/sync` | Force re-sync of user groups from the UniFi API |
+| GET | `/api/test-connection` | Test connectivity to the Access Gateway |
+| GET | `/api/discover` | Scan the local network for UniFi controllers (rate-limited; keep behind `admin_api_key` in production) |
+| GET | `/api/docs` | Serve this README for the in-app documentation view |
+
+**Deadbolt and Z-Wave**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/devices` | Device inventory with live lock and link state |
+| GET | `/api/deadbolt/serial-ports` | List serial ports (likely Z-Wave sticks flagged) |
+| GET | `/api/deadbolt/catalog` | Supported lock models and their enroll/exclude steps |
+| POST | `/api/deadbolt/pair/start` | Begin pairing (inclusion) |
+| GET | `/api/deadbolt/pair/status` | Pairing progress |
+| POST | `/api/deadbolt/pair/pin` | Submit the lock's S2 DSK PIN |
+| POST | `/api/deadbolt/pair/cancel` | Cancel an in-progress pairing |
+| POST | `/api/deadbolt/unpair` | Exclude a lock |
+| GET | `/api/deadbolt/locks` | Saved locks and every node on the stick |
+| DELETE | `/api/deadbolt/locks/:lock_id` | Remove a saved lock |
+| POST | `/api/deadbolt/control` | Manually lock or unlock |
+| POST | `/api/deadbolt/auto-relock` | Set a lock's auto-relock behavior |
+| POST | `/api/deadbolt/health-check` | Ping, RTT, RSSI, route, and a lifeline rating |
+| POST | `/api/deadbolt/reinterview` | Re-interview / heal a node |
+| GET | `/api/deadbolt/user-codes` | Keypad codes on a lock |
+| POST | `/api/deadbolt/user-codes` | Write a keypad code |
+| DELETE | `/api/deadbolt/user-codes/:slot` | Remove a code slot |
+| POST | `/api/deadbolt/user-codes/rewrite` | Rewrite drifted code slots |
+| GET | `/api/deadbolt/keypad-users` | Per-user keypad status across locks |
+| POST | `/api/deadbolt/keypad-users` | Set a user's one PIN across eligible locks |
+| DELETE | `/api/deadbolt/keypad-users/:user_id` | Remove a user's keypad access |
+
+**Backups**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/backups` | List config backups and backup settings |
+| POST | `/api/backups` | Create a config backup now |
+| POST | `/api/backups/restore` | Restore config from a backup |
+| GET | `/api/backups/:filename` | Download a specific backup |
+
+**Test tools and capture**
+
+| Method | Path | Description |
+|--------|------|-------------|
 | POST | `/test/unlock/:door` | Remotely unlock a door by name |
 | POST | `/test/event` | Simulate an event through the rules engine |
-| POST | `/reload` | Reload config.json without restarting the service |
-| GET | `/api/config` | Current running config (API token redacted) |
-| PUT | `/api/config` | Save config changes to disk |
-| GET | `/api/doors` | All discovered doors with IDs |
-| GET | `/api/users` | All cached users with group mappings |
-| POST | `/api/sync` | Force re-sync of user groups from the UniFi API |
-| GET | `/api/discover` | Scan the local network for UniFi controllers (rate-limited; keep behind `admin_api_key` in production) |
+| POST | `/test/preflight` | Preflight connectivity and permission checks |
+| POST | `/test/simulate-rule` | Dry-run a payload against your door flows |
+| POST | `/api/capture/start` | Begin recording raw events for tuning |
+| POST | `/api/capture/stop` | Stop recording |
+| POST | `/api/capture/label` | Label the current capture |
+| GET | `/api/capture` | Inspect captured raw events |
+
+**SIP phone buttons**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/auto-lock/:buttonId` | Bare-GET trigger for SIP phone DSS keys (optional `?token=`) |
 
 ### API Security
 
@@ -654,27 +840,57 @@ If these values are blank, the routes remain unauthenticated for local/lab setup
 ```text
 unifi-access-orchestrator/
   assets/
-    icon.svg                App icon
+    icon.svg                    App icon
   config/
-    config.example.json     Example configuration (edit and rename to config.json)
+    config.example.json         Minimal example configuration
+    config.deadbolt.example.json Full example with Z-Wave deadbolts and alerts
+  docs/
+    pc-bringup-runbook.md       Hands-on hardware bring-up checklist for the deadbolt
+    app-review-2026-07.md       Historical engineering review (self-healing work)
+    orchestrator-addon-plan.md  Historical design record for the deadbolt add-on
+    orchestrator-addon-handoff.md Historical build/test handoff for the add-on
   electron/
-    main.js                 Desktop app: window management, tray, config paths
+    main.js                     Desktop app: window, tray, config paths, start-at-login
   public/
-    index.html              Dashboard UI + setup wizard (single file, no build step)
+    index.html                  Dashboard UI + setup wizard (single file, no build step)
   src/
-    index.js                Express server, API routes, SSE event stream
-    unifi-client.js         UniFi Access API client (doors, users, webhooks, WebSocket)
-    resolver.js             Resolves user IDs to group names
-    rules-engine.js         Processes events and decides which doors to unlock
-    logger.js               Log management with daily rotation
-    validate.js             CLI tool for testing connectivity and discovering doors
+    index.js                    Express server, all API routes, SSE stream, wiring
+    unifi-client.js             UniFi Access API client (REST + WebSocket)
+    resolver.js                 Resolves user IDs to logical group names
+    rules-engine.js             Processes events and decides which doors to unlock
+    door-flows.js               The door-centric automation shape (triggers/actions)
+    deadbolt-controller.js      Deadbolt event-to-action logic (retract, cascade, relock)
+    deadbolt-rules.js           Legacy deadbolt-rule shape helpers and migration
+    keypad-users.js             One-PIN-per-user planning across per-lock code storage
+    user-code-sync.js           Cross-lock UniFi PIN sync decisions
+    access-gating.js            Decides which users get a keypad code on which lock
+    notifier.js                 Outbound alerting (webhook, Slack/Teams, email)
+    alert-monitors.js           Sustained-offline monitors for connectivity alerts
+    security.js                 Security helpers and secret redaction
+    backup.js                   Timestamped config backups and pruning
+    config-sync.js              Detects local config and upstream controller changes
+    capture.js                  Labeled raw-event recorder for payload tuning
+    lock-cleanup.js             Removes unpaired lock config and its automation edges
+    logger.js                   Log management with daily rotation
+    validate.js                 CLI tool for testing connectivity and discovering doors
+    drivers/
+      lock-driver.js            Provider-agnostic lock driver contract
+      fake-lock.js              In-memory lock for tests and dry-run
+      lock-catalog.js           Lock model catalog with per-model enroll/exclude steps
+      zwave-manager.js          Sole owner of the zwave-js driver and serial port
+      zwave-lock.js             Z-Wave deadbolt adapter (Door Lock + Notification CC)
+      zwave-pairing.js          Inclusion/exclusion and S2/S0 security handling
+      zwave-keys.js             S2/S0 security key management
+      zwave-crypto-shim.js      AES-CCM shim for Electron/BoringSSL S2 inclusion
   scripts/
-    setup-pi.sh             Automated Linux/Pi deployment script
+    setup-pi.sh                 Automated Linux/Pi deployment script
   .gitignore
   LICENSE
   package.json
   README.md
 ```
+
+`zwave-js` and `nodemailer` are optional dependencies, so an install that does not use deadbolts or email alerts still boots normally.
 
 ---
 
