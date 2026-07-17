@@ -58,6 +58,29 @@ const {
 const APP_VERSION = require('../package.json').version;
 
 // ---------------------------------------------------------------------------
+// Process-level safety nets
+//
+// Registered unconditionally at module load so they protect BOTH the headless
+// service (node src/index.js) AND the Electron main process, which pulls this
+// file in with require(). In the Electron case require.main !== module, so the
+// handlers that previously lived only inside the `require.main === module`
+// block at the bottom of this file never ran in the packaged app. A stray
+// async throw — classically a WebSocket surfacing "closed before the connection
+// was established" after its listeners were removed, which happens whenever the
+// controller is unreachable — then reached Electron's fatal handler and popped
+// the "A JavaScript error occurred in the main process" dialog, taking the
+// whole app down. This orchestrator is a long-lived appliance, so log the
+// error and keep running instead of dying.
+// ---------------------------------------------------------------------------
+
+process.on('uncaughtException', (err) => {
+  logger.error(`Uncaught exception: ${err && err.message}\n${err && err.stack}`);
+});
+process.on('unhandledRejection', (reason) => {
+  logger.error(`Unhandled rejection: ${reason && reason.stack ? reason.stack : reason}`);
+});
+
+// ---------------------------------------------------------------------------
 // Load config
 // ---------------------------------------------------------------------------
 
@@ -4651,8 +4674,8 @@ if (require.main === module) {
   };
   process.on('SIGTERM', () => gracefulExit('SIGTERM'));
   process.on('SIGINT', () => gracefulExit('SIGINT'));
-  process.on('uncaughtException', (err) => { logger.error(`Uncaught: ${err.message}\n${err.stack}`); });
-  process.on('unhandledRejection', (reason) => { logger.error(`Unhandled rejection: ${reason}`); });
+  // uncaughtException / unhandledRejection are registered unconditionally near
+  // the top of this file so they cover the Electron main process too.
 
   start().catch(err => { logger.error(`Fatal: ${err.message}`); process.exit(1); });
 }
