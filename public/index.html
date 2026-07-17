@@ -3818,15 +3818,23 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
   // snapshot-only sourcing left the picker empty for a whole session when
   // the app booted before the controller synced (field report: a removed
   // user could not be re-added without restarting the app).
-  const pickerUsers = (Array.isArray(a.available_users) && a.available_users.length)
+  const sourceUsers = (Array.isArray(a.available_users) && a.available_users.length)
     ? a.available_users
     : (Array.isArray(users) ? users : []);
+  // One PIN per user: hide anyone who already has a keypad presence (a saved
+  // PIN, or a removal still finishing) from the picker, so they cannot be
+  // selected again until fully removed. Once removed their row disappears and
+  // they return here, re-addable. Applies to either picker source.
+  const takenIds = new Set((Array.isArray(a.users) ? a.users : []).map((u) => String(u.user_id)));
+  const pickerUsers = sourceUsers.filter((u) => !takenIds.has(String(u.id)));
   const userOpts = pickerUsers
     .map((u) => `<option value="${escapeHtml(u.id)}">${escapeHtml(u.name || u.id)}</option>`)
     .join('');
-  const noUsersHint = !pickerUsers.length
+  const noUsersHint = !sourceUsers.length
     ? `<span style="color:var(--text-muted)">UniFi users not synced yet; they appear automatically once the controller connects.</span>`
-    : '';
+    : (!pickerUsers.length
+      ? `<span style="color:var(--text-muted)">Every synced user already has a PIN. Remove one to make them selectable again.</span>`
+      : '');
   // Which locks gate on doors vs. reach everyone (no trigger door). A lock
   // triggered by SEVERAL doors admits a user who is allowed on ANY of them.
   const gatedDoorsOf = (l) => (Array.isArray(l.gating_doors) && l.gating_doors.length)
