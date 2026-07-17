@@ -32,6 +32,7 @@ const RulesEngine = require('./rules-engine');
 const { createBackup, listBackups, restoreBackup, pruneBackups } = require('./backup');
 const ConfigSync = require('./config-sync');
 const CaptureSession = require('./capture');
+const EventFeedStore = require('./event-feed-store');
 const Notifier = require('./notifier');
 const DeadboltController = require('./deadbolt-controller');
 const FakeLock = require('./drivers/fake-lock');
@@ -41,6 +42,7 @@ const lockCatalog = require('./drivers/lock-catalog');
 const { ZwavePairing } = require('./drivers/zwave-pairing');
 const { loadSecurityKeys, ensureSecurityKeys } = require('./drivers/zwave-keys');
 const { SustainedFlagMonitor } = require('./alert-monitors');
+const { decideWatchdogAction } = require('./watchdog');
 const deadboltRules = require('./deadbolt-rules');
 const doorFlows = require('./door-flows');
 const { planUnifiPinPush, markStaleAfterPush, recordUnifiPin } = require('./user-code-sync');
@@ -956,6 +958,25 @@ const EVENT_HISTORY_MAX = 200;
 const eventHistory = [];
 const sseClients = new Set();
 
+// File-backed persistence for the Live Events feed so it is not empty after a
+// restart/reload. Lives alongside backups/ and captures/ in the config dir.
+const eventFeedStore = new EventFeedStore({
+  filePath: path.join(path.dirname(CONFIG_PATH), 'event-feed.json'),
+  max: EVENT_HISTORY_MAX,
+  logger,
+});
+
+// Rehydrate the feed from disk (newest-first, already capped). Called once at
+// startup before the server accepts requests so GET /api/events/history serves
+// prior events immediately.
+function loadEventFeed() {
+  const saved = eventFeedStore.load();
+  if (saved.length) {
+    eventHistory.push(...saved.slice(0, EVENT_HISTORY_MAX));
+    logger.info(`Live event feed restored: ${eventHistory.length} entries from disk`);
+  }
+}
+
 function broadcastEvent(eventData) {
   const entry = {
     id: Date.now(),
@@ -969,6 +990,8 @@ function broadcastEvent(eventData) {
   for (const client of sseClients) {
     client.write(`data: ${JSON.stringify(entry)}\n\n`);
   }
+  // Debounced persist so an event burst collapses to a single rewrite.
+  eventFeedStore.schedule(eventHistory);
 }
 
 // Raw payload ring buffer for debugging
@@ -4037,6 +4060,12 @@ app.get('*', (req, res) => {
 let lastEventTime = Date.now();
 let watchdogInterval = null;
 let watchdogRestartCallback = null;
+// (Re)armed on every startWatchdog() call. watchdogStartedAt anchors the
+// first-boot grace window before the socket has ever delivered a frame;
+// watchdogReconnectTried latches so the soft stage fires once per outage, not
+// every tick between the reconnect and restart thresholds.
+let watchdogStartedAt = Date.now();
+let watchdogReconnectTried = false;
 
 function setWatchdogRestartCallback(fn) {
   watchdogRestartCallback = fn;
@@ -4050,15 +4079,51 @@ function startWatchdog() {
 
   const timeoutMin = config.watchdog?.inactivity_timeout_minutes ?? 60;
   if (timeoutMin <= 0) {
-    logger.info('Event activity watchdog disabled (timeout <= 0)');
+    logger.info('Event-source watchdog disabled (timeout <= 0)');
     return;
   }
 
+  // Soft (in-process reconnect) stage default: half the hard window, capped at
+  // 5 min, and clamped strictly below the hard window so it always fires first.
+  const rawReconnectMin = config.watchdog?.reconnect_after_minutes
+    ?? Math.max(1, Math.min(5, Math.floor(timeoutMin / 2)));
+  const reconnectMin = Math.min(rawReconnectMin, Math.max(1, timeoutMin - 1));
+
   const timeoutMs = timeoutMin * 60 * 1000;
+  const reconnectAfterMs = reconnectMin * 60 * 1000;
+
+  // Re-arm the clock + latch on every call (startup + both reload paths). A
+  // full reload rebuilds the client with lastWsInboundAt=0, so the fresh
+  // watchdogStartedAt grants the new connection its grace window.
+  watchdogStartedAt = Date.now();
+  watchdogReconnectTried = false;
+
   watchdogInterval = setInterval(() => {
-    const silenceMs = Date.now() - lastEventTime;
-    if (silenceMs >= timeoutMs) {
-      logger.error(`Event activity watchdog: no events for ${Math.floor(silenceMs / 60000)} minutes. Triggering restart.`);
+    const mode = config.event_source?.mode || 'websocket';
+    const decision = decideWatchdogAction({
+      mode,
+      now: Date.now(),
+      hasHost: !!(unifiClient && unifiClient.host && String(unifiClient.host).trim()),
+      timeoutMs,
+      reconnectAfterMs,
+      lastWsInboundAt: unifiClient?.lastWsInboundAt || 0,
+      watchdogStartedAt,
+      connectionState: unifiClient?.connectionState,
+      lastEventTime,
+      reconnectAlreadyTried: watchdogReconnectTried,
+    });
+
+    // Source recovered below the soft threshold -> re-arm the soft stage so a
+    // future outage gets its own in-process reconnect before any restart.
+    if (decision.staleMs < reconnectAfterMs) watchdogReconnectTried = false;
+
+    if (decision.action === 'reconnect') {
+      logger.warn(`Event-source watchdog: source unhealthy for ${Math.floor(decision.staleMs / 60000)} min; forcing in-process event-source reconnect (${decision.reason})`);
+      watchdogReconnectTried = true;
+      try { unifiClient.cancelReconnect?.(); } catch (e) { /* best effort */ }
+      startEventSource();
+    } else if (decision.action === 'restart') {
+      logger.error(`Event-source watchdog: source unhealthy for ${Math.floor(decision.staleMs / 60000)} min after reconnect attempt. Triggering restart.`);
       unifiClient.shutdown();
       if (watchdogRestartCallback) {
         watchdogRestartCallback();
@@ -4068,7 +4133,7 @@ function startWatchdog() {
     }
   }, 60000);
 
-  logger.info(`Event activity watchdog started: ${timeoutMin} min inactivity threshold`);
+  logger.info(`Event-source watchdog started: reconnect after ${reconnectMin} min, restart after ${timeoutMin} min of unhealthy source`);
 }
 
 // ---------------------------------------------------------------------------
@@ -4313,6 +4378,10 @@ async function start() {
   ensureAutoLockToken();
   warnOnWebhookExposure();
 
+  // Rehydrate the Live Events feed from disk before the server accepts
+  // requests, so GET /api/events/history is populated immediately on boot.
+  loadEventFeed();
+
   const port = config.server?.port || 3000;
   const host = config.server?.host || '0.0.0.0';
   if (host !== '127.0.0.1' && host !== 'localhost') {
@@ -4466,6 +4535,9 @@ module.exports = { start, app, setWatchdogRestartCallback };
 if (require.main === module) {
   const gracefulExit = async (sig) => {
     logger.info(sig);
+    // Flush the live feed synchronously so a clean shutdown loses nothing that
+    // the debounce timer had not yet written.
+    try { eventFeedStore.flush(eventHistory); } catch (e) { /* best effort */ }
     if (configSync) configSync.stop();
     try {
       // Stop an active pairing session first (bounded) so the stick is not

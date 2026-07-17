@@ -30,3 +30,6 @@ config/backups/
 
 # Runtime event captures
 config/captures/
+
+# Runtime live-events feed snapshot
+config/event-feed.json

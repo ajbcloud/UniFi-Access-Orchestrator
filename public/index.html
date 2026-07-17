@@ -1599,25 +1599,21 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
   <div id="dashboard" class="page active">
     <div class="grid grid-4" style="margin-bottom:16px">
       <div class="card">
-        <div class="stat-icon blue" aria-hidden="true">&#x1F6AA;</div>
         <div class="card-title" role="heading" aria-level="2">Doors Discovered</div>
         <div class="card-value" id="statDoors">-</div>
         <div class="card-sub" id="statDoorsOnline"></div>
       </div>
       <div class="card">
-        <div class="stat-icon green" aria-hidden="true">&#x1F465;</div>
         <div class="card-title" role="heading" aria-level="2">Users Mapped</div>
         <div class="card-value" id="statUsers">-</div>
         <div class="card-sub" id="statUsersGroups"></div>
       </div>
       <div class="card">
-        <div class="stat-icon yellow" aria-hidden="true">&#x26A1;</div>
         <div class="card-title" role="heading" aria-level="2">Events Received</div>
         <div class="card-value" id="statEvents">-</div>
         <div class="card-sub" id="statEventsProcessed"></div>
       </div>
       <div class="card">
-        <div class="stat-icon green" aria-hidden="true">&#x1F513;</div>
         <div class="card-title" role="heading" aria-level="2">Unlocks Triggered</div>
         <div class="card-value" id="statUnlocks">-</div>
         <div class="card-sub" id="statUnlocksFailed"></div>
@@ -1964,9 +1960,9 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
     <div class="card" style="margin-top:16px">
       <div class="card-title" role="heading" aria-level="2">Quick Actions</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-secondary" onclick="forceSync()">Force User Sync</button>
-        <button class="btn btn-secondary" onclick="reloadService()">Reload service</button>
-        <button class="btn btn-secondary" onclick="fetchHealth()">Refresh Health</button>
+        <button class="btn btn-primary" onclick="forceSync()">Force User Sync</button>
+        <button class="btn btn-primary" onclick="reloadService()">Reload service</button>
+        <button class="btn btn-primary" onclick="fetchHealth()">Refresh Health</button>
       </div>
     </div>
 
@@ -1975,7 +1971,7 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
       <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
         Test the connection to your UniFi controller without leaving the app.
       </div>
-      <button class="btn btn-secondary" onclick="runConnectivityTest()" id="connTestBtn">Test Connection</button>
+      <button class="btn btn-primary" onclick="runConnectivityTest()" id="connTestBtn">Test Connection</button>
       <div id="connTestResults" style="margin-top:16px"></div>
     </div>
 
@@ -1986,7 +1982,7 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
       <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
         Advanced. Inspect the raw JSON payloads received from UniFi (webhook or WebSocket), for verifying event format and troubleshooting field mapping. Collapsed by default.
       </div>
-      <button class="btn btn-secondary" onclick="loadRawPayloads()">Refresh payloads</button>
+      <button class="btn btn-primary" onclick="loadRawPayloads()">Refresh payloads</button>
       <div id="rawPayloadsContainer" style="display:none;margin-top:12px">
         <div id="rawPayloadsList" style="font-family:var(--mono);font-size:12px;max-height:500px;overflow-y:auto"></div>
       </div>

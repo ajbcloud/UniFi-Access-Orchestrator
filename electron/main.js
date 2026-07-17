@@ -635,11 +635,25 @@ function startHealthWatchdog() {
       mainWindow.setTitle('UniFi Access Orchestrator — Not responding');
     }
   };
+  // Read the admin key fresh each probe (same source as the renderer bridge
+  // above) so the /health probe is authenticated. Without it the server returns
+  // its minimal unauthenticated payload with no `unifi` object, so the title
+  // was permanently stuck on "Disconnected" even while the in-app pill (which
+  // does send the key) correctly showed "Online".
+  const readAdminKey = () => {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(getConfigPath(), 'utf-8'));
+      return (cfg.server && cfg.server.admin_api_key) || '';
+    } catch { return ''; }
+  };
   healthWatchdog = setInterval(() => {
     // 15s, not 5s: a long Z-Wave verify on an S0 lock can stall the service's
     // event loop past 5s, and those false timeouts both froze the title and
     // fed the relaunch counter.
-    const req = http.get(`http://127.0.0.1:${servicePort}/health`, { timeout: 15000 }, (res) => {
+    const headers = {};
+    const apiKey = readAdminKey();
+    if (apiKey) headers['x-api-key'] = apiKey;
+    const req = http.get(`http://127.0.0.1:${servicePort}/health`, { timeout: 15000, headers }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
