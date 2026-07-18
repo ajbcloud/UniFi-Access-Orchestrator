@@ -841,6 +841,34 @@ For production deployments, configure these optional controls in `config.json`:
 
 If these values are blank, the routes remain unauthenticated for local/lab setups.
 
+### Admin PIN (keypad-PIN authorization)
+
+On a shared computer, the `admin_api_key` alone does not stop a technician at the
+machine from changing keypad PINs (the desktop app supplies that key
+automatically). A separate **admin PIN** gates the sensitive operations:
+
+- Adding or changing a user's keypad PIN requires the admin PIN. A user may
+  instead change their own PIN by entering their current one.
+- Manually deleting a user requires the admin PIN. A removal that originates in
+  the UniFi portal and syncs over is pruned automatically and is never gated.
+- Set the admin PIN during first-run setup (a wizard step) or later under
+  **Settings > Security**. It is stored only as a salted scrypt hash, never in
+  cleartext, and repeated wrong guesses are rate-limited.
+
+Rollout is soft: existing installs keep working, and a banner prompts you to set
+an admin PIN. The gate turns on as soon as one exists.
+
+**At rest**, keypad PINs are encrypted in `config.json` with AES-256-GCM (a key
+in `secret.key`, owner-only), and every PIN add/change/delete is written to a
+tamper-evident, hash-chained audit log (`audit-log.jsonl`, viewable under
+Settings > Security).
+
+> Important: the admin PIN protects the dashboard, not the files. Anyone with
+> access to the config folder can still bypass it, and at-rest encryption is only
+> obfuscation against casual browsing because the key must live on the same
+> device for unattended operation. For real protection on a shared machine, see
+> the hardening guide: [`docs/hardening.md`](docs/hardening.md).
+
 ---
 
 ## Project Structure
@@ -853,6 +881,7 @@ unifi-access-orchestrator/
     config.example.json         Minimal example configuration
     config.deadbolt.example.json Full example with Z-Wave deadbolts and alerts
   docs/
+    hardening.md                Protecting PINs and secrets on a shared computer
     pc-bringup-runbook.md       Hands-on hardware bring-up checklist for the deadbolt
     app-review-2026-07.md       Historical engineering review (self-healing work)
     orchestrator-addon-plan.md  Historical design record for the deadbolt add-on
@@ -871,6 +900,10 @@ unifi-access-orchestrator/
     deadbolt-rules.js           Legacy deadbolt-rule shape helpers and migration
     keypad-users.js             One-PIN-per-user planning across per-lock code storage
     user-code-sync.js           Cross-lock UniFi PIN sync decisions
+    admin-pin.js                Super-admin PIN hashing, validation, brute-force guard
+    pin-crypto.js               At-rest keypad-PIN encryption (AES-256-GCM)
+    secret-store.js             Data-encryption key lifecycle (secret.key)
+    audit-log.js                Tamper-evident, hash-chained audit log
     access-gating.js            Decides which users get a keypad code on which lock
     notifier.js                 Outbound alerting (webhook, Slack/Teams, email)
     alert-monitors.js           Sustained-offline monitors for connectivity alerts

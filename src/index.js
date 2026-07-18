@@ -49,6 +49,10 @@ const { planUnifiPinPush, markStaleAfterPush, recordUnifiPin } = require('./user
 const { removeLockEntry, pruneGhostLocks } = require('./lock-cleanup');
 const keypadUsers = require('./keypad-users');
 const accessGating = require('./access-gating');
+const adminPin = require('./admin-pin');
+const pinCrypto = require('./pin-crypto');
+const secretStore = require('./secret-store');
+const auditLog = require('./audit-log');
 const {
   redactSecrets,
   stripRedactedPlaceholders,
@@ -86,10 +90,38 @@ process.on('unhandledRejection', (reason) => {
 
 const CONFIG_PATH = process.env.MIDDLEWARE_CONFIG_PATH || process.env.CONFIG_PATH || path.resolve(__dirname, '../config/config.json');
 const BACKUP_DIR = process.env.BACKUP_DIR || path.join(path.dirname(CONFIG_PATH), 'backups');
+const SECRET_KEY_PATH = secretStore.keyPathFor(CONFIG_PATH);
+const AUDIT_LOG_PATH = path.join(path.dirname(CONFIG_PATH), 'audit-log.jsonl');
+
+// At-rest PIN encryption key. Loaded (or created) BEFORE the first loadConfig so
+// keypad PINs on disk are decrypted into cleartext in memory, where every
+// planner expects them, and re-encrypted on the way back out (writeConfigFile).
+// A load failure degrades to no-encryption for this run rather than crashing the
+// door controller; PINs then round-trip as cleartext until the key is fixed.
+let dek = null;
+try {
+  dek = secretStore.loadOrCreateKey(SECRET_KEY_PATH);
+} catch (err) {
+  logger.error(`Could not load or create the PIN encryption key (${err.message}). Running WITHOUT at-rest PIN encryption for this run.`);
+}
+
+// At-rest PIN encryption is on by default whenever a key is available; an
+// operator can disable it with security.pin_encryption.enabled=false (writes
+// cleartext PINs, matching pre-feature behavior).
+function pinEncryptionEnabled() {
+  return !!dek && (config?.security?.pin_encryption?.enabled !== false);
+}
 
 function loadConfig() {
   const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
   const parsed = JSON.parse(raw);
+  // Decrypt any encrypted keypad PINs into cleartext for in-memory use. Legacy
+  // cleartext values pass through untouched, so an old file migrates forward the
+  // first time it is written back out.
+  if (dek) {
+    try { pinCrypto.decryptConfigPins(parsed, dek); }
+    catch (e) { logger.error(`Failed to decrypt stored PINs (${e.message}); the encryption key may not match this config`); }
+  }
   // Migrate a legacy flat deadbolt_rules block to the per-lock map shape on
   // EVERY load (startup, ConfigSync reload, hand-edited file), so the rest
   // of the app only ever sees the map. Persisted once at startup below.
@@ -1172,8 +1204,13 @@ const DISCOVER_COOLDOWN_MS = 15000;
 // persisted, so secrets never land in a world-readable file. temp+rename means
 // a crash mid-write cannot truncate the live config.
 function writeConfigFile(obj) {
+  // Encrypt keypad PINs on the way to disk. encryptConfigPins returns a CLONE,
+  // so the live in-memory config (passed here by most callers) stays cleartext.
+  // Already-encrypted values are left as-is, so a raw-disk read that is written
+  // straight back (the startup migrations) never double-encrypts.
+  const toWrite = pinEncryptionEnabled() ? pinCrypto.encryptConfigPins(obj, dek) : obj;
   const tmp = `${CONFIG_PATH}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: 0o600 });
+  fs.writeFileSync(tmp, JSON.stringify(toWrite, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, CONFIG_PATH);
 }
 
@@ -1306,6 +1343,11 @@ function onUnifiStateChange(state) {
 // unresolved door never wipes a code, and serializes with Saves and retries
 // through withKeypadLock. A no-op while access data is unavailable or a pairing
 // session owns the controller.
+//
+// ADMIN-PIN EXEMPTION: this automatic path (and the departed-user prune it
+// drives) intentionally does NOT require the admin PIN. The gate protects the
+// MANUAL endpoints a technician clicks; a removal that originates from the UniFi
+// portal and syncs over must prune codes on its own, exactly as requested.
 async function reconcileAccessRevocations(trigger) {
   if (zwavePairing.isActive()) return;
   backfillTriggerDoorIds(); // keep rule door ids current before classifying
@@ -1470,6 +1512,79 @@ function timingSafeCompare(a, b) {
   }
 
   return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+// ---------------------------------------------------------------------------
+// Super-admin PIN: authorizes sensitive keypad operations (add/change/delete a
+// user PIN) that any technician on the shared machine could otherwise perform.
+// This is a UI authorization control, NOT a filesystem control (someone with
+// config-folder access can bypass it); see docs/hardening.md.
+// ---------------------------------------------------------------------------
+
+// Throttles admin-PIN guessing over the local API (short numeric PINs are
+// brute-forceable). One shared admin, so a single key.
+const adminPinGuard = new adminPin.AdminPinGuard();
+
+function adminPinConfigured() {
+  return !!(config && config.security && config.security.admin_pin && config.security.admin_pin.hash);
+}
+
+// True when the supplied PIN matches the user's OWN current keypad PIN. Lets a
+// user change their own PIN without the admin PIN. In-memory PINs are cleartext,
+// so this compares directly (constant time). Falls back to the durable
+// unifi_pin_state record when no lock currently holds a code for the user.
+function userMatchesCurrentPin(userId, candidate) {
+  if (!userId || typeof candidate !== 'string' || !candidate) return false;
+  const locks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  const canon = keypadUsers.canonicalPins(locks).get(userId);
+  const stored = (canon && canon.pin)
+    || (config.unifi_pin_state && config.unifi_pin_state[userId] && config.unifi_pin_state[userId].pin_code)
+    || '';
+  if (!stored) return false;
+  return timingSafeCompare(candidate, String(stored));
+}
+
+/**
+ * Decide whether a sensitive keypad operation is authorized.
+ * Soft rollout: if no admin PIN is configured yet, everything is allowed (the
+ * pre-feature behavior), and a nag banner urges setup. Once an admin PIN exists:
+ *   - a valid `admin_pin` authorizes any operation, OR
+ *   - when allowCurrentPin, a matching `current_pin` authorizes a change to that
+ *     user's own PIN (a brand-new user has no current PIN, so admin is required).
+ * Returns { ok:true, actor } or { ok:false, status, error }.
+ */
+function authorizeSensitivePinOp(body, { allowCurrentPin = false, userId = null } = {}) {
+  const b = body || {};
+  if (!adminPinConfigured()) return { ok: true, actor: 'unconfigured' };
+  if (adminPinGuard.isLocked()) {
+    return { ok: false, status: 423, error: `Too many failed attempts. Try again in ${Math.ceil(adminPinGuard.retryAfterMs() / 1000)}s.` };
+  }
+  const providedAdmin = typeof b.admin_pin === 'string' ? b.admin_pin : '';
+  if (providedAdmin && adminPin.verifyAdminPin(providedAdmin, config.security.admin_pin)) {
+    adminPinGuard.recordSuccess();
+    return { ok: true, actor: 'admin' };
+  }
+  const providedCurrent = allowCurrentPin && typeof b.current_pin === 'string' ? b.current_pin : '';
+  if (providedCurrent && userMatchesCurrentPin(userId, providedCurrent)) {
+    adminPinGuard.recordSuccess();
+    return { ok: true, actor: 'user' };
+  }
+  // Any wrong attempt (admin or current PIN) counts toward the lockout.
+  if (providedAdmin || providedCurrent) adminPinGuard.recordFailure();
+  return {
+    ok: false,
+    status: 403,
+    error: allowCurrentPin
+      ? "admin PIN required (or this user's current PIN to change their own)"
+      : 'admin PIN required',
+  };
+}
+
+// Append one tamper-evident audit entry. Best-effort: an audit failure is logged
+// but never breaks the underlying door/PIN operation.
+function safeAudit(rec) {
+  try { auditLog.appendEntry(AUDIT_LOG_PATH, rec); }
+  catch (e) { logger.warn(`Audit log append failed: ${e.message}`); }
 }
 
 function requireAdminApiKey(req, res, next) {
@@ -1802,7 +1917,7 @@ app.get('/api/diagnostics', (req, res) => {
     generated_at: new Date().toISOString(),
     app_version: pkgVersion,
     platform: { os: process.platform, arch: process.arch, node: process.version },
-    config: redactSecrets(JSON.parse(JSON.stringify(config))),
+    config: (() => { const c = redactSecrets(JSON.parse(JSON.stringify(config))); delete c.security; return c; })(),
     unifi: {
       connection_state: (unifiClient && unifiClient.connectionState) || 'unknown',
       doors_discovered: (unifiClient && unifiClient.doors && unifiClient.doors.size) || 0,
@@ -2197,6 +2312,10 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
   if (!/^[0-9]{4,10}$/.test(pin)) {
     return res.status(400).json({ error: 'pin must be 4 to 10 digits' });
   }
+  // Same gate as the user-centric endpoint: admin PIN, or the user's current PIN
+  // to change their own. Closes the bypass of writing codes via the raw layer.
+  const auth = authorizeSensitivePinOp(b, { allowCurrentPin: true, userId: b.user_id });
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
   try {
     const cap = await target.driver.userCodesCapability();
     if (!cap.supported) {
@@ -2341,6 +2460,9 @@ app.delete('/api/deadbolt/user-codes/:slot', async (req, res) => {
   if (zwavePairing.isActive()) {
     return res.status(409).json({ error: 'A pairing session is in progress' });
   }
+  // Deleting a code is admin-only (mirrors the user-centric delete gate).
+  const auth = authorizeSensitivePinOp(req.body, { allowCurrentPin: false });
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
   const target = resolveLockRequest(req, res);
   if (!target) return;
   if (typeof target.driver.clearUserCode !== 'function') {
@@ -2381,6 +2503,9 @@ app.post('/api/deadbolt/user-codes/rewrite', async (req, res) => {
   if (zwavePairing.isActive()) {
     return res.status(409).json({ error: 'A pairing session is in progress' });
   }
+  // Re-pushing codes is an admin maintenance action; gate it too.
+  const auth = authorizeSensitivePinOp(req.body, { allowCurrentPin: false });
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
   const target = resolveLockRequest(req, res);
   if (!target) return;
   if (typeof target.driver.rewriteUserCodes !== 'function') {
@@ -2524,6 +2649,10 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
   if (!/^[0-9]{4,10}$/.test(pin)) {
     return res.status(400).json({ error: 'pin must be 4 to 10 digits' });
   }
+  // Adding a new user's PIN or changing an existing one requires the admin PIN;
+  // a user may instead change their OWN PIN with their current PIN.
+  const auth = authorizeSensitivePinOp(b, { allowCurrentPin: true, userId: b.user_id });
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
   try {
     const capable = await codeCapableLocks();
     if (!capable.length) {
@@ -2665,9 +2794,15 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
         recordUnifiPin(cfg, b.user_id, pin, now);
       });
     }
+    safeAudit({
+      actor: auth.actor,
+      action: auth.actor === 'user' ? 'pin_changed_by_user' : 'pin_set',
+      target: name || b.user_id,
+      detail: `${written.length}/${results.length} lock(s); UniFi ${unifi.success ? 'in sync' : 'push failed'}`,
+    });
     broadcastEvent({
       type: 'deadbolt.user_code',
-      actor: 'GUI Admin',
+      actor: auth.actor === 'user' ? 'User (self-service)' : 'GUI Admin',
       location: (written.length ? written : results).map((r) => lockLabel(r.lock_id)).join(', '),
       action: `PIN set for ${name || b.user_id} on ${written.length}/${results.length} lock(s)`
         + (revokedCount ? `; revoked on ${revokedCount} (no door access)` : '')
@@ -2692,6 +2827,11 @@ app.delete('/api/deadbolt/keypad-users/:user_id', async (req, res) => {
   if (zwavePairing.isActive()) {
     return res.status(409).json({ error: 'A pairing session is in progress' });
   }
+  // A MANUAL delete requires the admin PIN. The automatic prune of a user who
+  // departed UniFi runs through reconcileAccessRevocations, NOT this endpoint,
+  // so a portal-driven removal is never gated (that is the requested behavior).
+  const auth = authorizeSensitivePinOp(req.body, { allowCurrentPin: false });
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
   try {
     const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
     const holdings = [];
@@ -2735,6 +2875,12 @@ app.delete('/api/deadbolt/keypad-users/:user_id', async (req, res) => {
       }
     });
     const pendingClears = results.filter((r) => r.revoke_pending).length;
+    safeAudit({
+      actor: auth.actor,
+      action: 'pin_removed',
+      target: removedName || userId,
+      detail: `${holdings.length} lock(s); UniFi PIN left intact`,
+    });
     broadcastEvent({
       type: 'deadbolt.user_code',
       actor: 'GUI Admin',
@@ -2745,6 +2891,77 @@ app.delete('/api/deadbolt/keypad-users/:user_id', async (req, res) => {
       success: results.every((r) => !r.error),
     });
     res.json({ user_id: userId, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Security: super-admin PIN + audit log. All under requireAdminApiKey.
+// ---------------------------------------------------------------------------
+
+// Non-secret status for the wizard, the Settings panel, and the nag banner.
+app.get('/api/security/status', (req, res) => {
+  res.json({
+    admin_pin_set: adminPinConfigured(),
+    pin_encryption: pinEncryptionEnabled(),
+  });
+});
+
+// Set the admin PIN (first time) or change it (requires the current PIN).
+app.post('/api/security/admin-pin', (req, res) => {
+  const b = req.body || {};
+  const next = typeof b.new_pin === 'string' ? b.new_pin.trim() : '';
+  if (!adminPin.isValidAdminPin(next)) {
+    return res.status(400).json({ error: 'admin PIN must be 6 to 10 digits' });
+  }
+  const wasSet = adminPinConfigured();
+  if (wasSet) {
+    if (adminPinGuard.isLocked()) {
+      return res.status(423).json({ error: `Too many failed attempts. Try again in ${Math.ceil(adminPinGuard.retryAfterMs() / 1000)}s.` });
+    }
+    const cur = typeof b.current_pin === 'string' ? b.current_pin : '';
+    if (!adminPin.verifyAdminPin(cur, config.security.admin_pin)) {
+      adminPinGuard.recordFailure();
+      return res.status(403).json({ error: 'current admin PIN is incorrect' });
+    }
+    adminPinGuard.recordSuccess();
+  }
+  const record = adminPin.hashAdminPin(next);
+  persistZwaveMutation((cfg) => {
+    cfg.security = cfg.security || {};
+    cfg.security.admin_pin = record;
+    if (!cfg.security.pin_encryption) {
+      cfg.security.pin_encryption = { enabled: true, algo: pinCrypto.ALGO };
+    }
+  });
+  safeAudit({ actor: 'admin', action: wasSet ? 'admin_pin_changed' : 'admin_pin_set' });
+  res.json({ ok: true, changed: wasSet });
+});
+
+// Verify an admin PIN (used by the Settings UI to unlock the change form). No
+// secret is returned; only a boolean.
+app.post('/api/security/verify', (req, res) => {
+  const b = req.body || {};
+  if (!adminPinConfigured()) return res.json({ ok: true, unconfigured: true });
+  if (adminPinGuard.isLocked()) {
+    return res.status(423).json({ error: `Too many failed attempts. Try again in ${Math.ceil(adminPinGuard.retryAfterMs() / 1000)}s.` });
+  }
+  if (adminPin.verifyAdminPin(typeof b.admin_pin === 'string' ? b.admin_pin : '', config.security.admin_pin)) {
+    adminPinGuard.recordSuccess();
+    return res.json({ ok: true });
+  }
+  adminPinGuard.recordFailure();
+  return res.status(403).json({ ok: false, error: 'incorrect admin PIN' });
+});
+
+// Read recent audit entries plus a hash-chain integrity check.
+app.get('/api/audit', (req, res) => {
+  const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
+  try {
+    const entries = auditLog.readEntries(AUDIT_LOG_PATH, limit);
+    const integrity = auditLog.verifyChain(AUDIT_LOG_PATH);
+    res.json({ entries, integrity });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3282,6 +3499,10 @@ app.get('/api/config', (req, res) => {
   // token, admin key, any alert secret), not just the two the UI happens to
   // display. PUT strips the same placeholders back out on save.
   const out = redactSecrets(config);
+  // The admin-PIN hash/salt are not covered by the secret-key regex and never
+  // need to reach a client; the status endpoint exposes only booleans. Drop the
+  // whole security block so neither the hash nor the encryption metadata leaks.
+  delete out.security;
   // Transition (one release): external readers of the legacy shapes keep
   // working via a COMPUTED projection derived from door_flows. Never
   // persisted; a multi-door lock projects only its first edge.

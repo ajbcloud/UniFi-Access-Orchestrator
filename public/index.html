@@ -1510,6 +1510,14 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
     <div class="main">
 
+  <!-- Soft-rollout nag: shown only when no admin PIN is configured. Adding one
+       gates keypad-PIN changes; until then the dashboard is open as before. -->
+  <div id="adminPinNag" style="display:none;margin:0 0 14px;padding:12px 14px;border-radius:var(--radius);background:var(--bg-input);border:1px solid var(--yellow);font-size:12.5px;color:var(--text-primary);align-items:center;gap:10px;flex-wrap:wrap">
+    <strong>No admin PIN is set.</strong>
+    <span>Anyone at this computer can add, change, or delete keypad PINs. Set an admin PIN to require authorization.</span>
+    <button class="btn btn-sm btn-primary" style="margin-left:auto" onclick="goToSecuritySettings()">Set admin PIN</button>
+  </div>
+
   <!-- SETUP WIZARD (guided first-run flow; also reachable any time via the
        header Setup button, the tray, and the app menu) -->
   <div id="setup" class="page" style="display:none">
@@ -1611,6 +1619,22 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
           </div>
 
           <div id="setupStatus" style="margin-top:16px;font-size:13px"></div>
+        </div>
+      </section>
+
+      <!-- STEP: secure -->
+      <section class="wizard-step" data-step="secure">
+        <div class="panel">
+          <div class="sect" role="heading" aria-level="2"><span class="lbl">&raquo; ADMIN PIN</span><span class="tip" tabindex="0" data-tip="The admin PIN gates adding, changing, and deleting keypad PINs from this dashboard, so a technician at this shared computer cannot change codes without it.">?</span><span class="rule"></span></div>
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+            Set a super-admin PIN. It will be required to add, change, or delete a
+            user's keypad PIN from this dashboard. A user can still change their own
+            PIN by entering their current one.
+          </div>
+          <div id="wizSecureStatus" style="font-size:12px;color:var(--text-muted);margin-bottom:12px"></div>
+          <div class="set-field"><label>Admin PIN (6 to 10 digits)</label><input type="password" id="wizAdminPin" inputmode="numeric" autocomplete="new-password" placeholder="choose a PIN"></div>
+          <div class="set-field" style="margin-bottom:0"><label>Confirm PIN</label><input type="password" id="wizAdminPinConfirm" inputmode="numeric" autocomplete="new-password" placeholder="re-enter the PIN"></div>
+          <div class="cmt" style="border:none;padding:0;margin-top:12px">// This protects the dashboard, not the config files on disk. On a shared computer, also use separate OS logins and disk encryption (see docs/hardening.md).</div>
         </div>
       </section>
 
@@ -1926,8 +1950,22 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
           </div>
 
           <div class="sect"><span class="lbl">&raquo; LOGGING</span><span class="rule"></span></div>
-          <div class="panel set-panel">
+          <div class="panel set-panel" style="margin-bottom:22px">
             <div class="set-field"><label>log level</label><select id="settingLogLevel"><option value="error">error</option><option value="warn">warn</option><option value="info">info</option><option value="debug">debug</option></select></div>
+          </div>
+
+          <div class="sect"><span class="lbl">&raquo; SECURITY</span><span class="rule"></span></div>
+          <div class="panel set-panel" id="securityPanel">
+            <div id="securityStatusLine" class="cmt" style="border:none;padding:0;margin-bottom:12px"></div>
+            <div class="set-field" id="secCurrentPinField" style="display:none"><label>current admin PIN</label><input type="password" id="secCurrentPin" inputmode="numeric" autocomplete="off" placeholder="current PIN"></div>
+            <div class="set-field"><label id="secNewPinLabel">admin PIN (6 to 10 digits)</label><input type="password" id="secNewPin" inputmode="numeric" autocomplete="new-password" placeholder="new PIN"></div>
+            <div class="set-field"><label>confirm PIN</label><input type="password" id="secConfirmPin" inputmode="numeric" autocomplete="new-password" placeholder="re-enter new PIN"></div>
+            <div><button class="btn btn-sm btn-primary" id="secSavePinBtn" onclick="saveAdminPin()">Set Admin PIN</button></div>
+            <div class="cmt" style="border:none;padding:0;margin-top:12px">// gates adding, changing, and removing keypad PINs. A user may change their own PIN with their current PIN. This protects the dashboard, not the config files; see docs/hardening.md.</div>
+            <div style="margin-top:16px">
+              <button class="btn btn-sm btn-secondary" onclick="loadAuditLog()">View Audit Log</button>
+              <div id="auditLogView" style="margin-top:10px;font-size:11px;color:var(--text-muted)"></div>
+            </div>
           </div>
         </div>
 
@@ -2114,6 +2152,25 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
   </div>
 </div>
 
+<!-- Authorization dialog for sensitive keypad operations. Collects the admin
+     PIN, or (when allowed) the user's own current PIN, before an add/change/
+     delete. promptForAuthPin() owns it. -->
+<div class="modal-overlay" id="authPinModal">
+  <div class="modal-card">
+    <h3 id="authPinModalTitle">Authorization required</h3>
+    <p id="authPinModalMessage" style="white-space:pre-line"></p>
+    <div id="authPinModeRow" style="display:none;margin-bottom:10px;font-size:12.5px">
+      <label style="cursor:pointer"><input type="radio" name="authPinMode" value="admin" checked> Admin PIN</label>
+      <label style="margin-left:14px;cursor:pointer"><input type="radio" name="authPinMode" value="current"> This user's current PIN</label>
+    </div>
+    <input type="password" id="authPinModalInput" placeholder="Enter PIN" autocomplete="off" inputmode="numeric" style="width:100%;font-family:var(--mono)">
+    <div class="modal-actions">
+      <button class="btn btn-sm btn-secondary" id="authPinModalCancel">Cancel</button>
+      <button class="btn btn-sm btn-primary" id="authPinModalConfirm">Authorize</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ============================================================
 // State
@@ -2123,6 +2180,7 @@ let configData = null;
 let doorsData = null;
 let usersData = null;
 let groupsData = null;
+let securityStatus = { admin_pin_set: false, pin_encryption: false };
 let autoscroll = true;
 let eventSource = null;
 let eventsReceived = false;
@@ -2485,6 +2543,106 @@ async function api(method, path, body, _retried) {
     }
   }
   return res.json();
+}
+
+// ============================================================
+// Security: admin PIN gate + authorization prompts
+// ============================================================
+
+// Refresh the cached security status (admin PIN set? encryption on?) and update
+// the nag banner. Safe to call often; failures leave the last known state.
+async function refreshSecurityStatus() {
+  try {
+    const s = await api('GET', '/api/security/status');
+    if (s && typeof s === 'object' && !s.error) securityStatus = s;
+  } catch (e) { /* leave last known status */ }
+  updateAdminPinNag();
+  return securityStatus;
+}
+
+function updateAdminPinNag() {
+  const nag = document.getElementById('adminPinNag');
+  if (nag) nag.style.display = (securityStatus && securityStatus.admin_pin_set) ? 'none' : 'flex';
+}
+
+// Jump to the Security panel on the Settings tab from the nag banner.
+function goToSecuritySettings() {
+  const tab = document.querySelector('#tabBar [data-page="settings"]');
+  if (tab) activateTab(tab);
+  setTimeout(() => {
+    const el = document.getElementById('securityPanel');
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center' });
+    const inp = document.getElementById('secNewPin');
+    if (inp) try { inp.focus(); } catch (e) { /* mock DOM */ }
+  }, 60);
+}
+
+// In-page PIN prompt for a sensitive keypad op. Resolves to { mode, pin } where
+// mode is 'admin' or 'current', or null if cancelled. When allowCurrentPin is
+// false only the admin PIN is offered.
+let _authPinBusy = false;
+function promptForAuthPin(opts) {
+  const o = opts || {};
+  if (_authPinBusy) return Promise.resolve(null);
+  const modal = document.getElementById('authPinModal');
+  const titleEl = document.getElementById('authPinModalTitle');
+  const msgEl = document.getElementById('authPinModalMessage');
+  const modeRow = document.getElementById('authPinModeRow');
+  const input = document.getElementById('authPinModalInput');
+  const okBtn = document.getElementById('authPinModalConfirm');
+  const cancelBtn = document.getElementById('authPinModalCancel');
+  if (!modal || !input || !okBtn || !cancelBtn) return Promise.resolve(null);
+
+  _authPinBusy = true;
+  if (titleEl) titleEl.textContent = o.title || 'Authorization required';
+  if (msgEl) msgEl.textContent = o.message || '';
+  const radios = modal.querySelectorAll('input[name="authPinMode"]');
+  if (modeRow) modeRow.style.display = o.allowCurrentPin ? 'block' : 'none';
+  radios.forEach((r) => { r.checked = (r.value === 'admin'); });
+  input.value = '';
+
+  const selectedMode = () => {
+    if (!o.allowCurrentPin) return 'admin';
+    const checked = modal.querySelector('input[name="authPinMode"]:checked');
+    return checked ? checked.value : 'admin';
+  };
+
+  return new Promise((resolve) => {
+    const finish = (value) => {
+      modal.style.display = 'none';
+      input.value = '';
+      input.onkeydown = null;
+      okBtn.onclick = null;
+      cancelBtn.onclick = null;
+      _authPinBusy = false;
+      resolve(value);
+    };
+    okBtn.onclick = () => {
+      const pin = (input.value || '').trim();
+      if (!pin) { toast('Enter a PIN.', 'error'); return; }
+      finish({ mode: selectedMode(), pin });
+    };
+    cancelBtn.onclick = () => finish(null);
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') okBtn.onclick();
+      else if (e.key === 'Escape') finish(null);
+    };
+    modal.style.display = 'flex';
+    try { input.focus(); } catch (e) { /* mock DOM */ }
+  });
+}
+
+// Returns a body fragment carrying the authorization for a sensitive op:
+//   {}                      -> no admin PIN configured, nothing needed
+//   { admin_pin }           -> admin authorized
+//   { current_pin }         -> user authorized with their own PIN
+//   null                    -> the user cancelled; the caller must abort
+async function ensurePinAuthorization(opts) {
+  const o = opts || {};
+  if (!securityStatus || !securityStatus.admin_pin_set) return {};
+  const res = await promptForAuthPin(o);
+  if (!res) return null;
+  return res.mode === 'current' ? { current_pin: res.pin } : { admin_pin: res.pin };
 }
 
 // ============================================================
@@ -3158,12 +3316,73 @@ async function loadSettings() {
       esEl.innerHTML = buildEventSourceEditor(cfg.event_source || {});
       armDirtySave('#settingsEventSource', 'button[onclick^="saveEventSource"]');
     }
+    // Security panel is driven by its own status endpoint and its own Save
+    // button, not the connection config.
+    await populateSecurityPanel();
     // Values were just repopulated programmatically (fires no events), so the
     // Save button hides until the user actually edits something.
     armDirtySave('#settings', '#saveSettingsBtn');
   } catch (e) {
     toast('Failed to load settings', 'error');
   }
+}
+
+// Reflect current admin-PIN / encryption state into the Security panel controls.
+async function populateSecurityPanel() {
+  await refreshSecurityStatus();
+  const set = !!(securityStatus && securityStatus.admin_pin_set);
+  const statusLine = document.getElementById('securityStatusLine');
+  const curField = document.getElementById('secCurrentPinField');
+  const newLabel = document.getElementById('secNewPinLabel');
+  const btn = document.getElementById('secSavePinBtn');
+  if (statusLine) {
+    statusLine.textContent = '// admin PIN: ' + (set ? 'set' : 'not set')
+      + '  ·  at-rest PIN encryption: ' + ((securityStatus && securityStatus.pin_encryption) ? 'on' : 'off');
+  }
+  if (curField) curField.style.display = set ? '' : 'none';
+  if (newLabel) newLabel.textContent = set ? 'new admin PIN (6 to 10 digits)' : 'admin PIN (6 to 10 digits)';
+  if (btn) btn.textContent = set ? 'Change Admin PIN' : 'Set Admin PIN';
+  ['secCurrentPin', 'secNewPin', 'secConfirmPin'].forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const av = document.getElementById('auditLogView'); if (av) av.innerHTML = '';
+}
+
+// Set (first time) or change the admin PIN from Settings.
+async function saveAdminPin() {
+  const set = !!(securityStatus && securityStatus.admin_pin_set);
+  const cur = ((document.getElementById('secCurrentPin') || {}).value || '').trim();
+  const next = ((document.getElementById('secNewPin') || {}).value || '').trim();
+  const confirm = ((document.getElementById('secConfirmPin') || {}).value || '').trim();
+  if (!/^[0-9]{6,10}$/.test(next)) { toast('The admin PIN must be 6 to 10 digits.', 'error'); return; }
+  if (next !== confirm) { toast('The two PINs do not match.', 'error'); return; }
+  const body = { new_pin: next };
+  if (set) body.current_pin = cur;
+  try {
+    const r = await api('POST', '/api/security/admin-pin', body);
+    if (r && r.error) { toast(r.error, 'error'); return; }
+    toast(set ? 'Admin PIN changed.' : 'Admin PIN set.', 'success');
+    await populateSecurityPanel();
+  } catch (e) { toast('Could not save the admin PIN: ' + e.message, 'error'); }
+}
+
+// Load recent audit entries and the hash-chain integrity check into the panel.
+async function loadAuditLog() {
+  const view = document.getElementById('auditLogView');
+  if (!view) return;
+  view.textContent = 'Loading...';
+  try {
+    const r = await api('GET', '/api/audit?limit=100');
+    if (r && r.error) { view.textContent = r.error; return; }
+    const entries = (r && r.entries) || [];
+    const integ = (r && r.integrity) || {};
+    if (!entries.length) { view.textContent = 'No audit entries yet.'; return; }
+    const rows = entries.slice().reverse().map((e) =>
+      '<tr><td style="white-space:nowrap">' + escapeHtml(e.ts || '') + '</td><td>' + escapeHtml(e.actor || '')
+      + '</td><td>' + escapeHtml(e.action || '') + '</td><td>' + escapeHtml(e.target || '') + '</td></tr>').join('');
+    const banner = integ.ok
+      ? '<div style="color:var(--green);margin-bottom:6px">Chain intact (' + Number(integ.count || 0) + ' entries)</div>'
+      : '<div style="color:var(--red);margin-bottom:6px">Integrity check FAILED at entry ' + escapeHtml(String(integ.brokenAt)) + '; the log may have been tampered with</div>';
+    view.innerHTML = banner + '<div style="overflow-x:auto"><table class="event-table" style="min-width:420px"><thead><tr><th>time</th><th>actor</th><th>action</th><th>target</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  } catch (e) { view.textContent = 'Failed to load audit log: ' + e.message; }
 }
 
 async function saveSettings() {
@@ -4042,9 +4261,16 @@ async function saveKeypadUser() {
   const pin = (pinEl.value || '').trim();
   if (!userId) { toast('Pick a user first.', 'error'); return; }
   if (!/^[0-9]{4,10}$/.test(pin)) { toast('The PIN must be 4 to 10 digits.', 'error'); return; }
+  // Authorize: admin PIN, or the user's own current PIN to change their own.
+  const authBody = await ensurePinAuthorization({
+    title: 'Authorize PIN change',
+    message: `Setting the keypad PIN for ${name || 'this user'}.`,
+    allowCurrentPin: true,
+  });
+  if (authBody === null) return; // cancelled
   toast('Writing the PIN to the locks...', 'info');
   try {
-    const r = await api('POST', '/api/deadbolt/keypad-users', { user_id: userId, name, pin });
+    const r = await api('POST', '/api/deadbolt/keypad-users', Object.assign({ user_id: userId, name, pin }, authBody));
     if (r.error) {
       toast(r.error, 'error');
       for (const row of (r.results || [])) {
@@ -4082,8 +4308,16 @@ async function saveKeypadUser() {
 
 async function removeKeypadUser(userId) {
   if (!(await confirmInApp('Remove this user\'s keypad code from every lock?\n\nTheir UniFi PIN is not touched.', { confirmLabel: 'Remove', danger: true }))) return;
+  // Manual delete requires the admin PIN (a portal-driven removal syncs on its
+  // own and is never gated here).
+  const authBody = await ensurePinAuthorization({
+    title: 'Authorize removal',
+    message: 'Deleting a user requires the admin PIN.',
+    allowCurrentPin: false,
+  });
+  if (authBody === null) return; // cancelled
   try {
-    const r = await api('DELETE', `/api/deadbolt/keypad-users/${encodeURIComponent(userId)}`);
+    const r = await api('DELETE', `/api/deadbolt/keypad-users/${encodeURIComponent(userId)}`, authBody);
     if (r.error) { toast(r.error, 'error'); return; }
     const results = r.results || [];
     const pending = results.filter((x) => x.revoke_pending).length;
@@ -6215,18 +6449,18 @@ let wizardState = { step: 'welcome', maxIndex: 0, connectTested: false, reviewMo
 // Ordered list of wizard step ids. Kept inline here and in the step helpers so
 // each function is self-contained for the extract-and-run test harness.
 function wizardStepList() {
-  return ['welcome', 'connect', 'sync', 'groups', 'rule', 'events', 'finish'];
+  return ['welcome', 'connect', 'secure', 'sync', 'groups', 'rule', 'events', 'finish'];
 }
 
 function nextWizardStep(cur) {
-  const steps = ['welcome', 'connect', 'sync', 'groups', 'rule', 'events', 'finish'];
+  const steps = ['welcome', 'connect', 'secure', 'sync', 'groups', 'rule', 'events', 'finish'];
   const i = steps.indexOf(cur);
   if (i < 0 || i >= steps.length - 1) return null;
   return steps[i + 1];
 }
 
 function prevWizardStep(cur) {
-  const steps = ['welcome', 'connect', 'sync', 'groups', 'rule', 'events', 'finish'];
+  const steps = ['welcome', 'connect', 'secure', 'sync', 'groups', 'rule', 'events', 'finish'];
   const i = steps.indexOf(cur);
   if (i <= 0) return null;
   return steps[i - 1];
@@ -6255,6 +6489,7 @@ function renderWizardStepper(currentStep, maxIndex) {
   const steps = [
     { id: 'welcome', label: 'Welcome' },
     { id: 'connect', label: 'Connect' },
+    { id: 'secure', label: 'Secure' },
     { id: 'sync', label: 'Verify' },
     { id: 'groups', label: 'Groups' },
     { id: 'rule', label: 'Rules' },
@@ -6351,6 +6586,7 @@ function wizardStepTitles() {
   return {
     welcome: { title: 'Welcome to UniFi Access Orchestrator', subtitle: "Let's find your controller and set up your first automation." },
     connect: { title: 'Connect to your controller', subtitle: 'Find it on the network, add your API token, and test the link.' },
+    secure: { title: 'Set an admin PIN', subtitle: 'Require authorization before keypad PINs can be changed.' },
     sync: { title: 'Confirm doors and users', subtitle: 'Make sure the orchestrator can see what it needs.' },
     groups: { title: 'Name your groups', subtitle: 'Give UniFi groups friendly names to use in rules.' },
     rule: { title: 'Create your first rule', subtitle: 'Rules are what make the orchestrator act on access events.' },
@@ -6497,7 +6733,8 @@ function wizardGoTo(step) {
 
   renderWizardChrome();
 
-  if (step === 'sync') renderWizardSync();
+  if (step === 'secure') renderWizardSecure();
+  else if (step === 'sync') renderWizardSync();
   else if (step === 'groups') renderWizardGroups();
   else if (step === 'rule') renderWizardRuleStep();
   else if (step === 'events') renderWizardEventsStep();
@@ -6574,6 +6811,10 @@ async function wizardNext() {
     // when the field is blank so a saved token is never wiped).
     try { await persistConnection(); } catch (e) { /* test already proved reachability */ }
   }
+  if (step === 'secure') {
+    const proceed = await wizardSaveSecure();
+    if (!proceed) return;
+  }
   if (step === 'finish') { finishWizard(); return; }
   const next = nextWizardStep(step);
   if (next) wizardGoTo(next);
@@ -6610,6 +6851,47 @@ async function persistConnection() {
   // field for it), so the deep-merge preserves a host set in Settings instead
   // of forcing 0.0.0.0 over it.
   await persistConnectionSettings({ host, port, token, serverPort });
+}
+
+function renderWizardSecure() {
+  const pin = document.getElementById('wizAdminPin');
+  const confirm = document.getElementById('wizAdminPinConfirm');
+  const el = document.getElementById('wizSecureStatus');
+  if (pin) pin.value = '';
+  if (confirm) confirm.value = '';
+  if (el) {
+    el.textContent = (securityStatus && securityStatus.admin_pin_set)
+      ? 'An admin PIN is already set. Leave the fields blank to keep it, or change it from Settings > Security.'
+      : 'No admin PIN is set yet.';
+  }
+}
+
+// Save the wizard's admin PIN. Returns true to advance, false to stay put.
+async function wizardSaveSecure() {
+  const pinEl = document.getElementById('wizAdminPin');
+  const confirmEl = document.getElementById('wizAdminPinConfirm');
+  const pin = pinEl ? (pinEl.value || '').trim() : '';
+  const confirm = confirmEl ? (confirmEl.value || '').trim() : '';
+  if (!pin && !confirm) {
+    if (securityStatus && securityStatus.admin_pin_set) return true; // keep existing
+    return await confirmInApp(
+      'Continue without an admin PIN?\n\nAnyone at this computer will be able to add, change, or delete keypad PINs. You can set one later in Settings.',
+      { confirmLabel: 'Continue without', cancelLabel: 'Go back', danger: true });
+  }
+  if (!/^[0-9]{6,10}$/.test(pin)) { toast('The admin PIN must be 6 to 10 digits.', 'error'); return false; }
+  if (pin !== confirm) { toast('The two PINs do not match.', 'error'); return false; }
+  if (securityStatus && securityStatus.admin_pin_set) {
+    // Changing an existing PIN needs the current one; that lives in Settings.
+    toast('An admin PIN already exists. Change it from Settings > Security.', 'info');
+    return true;
+  }
+  try {
+    const r = await api('POST', '/api/security/admin-pin', { new_pin: pin });
+    if (r && r.error) { toast(r.error, 'error'); return false; }
+    toast('Admin PIN set.', 'success');
+    await refreshSecurityStatus();
+    return true;
+  } catch (e) { toast('Could not set the admin PIN: ' + e.message, 'error'); return false; }
 }
 
 async function renderWizardSync() {
@@ -6953,6 +7235,7 @@ async function saveSetup() {
   syncEventFilterControls();
   renderEventFeed();
   const isFirstRun = await checkFirstRun();
+  refreshSecurityStatus();
   if (!isFirstRun) {
     fetchHealth();
     loadConfig();

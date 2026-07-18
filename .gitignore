@@ -33,3 +33,11 @@ config/captures/
 
 # Runtime live-events feed snapshot
 config/event-feed.json
+
+# At-rest PIN encryption key (never commit)
+secret.key
+config/secret.key
+
+# Tamper-evident audit log
+audit-log.jsonl
+config/audit-log.jsonl

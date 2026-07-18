@@ -2,6 +2,28 @@
 
 This review is scoped to the code in this repository (`src/`, `public/`, `config/`).
 
+## Keypad-PIN authorization controls (added)
+
+A super-admin PIN now gates the sensitive keypad operations, aimed at the
+shared-computer threat where any technician at the machine could change PINs
+through the dashboard:
+
+- Adding/changing a user PIN, and manually deleting a user, require the admin
+  PIN (a user may change their own PIN with their current one). The automatic
+  UniFi-departure prune is intentionally exempt.
+- The admin PIN is stored only as a salted scrypt hash (`config.security.admin_pin`),
+  never returned to a client, never settable via `PUT /api/config`, and rate-limited
+  against brute force.
+- Keypad PINs are encrypted at rest with AES-256-GCM (`src/pin-crypto.js`), keyed
+  by an owner-only `secret.key` (`src/secret-store.js`).
+- Every PIN add/change/delete and admin-PIN change is written to a tamper-evident,
+  hash-chained audit log (`src/audit-log.js`, `audit-log.jsonl`).
+
+Scope limit (documented, not hidden): these are dashboard-level controls. They do
+NOT protect against a user with filesystem access to the config folder, and on a
+shared OS account the `0600` permission and at-rest key give no real protection.
+File protection is an OS/deployment concern; see `docs/hardening.md`.
+
 ## High-priority findings
 
 1. **Administrative API exposure if `admin_api_key` is not configured**

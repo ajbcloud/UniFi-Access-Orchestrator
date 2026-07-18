@@ -69,12 +69,15 @@ test('next/prevWizardStep walk the ordered list and stop at the ends', () => {
   const prev = load('prevWizardStep');
   const list = load('wizardStepList')();
 
-  assert.deepStrictEqual(list, ['welcome', 'connect', 'sync', 'groups', 'rule', 'events', 'finish']);
+  assert.deepStrictEqual(list, ['welcome', 'connect', 'secure', 'sync', 'groups', 'rule', 'events', 'finish']);
   assert.strictEqual(next('welcome'), 'connect');
+  assert.strictEqual(next('connect'), 'secure');
+  assert.strictEqual(next('secure'), 'sync');
   assert.strictEqual(next('events'), 'finish');
   assert.strictEqual(next('finish'), null, 'no step past finish');
   assert.strictEqual(next('nonsense'), null);
   assert.strictEqual(prev('connect'), 'welcome');
+  assert.strictEqual(prev('secure'), 'connect');
   assert.strictEqual(prev('welcome'), null, 'no step before welcome');
   assert.strictEqual(prev('nonsense'), null);
 });
@@ -85,16 +88,17 @@ test('next/prevWizardStep walk the ordered list and stop at the ends', () => {
 
 test('renderWizardStepper marks done, active, and clickable states', () => {
   const render = load('renderWizardStepper');
-  // on step "sync" (index 2), having visited up to index 3 ("groups")
-  const out = render('sync', 3);
+  // on step "sync" (index 3), having visited up to index 4 ("groups")
+  const out = render('sync', 4);
 
   // current step is active and not clickable
   assert.match(out, /class="wstep active" data-step="sync"/);
   // earlier steps are done and carry a checkmark
   assert.match(out, /class="wstep done clickable" data-step="welcome"/);
   assert.match(out, /class="wstep done clickable" data-step="connect"/);
+  assert.match(out, /class="wstep done clickable" data-step="secure"/);
   assert.ok(out.includes('&#10003;'), 'completed steps use a checkmark');
-  // a visited-but-ahead step (groups, index 3) is clickable but not done
+  // a visited-but-ahead step (groups, index 4) is clickable but not done
   assert.match(out, /class="wstep clickable" data-step="groups"/);
   // an unvisited step (finish) is neither done nor clickable
   assert.match(out, /class="wstep" data-step="finish"/);

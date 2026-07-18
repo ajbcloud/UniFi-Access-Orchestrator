@@ -77,6 +77,13 @@ function validateConfigUpdates(updates) {
     return { ok: false, error: 'Config must be a JSON object' };
   }
 
+  // The security block (admin-PIN hash, encryption metadata) is managed only by
+  // the dedicated /api/security endpoints, never by a generic config save, so a
+  // crafted or stale PUT can neither set the admin PIN nor clear it here.
+  if (updates.security !== undefined) {
+    return { ok: false, error: 'security settings are managed via /api/security, not PUT /api/config' };
+  }
+
   if (updates.server !== undefined) {
     if (!isPlainObject(updates.server)) return { ok: false, error: 'server must be an object' };
     const s = updates.server;
