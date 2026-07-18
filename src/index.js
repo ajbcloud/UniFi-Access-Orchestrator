@@ -640,7 +640,7 @@ function buildDeadbolt() {
     if (!pairedIds.length) {
       // Enabled but nothing paired yet: normal mid-setup state, not an
       // error. The dashboard's Pair flow fills in node_id and reactivates.
-      logger.info('Deadbolt: Z-Wave is enabled but no lock is paired yet. Use Pair New Lock in the dashboard (Configuration tab).');
+      logger.info('Deadbolt: Z-Wave is enabled but no lock is paired yet. Use Add a deadbolt in the dashboard (Devices tab) to pair one.');
     }
   } else if ((zw && zw.dev_fake_lock) || (flowLockIds.length && process.env.NODE_ENV === 'development')) {
     // Fake locks are OPT-IN only. They ALWAYS report success and drive no

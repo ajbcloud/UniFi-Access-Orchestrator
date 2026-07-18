@@ -525,7 +525,7 @@ The app can drive a Z-Wave deadbolt (tested design: Schlage BE469ZP over a Zooz 
 
 1. Plug the Z-Wave USB stick into the machine running the app.
 2. Open **Automations** and find **Deadbolt Devices (Z-Wave)**. Pick the stick's port from the dropdown (likely sticks are marked), tick **Enable Z-Wave deadbolt**, and Save.
-3. Click **Pair New Lock**. When the panel says it is waiting for the lock: on the Schlage keypad, enter the 6-digit programming code, press the Schlage button, then press **0**. Keep the lock within a few feet of the stick while pairing.
+3. In **Add a deadbolt**, pick the manufacturer and model, optionally give it a name, then click **Pair this deadbolt**. When the panel says it is waiting for the lock: on the Schlage keypad, enter the 6-digit programming code, press the Schlage button, then press **0**. Keep the lock within a few feet of the stick while pairing.
 4. The panel shows the lock's device ID and asks for the **5-digit PIN** printed on the label on the lock body (also on the box sticker). Type it and submit.
 5. After "Paired!", the deadbolt is active: the panel shows live bolt state, battery, and link, with **Test Lock** / **Test Unlock** buttons.
 
