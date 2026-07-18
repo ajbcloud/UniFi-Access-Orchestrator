@@ -1262,10 +1262,10 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 .fd-canvas {
   position: relative;
   flex: 1;
-  background: var(--bg-input);
+  background: var(--bg-card);
   background-image:
-    radial-gradient(circle, var(--border) 1px, transparent 1px);
-  background-size: 22px 22px;
+    radial-gradient(var(--border-light) 1px, transparent 1px);
+  background-size: 20px 20px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
@@ -1279,15 +1279,15 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 .fd-nodes, .fd-labels { position: absolute; top: 0; left: 0; }
 .fd-node {
   position: absolute;
-  background: var(--bg-card);
+  background: var(--bg-secondary);
   border: 1px solid var(--border-light);
   border-left-width: 3px;
-  border-radius: var(--radius);
-  padding: 8px 12px;
+  border-radius: 8px;
+  padding: 9px 12px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  box-shadow: 0 2px 8px rgba(0,0,0,.28);
+  font-family: 'IBM Plex Mono', monospace;
   cursor: grab;
   user-select: none;
 }
@@ -1296,8 +1296,8 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 .fd-node.fd-door { border-left-color: var(--neon); }
 .fd-node.fd-group { border-left-color: var(--green); }
 .fd-node.fd-deadbolt { border-left-color: var(--yellow); }
-.fd-node-role { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-muted); }
-.fd-node-label { font-size: 13px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fd-node-role { font-size: 9px; text-transform: uppercase; letter-spacing: .1em; color: var(--text-muted); }
+.fd-node-label { font-size: 12.5px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fd-handle {
   position: absolute;
   width: 12px; height: 12px;
@@ -1331,17 +1331,18 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
   z-index: 5;
 }
 .fd-controls button {
-  width: 30px; height: 30px;
+  width: 28px; height: 28px;
   background: var(--bg-card);
   border: 1px solid var(--border-light);
   color: var(--text-primary);
   border-radius: 6px;
   cursor: pointer;
-  font-size: 15px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
   line-height: 1;
 }
 .fd-controls button:hover { border-color: var(--accent); color: var(--accent); }
-.fd-controls button.fd-wide { width: auto; padding: 0 10px; font-size: 12px; }
+.fd-controls button.fd-wide { width: auto; padding: 0 10px; font-size: 11px; }
 .fd-empty {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
@@ -1349,21 +1350,22 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
   pointer-events: none;
 }
 .fd-panel {
-  width: 320px; flex: 0 0 320px;
+  width: 200px; flex: 0 0 200px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px;
+  font-family: 'IBM Plex Mono', monospace;
   overflow-y: auto;
 }
-.fd-panel-title { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+.fd-panel-title { font-size: 11px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 14px; }
 .fd-sublabel { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-muted); margin: 14px 0 6px; }
-.fd-hint { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 12px; }
+.fd-hint { font-size: 11px; color: var(--text-muted); line-height: 1.6; margin-bottom: 12px; }
 .fd-add { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
 .fd-add button { width: 100%; }
-.fd-legend { border-top: 1px solid var(--border); padding-top: 12px; }
-.fd-legend-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
-.fd-swatch { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 12px; }
+.fd-legend { border-top: 1px solid var(--border); padding-top: 14px; display: flex; flex-direction: column; gap: 11px; }
+.fd-legend-row { display: flex; align-items: center; gap: 9px; font-size: 11.5px; color: var(--text-secondary); margin-bottom: 0; }
+.fd-swatch { width: 16px; height: 3px; border-radius: 2px; flex: 0 0 16px; }
 .fd-field { margin-bottom: 12px; }
 .fd-field select, .fd-field input { width: 100%; }
 .fd-checks { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
@@ -1811,12 +1813,9 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
   <!-- VISUAL DESIGNER -->
   <div id="designer" class="page">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-      <div>
-        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Visual Designer</div>
-        <div style="font-size:12px;color:var(--text-muted)">See your doors, groups, and deadbolts as a map. This view is read-only; edit everything on the door's card under Door Flows on the Automations tab.</div>
-      </div>
-      <button class="btn btn-sm btn-secondary" onclick="if(window.openDesigner)window.openDesigner()">Refresh designer</button>
+    <div class="page-head">
+      <div class="page-title"><span class="h1" role="heading" aria-level="1">Visual Designer</span><span class="sub">read-only map &middot; edit on the door's card</span></div>
+      <button class="btn btn-sm btn-secondary" onclick="if(window.openDesigner)window.openDesigner()">Refresh</button>
     </div>
     <div class="fd-wrap">
       <div class="fd-canvas" id="fdCanvas">
