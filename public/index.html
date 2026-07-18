@@ -507,15 +507,33 @@ body {
 .notice-warn { background: var(--yellow); color: var(--on-warning); }
 .notice-danger { background: var(--red); color: var(--on-danger); }
 
-/* Live Events filter controls */
-.event-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
-.filter-chips { display: inline-flex; gap: 4px; }
+/* Live Events filter controls (console pill styling) */
+.event-filters { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; font-family: var(--mono); }
+.filter-chips { display: inline-flex; gap: 7px; }
 .chip { font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 999px;
   border: 1px solid var(--border); background: transparent; color: var(--text-secondary); cursor: pointer; }
 .chip:hover { border-color: var(--border-light); }
 .chip.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
-.event-filters select, .event-filters input { font-size: 12px; padding: 5px 8px; }
-.event-filters input { min-width: 160px; }
+/* Neon-fill pill look is scoped to this page's filter row: automations' bare
+   .chip (df-afterseg) keeps its own accent styling untouched. */
+#eventFilters .chip { font-size: 11.5px; font-weight: 600; padding: 6px 13px; border-color: var(--border-light); text-transform: uppercase; }
+#eventFilters .chip.active { background: var(--neon); color: var(--on-neon); border-color: transparent; }
+.event-filters select, .event-filters input { font-family: var(--mono); font-size: 11.5px; padding: 7px 12px;
+  border-radius: 7px; border-color: var(--border-light); width: auto; }
+.event-filters input { min-width: 180px; margin-left: auto; }
+
+/* Live Events title's LIVE indicator: brighter than the muted .sect .live,
+   since it sits next to the page h1 instead of a section rule. */
+.evt-live { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; color: var(--green); }
+
+/* Live Events table: mono, uppercase muted headers; colored type; right-
+   aligned result text; red left accent on a failed row. Scoped to #eventLog
+   because .event-table itself is shared with the Devices/Settings tables. */
+#eventLog .event-table th { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; background: var(--bg-secondary); padding: 10px 18px; }
+#eventLog .event-table td { font-family: var(--mono); font-size: 11.5px; padding: 11px 18px; }
+#eventLog .event-table th:last-child, #eventLog .event-table td:last-child { text-align: right; }
+#eventLog .event-table td:last-child { font-weight: 600; }
+#eventLog .event-table tr.fail td:first-child { border-left: 3px solid var(--red); padding-left: 15px; }
 
 /* Door flow stepped builder: 1 Door, 2 When, 3 Do this. Chips and per-action
    cards, one primary neon pop (the step numbers and Save), accent green links. */
@@ -1687,8 +1705,11 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
   <!-- LIVE EVENTS -->
   <div id="events" class="page">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Live Event Feed</div>
+    <div class="page-head">
+      <div class="page-title">
+        <span class="h1" role="heading" aria-level="1">Live Events</span>
+        <span class="evt-live"><span class="status-dot" aria-hidden="true"></span>LIVE</span>
+      </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-sm btn-secondary" onclick="toggleAutoscroll()" id="autoscrollBtn">Autoscroll: ON</button>
         <button class="btn btn-sm btn-secondary" onclick="clearEvents()">Clear</button>
@@ -1702,23 +1723,22 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
         <button class="chip" data-kind="failed" aria-pressed="false" onclick="setEventFilterKind('failed')">Failed</button>
       </div>
       <select id="eventDoorFilter" aria-label="Filter events by door" onchange="setEventFilterDoor(this.value)"><option value="">All doors</option></select>
-      <input id="eventSearch" type="text" placeholder="Search events" aria-label="Search events" oninput="setEventFilterText(this.value)">
+      <input id="eventSearch" type="text" placeholder="/ search events" aria-label="Search events" oninput="setEventFilterText(this.value)">
     </div>
-    <div class="card" style="padding:0">
+    <div class="panel flush">
       <div class="event-log" id="eventLog">
         <table class="event-table">
           <thead>
             <tr>
-              <th style="width:140px">Time</th>
-              <th>Type</th>
-              <th>Actor</th>
-              <th>Location</th>
-              <th>Action</th>
-              <th style="width:80px">Status</th>
+              <th style="width:80px">Time</th>
+              <th style="width:92px">Type</th>
+              <th>Actor &middot; Action</th>
+              <th style="width:130px">Location</th>
+              <th style="width:70px">Result</th>
             </tr>
           </thead>
           <tbody id="eventTableBody">
-            <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-muted)">Waiting for events...</td></tr>
+            <tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text-muted)">Waiting for events...</td></tr>
           </tbody>
         </table>
       </div>
@@ -1740,20 +1760,16 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
   <!-- USER SETTINGS (keypad PINs + UniFi user groups) -->
   <div id="keypad" class="page">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <div>
-        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">User Settings</div>
-        <div style="font-size:12px;color:var(--text-muted)">Per-user keypad PINs and the UniFi group each user belongs to.</div>
-      </div>
+    <div class="page-head">
+      <div class="page-title"><span class="h1" role="heading" aria-level="1">User Settings</span><span class="sub">keypad PINs &middot; groups</span></div>
       <button class="btn btn-sm btn-secondary" onclick="renderKeypadUsers(); renderUserGroups();">Refresh</button>
     </div>
-    <div class="config-section">
-      <div class="config-body" id="kuPanel"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
-    </div>
-    <div class="card" style="margin-top:16px">
-      <div class="card-title" role="heading" aria-level="2">User Groups</div>
-      <div class="config-body" id="configUsers"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
-    </div>
+
+    <div class="sect"><span class="lbl">&raquo; KEYPAD USERS</span><span class="rule"></span></div>
+    <div id="kuPanel"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
+
+    <div class="sect"><span class="lbl">&raquo; USER GROUPS</span><span class="rule"></span></div>
+    <div id="configUsers"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
   </div>
 
   <!-- DEVICES (Z-Wave deadbolts + UniFi door mappings) -->
@@ -2843,23 +2859,30 @@ function eventMatchesFilters(evt, f) {
 
 function eventRowHtml(evt) {
   const _d = new Date(evt.timestamp);
-  const time = _d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + _d.toLocaleTimeString();
+  const _p = (n) => String(n).padStart(2, '0');
+  const time = isNaN(_d.getTime()) ? '--:--:--' : `${_p(_d.getHours())}:${_p(_d.getMinutes())}:${_p(_d.getSeconds())}`;
   const kind = classifyEventRow(evt);
-  const typeBadge = (evt.type || '').includes('doorbell') ? 'info'
-    : (evt.type || '').includes('unlock') ? 'success'
-    : (evt.type || '').includes('system') ? 'warning' : 'info';
-  const statusBadge = kind === 'failed' ? 'error' : kind === 'skipped' ? 'warning' : 'success';
-  const statusText = kind === 'failed' ? 'Failed' : kind === 'skipped' ? 'Skipped' : 'OK';
-  const rawType = escapeHtml((evt.type || '').replace('access.', '').replace('test.', 'test:'));
-  const fullType = escapeHtml(evt.type || '');
+  const type = String(evt.type || '');
+  const isDoorbell = type.includes('doorbell');
+  const isUnlock = type.includes('unlock');
+  const typeColor = isDoorbell ? 'var(--green)' : isUnlock ? 'var(--accent)' : 'var(--text-muted)';
+  const typeWord = isDoorbell ? 'doorbell' : isUnlock ? 'unlock'
+    : type.includes('alert') ? 'alert' : type.includes('system') ? 'system'
+    : type.includes('test') ? 'test' : (type.split('.').pop() || 'event');
+  const typeLabel = escapeHtml(typeWord.toUpperCase());
+  const fullType = escapeHtml(type);
+  const actor = escapeHtml(evt.actor || 'Unknown');
+  const action = escapeHtml((evt.action && String(evt.action).trim()) ? String(evt.action).trim() : narrateEvent(evt));
+  const resultText = kind === 'failed' ? 'FAIL' : kind === 'skipped' ? 'SKIP' : 'OK';
+  const resultCls = kind === 'failed' ? 'res-fail' : kind === 'skipped' ? 'res-skip' : 'res-ok';
+  const rowCls = kind === 'failed' ? ' class="fail"' : '';
   const dim = kind === 'skipped' ? ' style="opacity:0.6"' : '';
-  return `<tr data-kind="${kind}"${dim}>
+  return `<tr data-kind="${kind}"${rowCls}${dim}>
     <td class="time">${time}</td>
-    <td><span class="badge ${typeBadge}" title="${fullType}">${rawType}</span></td>
-    <td style="color:var(--text-primary)">${escapeHtml(evt.actor || '-')}</td>
-    <td>${escapeHtml(evt.location || '-')}</td>
-    <td title="${fullType}">${escapeHtml(narrateEvent(evt))}</td>
-    <td><span class="badge ${statusBadge}">${statusText}</span></td>
+    <td style="color:${typeColor}" title="${fullType}">${typeLabel}</td>
+    <td><span style="color:var(--text-secondary)"><span style="color:var(--text-primary)">${actor}</span> &rarr; ${action}</span></td>
+    <td style="color:var(--text-secondary)">${escapeHtml(evt.location || '-')}</td>
+    <td class="${resultCls}">${resultText}</td>
   </tr>`;
 }
 
@@ -2867,7 +2890,7 @@ function skipKey(run) { return 'skip:' + ((run[0] && run[0].timestamp) || run.le
 
 function skippedGroupRowHtml(run) {
   const key = skipKey(run);
-  return `<tr class="skip-group" data-kind="skipped"><td colspan="6" style="text-align:center;padding:6px">`
+  return `<tr class="skip-group" data-kind="skipped"><td colspan="5" style="text-align:center;padding:6px">`
     + `<button class="btn btn-sm btn-ghost" onclick="toggleSkipGroup('${key}')">${escapeHtml(skippedGroupLabel(run.length))}</button></td></tr>`;
 }
 
@@ -2882,7 +2905,7 @@ function renderEventFeed() {
   const f = eventFilters || (eventFilters = loadEventFilters());
   const rows = eventBuffer.filter((e) => eventMatchesFilters(e, f));
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6">'
+    tbody.innerHTML = '<tr><td colspan="5">'
       + (eventBuffer.length ? emptyStateHtml('No events match the current filters.')
         : '<div class="empty-state">Waiting for events</div>')
       + '</td></tr>';
@@ -3219,8 +3242,9 @@ function renderDoorMappings() {
   }
 }
 
-// Owner of #configUsers (User Settings tab): users grouped by logical group
-// plus the Group Mappings form.
+// Owner of #configUsers (User Settings tab): the Group Mappings form (raw
+// UniFi group name -> logical name used in rules), shown as "name -> code
+// chip" rows.
 function renderUserGroups() {
   const el = document.getElementById('configUsers');
   if (!el) return;
@@ -3229,19 +3253,6 @@ function renderUserGroups() {
     el.innerHTML = '<div style="color:var(--text-muted)">No users synced yet. Connect to your controller, then click Force User Sync in Test Tools to import users and their groups.</div>';
     return;
   }
-
-  // Show users grouped by their logical group
-  const groups = {};
-  users.forEach(u => {
-    if (!groups[u.group]) groups[u.group] = [];
-    groups[u.group].push(u.name);
-  });
-  let usersHtml = '<div style="margin-bottom:16px">';
-  for (const [group, members] of Object.entries(groups).sort()) {
-    usersHtml += `<div style="margin-bottom:12px"><div style="font-weight:600;color:var(--accent);margin-bottom:4px">${escapeHtml(group)} (${members.length})</div><div style="font-size:13px;color:var(--text-secondary)">${escapeHtml(members.join(', '))}</div></div>`;
-  }
-  usersHtml += '</div>';
-  el.innerHTML = usersHtml;
 
   const currentResolver = configData?.resolver?.unifi_group_to_group || {};
 
@@ -3260,35 +3271,29 @@ function renderUserGroups() {
   // so an admin can fix a mapping even if the controller is offline.
   Object.keys(currentResolver).forEach(k => rawUnifiGroups.add(k));
 
-  // Group Mappings Form (after rendering users). Rows come from the shared
-  // buildGroupMappingRows helper, which emits data-mapping-group attributes
-  // instead of element ids, so the same builder is safe to reuse in the setup
-  // wizard without colliding on duplicate ids. saveGroupMappings is scoped to
-  // this container so a save here never picks up the wizard's rows.
-  const configMappingRows = buildGroupMappingRows(Array.from(rawUnifiGroups).sort(), currentResolver);
-  const groupMappingsHtml = `
-    <div style="margin-bottom:20px" id="configGroupMappings">
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Map UniFi group names to logical names (used in your rules). Leave blank to use the UniFi name.</div>
-      <div style="overflow-x:auto">
-        <table class="event-table" style="min-width:500px">
-          <thead>
-            <tr>
-              <th style="width:50%">UniFi Group Name</th>
-              <th style="width:50%">Logical Name (for rules)</th>
-            </tr>
-          </thead>
-          <tbody>${configMappingRows}</tbody>
-        </table>
-      </div>
-      <button class="btn btn-primary" onclick="saveGroupMappings('#configGroupMappings')" style="margin-top:12px">Save Group Mappings</button>
-    </div>
-  `;
+  // Rows are built inline here (not via the shared buildGroupMappingRows
+  // helper the setup wizard uses) so this tab can show "name -> code chip"
+  // rows instead of a table, while still emitting data-mapping-group (not an
+  // id) so saveGroupMappings's scoped query and armDirtySave keep working
+  // exactly as before.
+  const chipRows = Array.from(rawUnifiGroups).sort().map((groupName) => {
+    const mapped = currentResolver[groupName];
+    const logical = (mapped !== undefined && mapped !== null && mapped !== '') ? mapped : groupName;
+    return `<div style="display:flex;align-items:center;gap:10px">`
+      + `<span style="color:var(--text-secondary)">${escapeHtml(groupName)}</span>`
+      + `<span style="color:var(--text-muted)">&rarr;</span>`
+      + `<input class="uchip" type="text" data-mapping-group="${escapeHtml(groupName)}" value="${escapeHtml(logical)}" placeholder="${escapeHtml(groupName)}" style="background:transparent;border:1px solid var(--border-light);border-radius:6px;padding:3px 10px;width:150px;font-size:12px;color:var(--text-primary)">`
+      + `</div>`;
+  }).join('');
 
-  // Append group mappings to users section
-  el.innerHTML += groupMappingsHtml;
+  el.innerHTML = `<div class="cmt" style="margin-bottom:12px">Map each UniFi group name to a logical name used in your rules. Leave blank to use the UniFi name.</div>`
+    + `<div class="panel" id="configGroupMappings" style="display:flex;flex-direction:column;gap:11px">`
+    + (chipRows || `<div style="color:var(--text-muted)">No UniFi groups discovered yet.</div>`)
+    + `<button class="btn btn-sm btn-primary" onclick="saveGroupMappings('#configGroupMappings')" style="align-self:flex-start;margin-top:4px">Save Group Mappings</button>`
+    + `</div>`;
 
-  // Save buttons hide until their section actually changes (and hide again
-  // when a successful save re-renders the section through loadConfig).
+  // Save button hides until this section actually changes (and hides again
+  // when a successful save re-renders it through loadConfig).
   armDirtySave('#configGroupMappings', 'button[onclick^="saveGroupMappings"]');
 }
 
@@ -3854,6 +3859,12 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
     return l.gating_door ? [l.gating_door] : [];
   };
   const statusBadge = (s) => keypadLockBadge(s, lockName(s.lock_id), doorsOf(s.lock_id));
+  // GROUP column: the aggregate itself carries no group field, so cross-
+  // reference the synced UniFi user list (by id) to find it.
+  const groupOf = (uid) => {
+    const match = (Array.isArray(users) ? users : []).find((x) => String(x.id) === String(uid));
+    return (match && match.group) || '';
+  };
   const rows = (Array.isArray(a.users) ? a.users : []).map((u) => {
     // A removal-in-progress user (code deleted everywhere, a lock has not yet
     // confirmed the clear) is not a live keypad user, so the UniFi-sync badge
@@ -3864,10 +3875,17 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
         + (u.user_missing ? ` <span class="badge warning" title="This user is no longer in the UniFi sync; the code still opens the deadbolts until removed">user missing</span>` : '');
     const perLock = (u.locks || []).map(statusBadge).join(' ');
     const uidArg = escapeHtml(JSON.stringify(String(u.user_id)));
-    return `<tr><td style="padding:4px 10px 4px 0">${escapeHtml(u.name || u.user_id || 'unnamed')}${badges}</td>`
-      + `<td style="padding:4px 10px 4px 0;font-family:monospace">${'*'.repeat(Math.max(1, u.pin_length || 0))}</td>`
-      + `<td style="padding:4px 10px 4px 0">${perLock}</td>`
-      + `<td style="padding:4px 0"><button class="btn btn-sm btn-secondary" onclick="removeKeypadUser(${uidArg})"${dis} title="Clears this user's code on every lock. Their UniFi PIN is not touched.">Remove</button></td></tr>`;
+    const grp = groupOf(u.user_id);
+    const groupCell = grp ? escapeHtml(grp) : `<span style="color:var(--text-muted)">&mdash;</span>`;
+    const pinCell = u.pin_length
+      ? `<span style="font-family:var(--mono)">${'*'.repeat(u.pin_length)}</span>`
+      : `<span style="color:var(--text-muted)">&mdash; not set</span>`;
+    return `<div class="trow" style="grid-template-columns:1.5fr 1fr 72px 1.3fr">`
+      + `<span style="color:var(--text-primary)">${escapeHtml(u.name || u.user_id || 'unnamed')}${badges}</span>`
+      + `<span style="color:var(--text-secondary)">${groupCell}</span>`
+      + `<span>${pinCell}</span>`
+      + `<span style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${perLock} <button class="btn btn-sm btn-secondary" onclick="removeKeypadUser(${uidArg})"${dis} title="Clears this user's code on every lock. Their UniFi PIN is not touched.">Remove</button></span>`
+      + `</div>`;
   }).join('');
   const rule = a.pin_rule || {};
   const lenRule = rule.conflict
@@ -3908,12 +3926,11 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
   // treated as ungated, never blocked).
   const banner = accessGatingBanner(a.access_gating, gated.length);
   return `<div style="font-size:12px">`
-    + `<div style="font-weight:600;margin-bottom:2px">Keypad users</div>`
-    + `<div style="color:var(--text-muted);margin-bottom:6px">One PIN per user. Saving writes the code to every paired lock the user may access (${usable.map((l) => escapeHtml(l.name || l.lock_id)).join(', ')}) and updates the user's UniFi Access PIN to match. ${escapeHtml(lenRule)}.${gatingLine ? ' ' + gatingLine : ''}</div>`
+    + `<div class="cmt" style="margin-bottom:10px">One PIN per user. Saving writes the code to every paired lock the user may access (${usable.map((l) => escapeHtml(l.name || l.lock_id)).join(', ')}) and updates the user's UniFi Access PIN to match. ${escapeHtml(lenRule)}.${gatingLine ? ' ' + gatingLine : ''}</div>`
     + banner
-    + (rows ? `<table style="border-collapse:collapse;font-size:12px"><tbody>${rows}</tbody></table>` : '')
-    + `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">`
-    + `<select id="kuUser" style="font-size:12px;padding:5px"${dis}><option value="">-- pick a user --</option>${userOpts}</select>`
+    + (rows ? `<div class="utable" style="margin-bottom:14px"><div class="thead" style="grid-template-columns:1.5fr 1fr 72px 1.3fr"><span>USER</span><span>GROUP</span><span>PIN</span><span>LOCKS</span></div>${rows}</div>` : '')
+    + `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">`
+    + `<select id="kuUser" style="font-size:12px;padding:6px 10px;width:auto"${dis}><option value="">-- pick a user --</option>${userOpts}</select>`
     + `<input id="kuPin" type="text" inputmode="numeric" autocomplete="off" maxlength="10" placeholder="PIN" style="font-size:12px;padding:6px;width:90px"${dis}>`
     + `<button class="btn btn-sm btn-primary" onclick="saveKeypadUser()"${dis} title="Writes the code to every paired lock and updates this user's UniFi Access PIN to match.">Save PIN</button>`
     + noUsersHint
