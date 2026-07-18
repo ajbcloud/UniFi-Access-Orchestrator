@@ -1791,24 +1791,15 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
   <!-- DEVICES (Z-Wave deadbolts + UniFi door mappings) -->
   <div id="deadbolt" class="page">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
-      <div>
-        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Devices</div>
-        <div style="font-size:12px;color:var(--text-muted)">The hardware this app talks to: Z-Wave smart deadbolts and the UniFi doors they map to. Door flows on the Automations tab decide when they act.</div>
-      </div>
+    <div class="page-head">
+      <div class="page-title"><span class="h1" role="heading" aria-level="1">Devices</span><span class="sub">Z-Wave deadbolts &middot; door mappings</span></div>
       <button class="btn btn-sm btn-secondary" onclick="loadSerialPorts()">Refresh Ports</button>
     </div>
-    <div class="config-section">
-      <div class="config-header">Deadbolts (Z-Wave)</div>
-      <div class="config-body" id="configZwave"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
-    </div>
-    <div class="config-section">
-      <div class="config-header">
-        Door Mappings
-        <button class="btn btn-sm btn-secondary" onclick="syncDoors()">Rediscover Doors</button>
-      </div>
-      <div class="config-body" id="configDoors"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
-    </div>
+    <div class="sect"><span class="lbl">&raquo; DEADBOLTS (Z-WAVE)</span><span class="rule"></span></div>
+    <div class="panel" id="configZwave" style="margin-bottom:22px"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
+
+    <div class="sect"><span class="lbl">&raquo; DOOR MAPPINGS</span><span class="rule"></span><button class="btn btn-sm btn-secondary" onclick="syncDoors()">Rediscover</button></div>
+    <div id="configDoors"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
   </div>
 
   <!-- VISUAL DESIGNER -->
@@ -3214,20 +3205,20 @@ function renderDoorMappings() {
   const hasDoors = Object.keys(discovered).length > 0 || Object.keys(configured).filter(k => !k.startsWith('_')).length > 0;
 
   if (hasDoors) {
-    let doorsHtml = '<table class="event-table"><thead><tr><th>Door Name</th><th>Door ID</th><th>Status</th></tr></thead><tbody>';
+    const cols = '1fr 1.4fr auto';
+    let rows = '';
     for (const [name, id] of Object.entries(discovered)) {
-      doorsHtml += `<tr><td style="color:var(--text-primary);font-weight:600">${escapeHtml(name)}</td><td style="font-family:var(--mono);font-size:12px">${escapeHtml(id)}</td><td><span class="badge success">Discovered</span></td></tr>`;
+      rows += `<div class="trow" style="grid-template-columns:${cols}"><span style="color:var(--text-primary);font-weight:600">${escapeHtml(name)}</span><span style="color:var(--text-muted);font-family:var(--mono)">${escapeHtml(id)}</span><span class="badge success">Discovered</span></div>`;
     }
     for (const [name, id] of Object.entries(configured)) {
       if (name.startsWith('_')) continue;
       if (!discovered[name]) {
-        doorsHtml += `<tr><td style="color:var(--text-primary)">${escapeHtml(name)}</td><td style="font-family:var(--mono);font-size:12px">${id ? escapeHtml(id) : '<em>No ID</em>'}</td><td><span class="badge ${id ? 'warning' : 'error'}">${id ? 'Not discovered' : 'Needs ID'}</span></td></tr>`;
+        rows += `<div class="trow" style="grid-template-columns:${cols}"><span style="color:var(--text-primary)">${escapeHtml(name)}</span><span style="color:var(--text-muted);font-family:var(--mono)">${id ? escapeHtml(id) : '<em>No ID</em>'}</span><span class="badge ${id ? 'warning' : 'error'}">${id ? 'Not discovered' : 'Needs ID'}</span></div>`;
       }
     }
-    doorsHtml += '</tbody></table>';
-    el.innerHTML = doorsHtml;
+    el.innerHTML = `<div class="utable"><div class="thead" style="grid-template-columns:${cols}"><span>DOOR</span><span>ID</span><span>STATUS</span></div>${rows}</div>`;
   } else {
-    el.innerHTML = '<div style="color:var(--text-muted)">No doors configured. Connect to your controller and click Rediscover Doors.</div>';
+    el.innerHTML = '<div class="panel" style="color:var(--text-muted)">No doors configured. Connect to your controller and click Rediscover.</div>';
   }
 }
 
@@ -3317,27 +3308,23 @@ function renderDeadboltDevices(force) {
   const zw = configData?.devices?.zwave || {};
   const enabled = zw.enabled === true;
   el.innerHTML = `
-    <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
-      Plug the Z-Wave USB stick (e.g. Zooz ZST39) into this machine, pick its port below, and save.
-      Likely Z-Wave sticks are marked. Lock pairing is done after the port is set.
-    </div>
-    <div id="zwaveSetupRow" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <select id="zwaveSerialPort" style="min-width:280px;font-size:12px;padding:6px">
+    <div class="cmt" style="border:none;padding:0;margin-bottom:14px">// plug the Z-Wave USB stick (e.g. Zooz ZST39) into this machine, pick its port below, and save. Lock pairing is done after the port is set.</div>
+    <div id="zwaveSetupRow" class="dot-row" style="flex-wrap:wrap">
+      <span class="k">serial port</span><span class="lead"></span>
+      <select id="zwaveSerialPort" style="min-width:240px;font-size:12px;padding:7px 10px;background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:6px;color:var(--text-primary);font-family:var(--mono)">
         <option value="">Scanning ports...</option>
       </select>
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-        <input type="checkbox" id="zwaveEnabled" ${enabled ? 'checked' : ''}> Enable Z-Wave deadbolt
-      </label>
+      <span style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary)">enable<label class="pill-switch"><input type="checkbox" id="zwaveEnabled" ${enabled ? 'checked' : ''}><span class="pill-knob"></span></label></span>
       <button class="btn btn-sm btn-primary" onclick="saveZwaveSetup()">Save</button>
     </div>
     <div id="zwaveSetupStatus" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
 
-    <div id="zwaveDeadboltBlock" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <div style="font-size:13px;font-weight:600">Deadbolt</div>
+    <div id="zwaveDeadboltBlock" style="margin-top:16px;padding-top:14px;border-top:1px dotted var(--border-light)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <div style="font-size:12px;font-weight:600;color:var(--text-primary);font-family:var(--mono)">Deadbolt</div>
         <button class="btn btn-sm btn-secondary" onclick="downloadDiagnostics()" title="One file with the app log, Z-Wave log, pairing history, and redacted config">Download Diagnostics</button>
       </div>
-      <div id="zwaveDeadboltStatusLine" style="font-size:12px;color:var(--text-muted);margin-bottom:8px"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
+      <div id="zwaveDeadboltStatusLine" class="cmt" style="border:none;padding:0;margin-bottom:10px"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap" id="zwaveDeadboltButtons"></div>
       <div id="zwaveAddDeadbolt" style="margin-top:10px"></div>
       <div id="zwavePairPanel" style="margin-top:10px"></div>
@@ -3367,7 +3354,7 @@ function renderZwavePairPanel(st) {
   const modeWord = st.mode === 'exclude' ? 'Unpair' : 'Pair';
   const cancelBtn = '<button class="btn btn-sm btn-secondary" onclick="cancelPairing()">Cancel</button>';
   const box = (inner, color) =>
-    `<div style="padding:12px;background:var(--bg-input);border:1px solid ${color || 'var(--border)'};border-radius:var(--radius);font-size:13px">${inner}</div>`;
+    `<div style="padding:14px 16px;background:var(--bg-secondary);border:1px solid ${color || 'var(--border-light)'};border-radius:8px;font-size:13px;font-family:var(--mono)">${inner}</div>`;
 
   switch (st.state) {
     case 'starting':
@@ -3600,7 +3587,7 @@ function buildDeadboltLocksTable(locks, pairingActive, catalog) {
       + `<td style="padding:4px 10px 4px 0;color:var(--text-muted)">${state}</td>`
       + `<td style="padding:4px 0">${unpair}</td></tr>`;
   }).join('');
-  return `<div style="font-size:12px"><div style="font-weight:600;margin-bottom:4px">Paired locks</div>`
+  return `<div style="font-size:12px;font-family:var(--mono)"><div style="font-weight:600;margin-bottom:6px;color:var(--text-primary)">Paired locks</div>`
     + `<table style="border-collapse:collapse;font-size:12px"><tbody>${cells}</tbody></table></div>`;
 }
 
@@ -3632,12 +3619,12 @@ function buildAddDeadboltForm(catalog) {
   if (!cat.length) return '';
   const mfrOpts = cat.map((m, i) =>
     `<option value="${i}">${escapeHtml(m.manufacturer)}</option>`).join('');
-  return `<details style="border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px">`
-    + `<summary style="cursor:pointer;font-size:13px;font-weight:600">Add a deadbolt</summary>`
-    + `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px">`
-    + `<select id="zwaveAddMfr" onchange="onAddMfrChange()" style="font-size:12px;padding:5px">${mfrOpts}</select>`
-    + `<select id="zwaveAddModel" onchange="onAddModelChange()" style="font-size:12px;padding:5px"></select>`
-    + `<input id="zwaveAddName" type="text" maxlength="40" placeholder="Name (e.g. Front Door)" style="font-size:12px;padding:6px;width:170px">`
+  return `<details>`
+    + `<summary class="add-dashed" style="cursor:pointer">+ Pair New Lock</summary>`
+    + `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px">`
+    + `<select id="zwaveAddMfr" onchange="onAddMfrChange()" style="font-size:12px;padding:7px 10px;background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:6px;color:var(--text-primary);font-family:var(--mono)">${mfrOpts}</select>`
+    + `<select id="zwaveAddModel" onchange="onAddModelChange()" style="font-size:12px;padding:7px 10px;background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:6px;color:var(--text-primary);font-family:var(--mono)"></select>`
+    + `<input id="zwaveAddName" type="text" maxlength="40" placeholder="Name (e.g. Front Door)" style="font-size:12px;padding:7px 10px;width:170px;background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:6px;color:var(--text-primary);font-family:var(--mono)">`
     + `<button class="btn btn-sm btn-primary" onclick="startPairing()">Pair this deadbolt</button>`
     + `</div>`
     + `<div id="zwaveAddGesture" style="margin-top:8px;font-size:12px;color:var(--text-secondary)"></div>`
@@ -3742,19 +3729,24 @@ function buildLockCard(l) {
   const automation = triggerDoors.length
     ? `Triggered by: <strong>${triggerDoors.map((d) => escapeHtml(d)).join('</strong>, <strong>')}</strong> <span style="color:var(--text-muted)">(edit on the door's card above)</span>`
     : 'Manual control only. Add this deadbolt to a door on the door\'s card above to retract it on entry.';
-  return `<div class="lock-card" id="zwaveLockCard_${cssId(l.lock_id)}" style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-top:10px">`
-    + `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">`
-    + `<div style="font-size:13px;font-weight:600">${title}</div>`
-    + `<div style="font-size:12px;color:var(--text-muted)">${escapeHtml(describeLockModel(ls))} · node ${escapeHtml(l.node_id)} · ${escapeHtml(describeLockSecurity(ls))}</div>`
+  const triggerStat = triggerDoors.length ? triggerDoors.map((d) => escapeHtml(d)).join(', ') : 'manual';
+  const statCell = (k, v, color) =>
+    `<div style="display:flex;flex-direction:column;gap:3px"><span style="color:var(--text-muted)">${k}</span><span style="color:${color || 'var(--text-primary)'}">${v}</span></div>`;
+  return `<div class="lock-card" id="zwaveLockCard_${cssId(l.lock_id)}" style="border:1px solid var(--border-light);border-radius:8px;background:var(--bg-secondary);padding:14px 16px;margin-top:10px;font-family:var(--mono)">`
+    + `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px">`
+    + `<div style="font-size:13px;font-weight:600;color:var(--text-primary)">${title}</div>`
+    + `<span class="badge ${boltBadge}"${boltTitle} style="text-transform:uppercase">${escapeHtml(bolt)}</span>`
     + `</div>`
-    + `<div style="font-size:12px;color:var(--text-muted);margin:4px 0 8px">${automation}</div>`
-    + `<div style="display:flex;gap:14px;align-items:center;font-size:12px;margin-bottom:8px">`
-    + `<span>Bolt: <span class="badge ${boltBadge}"${boltTitle}>${escapeHtml(bolt)}</span></span>`
-    + `<span>Battery: <span style="color:${batt.color || 'inherit'}">${escapeHtml(batt.label)}</span></span>`
-    + `<span>Link: <span style="color:${link.color}">${escapeHtml(link.label)}</span></span>`
+    + `<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">${escapeHtml(describeLockModel(ls))} &middot; node ${escapeHtml(l.node_id)}</div>`
+    + `<div style="font-size:12px;color:var(--text-muted);margin:0 0 12px">${automation}</div>`
+    + `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:11.5px;margin-bottom:14px">`
+    + statCell('battery', escapeHtml(batt.label), batt.color)
+    + statCell('link', escapeHtml(link.label), link.color)
+    + statCell('security', escapeHtml(describeLockSecurity(ls)))
+    + statCell('trigger', triggerStat)
     + `</div>`
     + `<div style="display:flex;gap:8px;flex-wrap:wrap">${buildLockCardButtons(l)}</div>`
-    + `<div id="zwaveDeadboltHealth_${cssId(l.lock_id)}" style="margin-top:8px;font-size:12px"></div>`
+    + `<div id="zwaveDeadboltHealth_${cssId(l.lock_id)}" style="margin-top:10px;font-size:12px"></div>`
     + `</div>`;
 }
 // After-unlock behavior is no longer a device-card control: it lives per edge
