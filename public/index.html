@@ -1898,11 +1898,13 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
   <!-- TEST TOOLS -->
   <div id="tools" class="page">
-    <div style="font-size:15px;font-weight:600;margin-bottom:16px">Test Tools</div>
+    <div class="page-head">
+      <div class="page-title"><span class="h1" role="heading" aria-level="1">Test Tools</span><span class="sub">simulate &middot; unlock &middot; diagnostics</span></div>
+    </div>
 
-    <div class="card">
-      <div class="card-title" role="heading" aria-level="2">Test Configured Rules</div>
-      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Pick a real user and door, run a preflight check, and simulate the rule end-to-end through the same path a real badge tap takes. By default no controller unlock is sent — flip <strong>Execute real unlock</strong> to verify the door physically opens.</p>
+    <div class="sect"><span class="lbl">&raquo; TEST CONFIGURED RULES</span><span class="rule"></span></div>
+    <div class="panel" style="margin-bottom:22px">
+      <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Pick a real user and door, run a preflight check, and simulate the rule end-to-end through the same path a real badge tap takes. By default no controller unlock is sent &mdash; flip <strong>Execute real unlock</strong> to verify the door physically opens.</div>
 
       <details class="help-blurb">
         <summary>Why a passing test can still fail at the door</summary>
@@ -1919,88 +1921,91 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
       <div id="testRulesContainer">Loading rules...</div>
     </div>
 
-    <div class="grid grid-2" style="margin-top:16px">
-      <div class="card">
-        <div class="card-title" role="heading" aria-level="2">Test Door Unlock</div>
-        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Click a door to send a remote unlock command via the API.</p>
-        <div class="door-grid" id="doorGrid">Loading doors...</div>
+    <div class="col2" style="grid-template-columns:1fr 1fr">
+      <div>
+        <div class="sect"><span class="lbl">&raquo; TEST DOOR UNLOCK</span><span class="rule"></span></div>
+        <div class="panel" style="margin-bottom:22px">
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Click a door to send a remote unlock command via the API.</div>
+          <div class="door-grid" id="doorGrid" style="text-align:center;font-family:var(--mono)">Loading doors...</div>
+        </div>
       </div>
 
-      <div class="card">
-        <div class="card-title" role="heading" aria-level="2">Custom Event Simulation</div>
-        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Manually build and send a synthetic event through the rules engine.</p>
+      <div>
+        <div class="sect"><span class="lbl">&raquo; EVENT SIMULATION</span><span class="rule"></span></div>
+        <div class="panel" style="margin-bottom:22px">
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Manually build and send a synthetic event through the rules engine.</div>
 
-        <div class="form-group">
-          <label class="form-label">Event Type</label>
-          <select id="simEventType" onchange="updateSimForm()">
-            <option value="access.door.unlock">Door Unlock (NFC / PIN / Face / Mobile)</option>
-            <option value="access.doorbell.completed">Doorbell Answered</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Location</label>
-          <select id="simLocation"></select>
-        </div>
-
-        <div id="simActorFields">
-          <div class="form-group">
-            <label class="form-label">User</label>
-            <select id="simUser">
-              <option value="">-- Select user --</option>
+          <div class="set-field">
+            <label>event type</label>
+            <select id="simEventType" onchange="updateSimForm()">
+              <option value="access.door.unlock">Door Unlock (NFC / PIN / Face / Mobile)</option>
+              <option value="access.doorbell.completed">Doorbell Answered</option>
             </select>
           </div>
-        </div>
 
-        <div id="simDoorbellFields" style="display:none">
-          <div class="form-group">
-            <label class="form-label">Reason Code</label>
-            <select id="simReasonCode">
-              <option value="107">107 - Admin unlocked door</option>
-              <option value="105">105 - Timed out</option>
-              <option value="106">106 - Declined</option>
-              <option value="108">108 - Visitor canceled</option>
-            </select>
+          <div class="set-field">
+            <label>location</label>
+            <select id="simLocation"></select>
           </div>
-          <div class="form-group">
-            <label class="form-label">Answering Device (for fallback routing)</label>
-            <select id="simDevice">
-              <option value="">-- None --</option>
-            </select>
-          </div>
-        </div>
 
-        <button class="btn btn-primary" onclick="simulateEvent()">Simulate Event</button>
-        <div id="simResult" style="margin-top:12px;font-size:13px"></div>
+          <div id="simActorFields">
+            <div class="set-field">
+              <label>user</label>
+              <select id="simUser">
+                <option value="">-- Select user --</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="simDoorbellFields" style="display:none">
+            <div class="set-field">
+              <label>reason code</label>
+              <select id="simReasonCode">
+                <option value="107">107 - Admin unlocked door</option>
+                <option value="105">105 - Timed out</option>
+                <option value="106">106 - Declined</option>
+                <option value="108">108 - Visitor canceled</option>
+              </select>
+            </div>
+            <div class="set-field">
+              <label>answering device (for fallback routing)</label>
+              <select id="simDevice">
+                <option value="">-- None --</option>
+              </select>
+            </div>
+          </div>
+
+          <button class="btn btn-sm btn-primary" onclick="simulateEvent()">Simulate Event</button>
+          <div id="simResult" style="margin-top:12px;font-size:13px"></div>
+        </div>
       </div>
     </div>
 
-    <div class="card" style="margin-top:16px">
-      <div class="card-title" role="heading" aria-level="2">Quick Actions</div>
+    <div class="sect"><span class="lbl">&raquo; QUICK ACTIONS</span><span class="rule"></span></div>
+    <div class="panel" style="margin-bottom:22px">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-primary" onclick="forceSync()">Force User Sync</button>
-        <button class="btn btn-primary" onclick="reloadService()">Reload service</button>
-        <button class="btn btn-primary" onclick="fetchHealth()">Refresh Health</button>
+        <button class="btn btn-sm btn-primary" onclick="forceSync()">Force User Sync</button>
+        <button class="btn btn-sm btn-primary" onclick="reloadService()">Reload Service</button>
+        <button class="btn btn-sm btn-primary" onclick="fetchHealth()">Refresh Health</button>
       </div>
     </div>
 
-    <div class="card" style="margin-top:16px">
-      <div class="card-title" role="heading" aria-level="2">Connectivity Test</div>
+    <div class="sect"><span class="lbl">&raquo; CONNECTIVITY TEST</span><span class="rule"></span></div>
+    <div class="panel" style="margin-bottom:22px">
       <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
         Test the connection to your UniFi controller without leaving the app.
       </div>
-      <button class="btn btn-primary" onclick="runConnectivityTest()" id="connTestBtn">Test Connection</button>
+      <button class="btn btn-sm btn-primary" onclick="runConnectivityTest()" id="connTestBtn">Test Connection</button>
       <div id="connTestResults" style="margin-top:16px"></div>
     </div>
 
-    <div class="card" style="margin-top:16px">
-      <div class="card-title" role="heading" aria-level="2" style="cursor:pointer;display:flex;align-items:center;gap:8px" onclick="toggleRawPayloads()">
-        Diagnostics: recent raw events <span id="rawPayloadToggle" style="font-size:10px;color:var(--text-muted)">&#9654;</span>
+    <div class="sect"><span class="lbl">&raquo; DIAGNOSTICS: RECENT RAW EVENTS</span><span class="rule"></span></div>
+    <div class="panel">
+      <div style="cursor:pointer;display:flex;align-items:center;gap:8px;margin-bottom:8px" onclick="toggleRawPayloads()">
+        <span style="font-size:12.5px;color:var(--text-primary)">Show / hide captured payloads</span> <span id="rawPayloadToggle" style="font-size:10px;color:var(--text-muted)">&#9654;</span>
       </div>
-      <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
-        Advanced. Inspect the raw JSON payloads received from UniFi (webhook or WebSocket), for verifying event format and troubleshooting field mapping. Collapsed by default.
-      </div>
-      <button class="btn btn-primary" onclick="loadRawPayloads()">Refresh payloads</button>
+      <div class="cmt" style="border:none;padding:0;margin-bottom:12px">// advanced: inspect the raw JSON payloads received from UniFi (webhook or WebSocket), for verifying event format and troubleshooting field mapping. collapsed by default.</div>
+      <button class="btn btn-sm btn-primary" onclick="loadRawPayloads()">Refresh payloads</button>
       <div id="rawPayloadsContainer" style="display:none;margin-top:12px">
         <div id="rawPayloadsList" style="font-family:var(--mono);font-size:12px;max-height:500px;overflow-y:auto"></div>
       </div>
