@@ -22,6 +22,16 @@
    (html[data-theme="dark"]) or when the system prefers dark and no explicit
    choice is stored.
    ------------------------------------------------------------------------- */
+/* Self-hosted IBM Plex (offline; no CDN fetch). Mono is the primary UI voice;
+   Sans is the fallback. Files ship in public/fonts and are served statically. */
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;src:url('/fonts/ibm-plex-mono-400.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:500;font-display:swap;src:url('/fonts/ibm-plex-mono-500.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:600;font-display:swap;src:url('/fonts/ibm-plex-mono-600.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:700;font-display:swap;src:url('/fonts/ibm-plex-mono-700.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:400;font-display:swap;src:url('/fonts/ibm-plex-sans-400.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:500;font-display:swap;src:url('/fonts/ibm-plex-sans-500.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:600;font-display:swap;src:url('/fonts/ibm-plex-sans-600.woff2') format('woff2');}
+
 :root {
   /* Raw palette references */
   --pal-tennis: #D4FF3B;
@@ -30,46 +40,47 @@
   --pal-goddess: #79A88A;
   --pal-peach: #FF715B;
 
-  /* ---- Light theme (concrete grey + dark forest-green + neon) ---- */
-  --bg-primary: #C6C7C2;
-  --bg-secondary: #CFD0CB;
-  --bg-card: #DBDCD7;
-  --bg-elev: #E2E3DE;
-  --bg-hover: #BCBDB7;
-  --bg-input: #D4D5D0;
-  --banner-bg: #020C07;      /* near-black green banner on the concrete body */
-  --banner-fg: #EDF3ED;      /* light text on the green banner */
-  --banner-fg-dim: #B7CDBE;  /* muted light text (inactive tabs, uptime) */
-  --banner-accent: #C7E62E;  /* neon logo/active accent on the banner */
-  --card-accent: #1B5E33;    /* dark-green edge stripe on cards */
-  --border: #A7A9A3;
-  --border-light: #B8BAB4;
-  --text-primary: #0C2414;
-  --text-secondary: #35473C;
-  --text-muted: #414B45;
+  /* ---- Light theme (warm grey field + dark forest-green + neon) ---- */
+  /* Values track the "Operator Console" comp; app variable names are kept. */
+  --bg-primary: #C7C8C3;     /* comp --bg */
+  --bg-secondary: #CFD0CB;   /* comp --panel-2 */
+  --bg-card: #D7D8D3;        /* comp --panel */
+  --bg-elev: #E0E1DC;
+  --bg-hover: #C2C3BE;
+  --bg-input: #CFD0CB;       /* inputs sit on panel-2 with a strong border */
+  --banner-bg: #05140C;      /* the rail stays a constant deep forest */
+  --banner-fg: #EAF3EC;
+  --banner-fg-dim: #8AA997;
+  --banner-accent: #D4FF3B;
+  --card-accent: #15522A;
+  --border: #B6B8B2;         /* comp --line (subtle divider) */
+  --border-light: #A4A69F;   /* comp --line-strong (chips/inputs/leaders) */
+  --text-primary: #0C2414;   /* comp --ink */
+  --text-secondary: #3B4B41; /* comp --ink-2 */
+  --text-muted: #5E6C62;     /* comp --ink-3 */
 
-  /* accent = the readable, text-safe green ("dark highlight" on concrete) */
-  --accent: #15522A;
+  /* accent = the readable, text-safe green ("dark highlight" on the grey) */
+  --accent: #15522A;         /* comp --neon-ink / --accent */
   --accent-hover: #0E3D1F;
-  --accent-dim: rgba(21,82,42,0.14);
+  --accent-dim: rgba(21,82,42,0.12);
   --on-accent: #EEF3EC;
 
   /* neon = the signature yellow-green highlight used for pops in both modes */
-  --neon: #C7E62E;
-  --neon-strong: #B4D822;
-  --neon-dim: #D3E88C;
-  --on-neon: #16320A;
-  --neon-glow: rgba(150,190,20,0.45);
+  --neon: #B7D416;           /* comp --neon (light) */
+  --neon-strong: #A6C112;
+  --neon-dim: rgba(183,212,22,0.16);
+  --on-neon: #16320A;        /* comp --on-neon (light) */
+  --neon-glow: rgba(150,190,20,0.40);
 
-  --green: #227A43;
-  --green-dim: rgba(34,122,67,0.16);
+  --green: #227A43;          /* comp --success */
+  --green-dim: rgba(34,122,67,0.14);
   --on-success: #FFFFFF;
 
-  --yellow: #7E5410;
-  --yellow-dim: rgba(126,84,16,0.16);
+  --yellow: #8A5D12;         /* comp --warn (light) */
+  --yellow-dim: rgba(138,93,18,0.16);
   --on-warning: #FFFFFF;
 
-  --red: #CF3A2A;
+  --red: #CF3A2A;            /* comp --danger */
   --red-hover: #B22E20;
   --red-dim: rgba(207,58,42,0.14);
   --on-danger: #FFFFFF;
@@ -77,26 +88,30 @@
   --sage: #3E6B50;
   --sage-dim: rgba(62,107,80,0.18);
 
-  --blue-dim: #D3E88C; /* legacy alias -> neon tint (more neon on the dash) */
+  --blue-dim: rgba(183,212,22,0.14); /* legacy alias -> neon tint */
 
-  /* concrete = neutral grey; a real pop only against the dark field, so its
-     dark-mode values below are the loud ones. Light keeps a subtle grey. */
-  --concrete: #C6C7C2;
-  --concrete-strong: #B4B6B0;
+  --concrete: #C7C8C3;
+  --concrete-strong: #B6B8B2;
   --on-concrete: #0C2414;
-  --btn2-bg: #BCBDB7;
+  --btn2-bg: #E4E5E0;        /* comp --btn2-bg (light) */
   --btn2-fg: #0C2414;
-  --btn2-hover: #ADAFA9;
-  --eyebrow: #414B45;
-  --mono-muted: #414B45;
+  --btn2-hover: #D8D9D4;
+  --btn2-border: #B6B8B2;    /* comp --btn2-border (light) */
+  --eyebrow: #5E6C62;
+  --mono-muted: #5E6C62;
+
+  --grid: rgba(21,82,42,0.06);  /* command-area dot grid */
+  --seg-off: #5E6C62;           /* segmented-toggle off-state text */
 
   --overlay: rgba(12,36,20,0.5);
   --shadow: rgba(20,30,25,0.22);
 
   --radius: 8px;
-  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  --font-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  --radius-lg: 10px;
+  --radius-sm: 6px;
+  --font: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'IBM Plex Mono', 'SF Mono', 'Consolas', ui-monospace, monospace;
+  --font-mono: 'IBM Plex Mono', 'SF Mono', 'Consolas', ui-monospace, monospace;
 
   color-scheme: light;
 }
@@ -128,7 +143,7 @@
   --neon: #D4FF3B;
   --neon-strong: #E4FF6B;
   --neon-dim: rgba(212,255,59,0.15);
-  --on-neon: #020C07;
+  --on-neon: #04120A;
   --neon-glow: rgba(212,255,59,0.35);
 
   --green: #79A88A;
@@ -155,8 +170,11 @@
   --btn2-bg: #C6C7C2;
   --btn2-fg: #0C2414;
   --btn2-hover: #B4B6B0;
+  --btn2-border: #C6C7C2;
   --eyebrow: #A9ACA6;
   --mono-muted: #AEB2AD;
+  --grid: rgba(121,168,138,0.05);
+  --seg-off: #A7C4B2;
 
   --overlay: rgba(0,0,0,0.65);
   --shadow: rgba(0,0,0,0.55);
@@ -192,7 +210,7 @@
     --neon: #D4FF3B;
     --neon-strong: #E4FF6B;
     --neon-dim: rgba(212,255,59,0.15);
-    --on-neon: #020C07;
+    --on-neon: #04120A;
     --neon-glow: rgba(212,255,59,0.35);
 
     --green: #79A88A;
@@ -219,8 +237,11 @@
     --btn2-bg: #C6C7C2;
     --btn2-fg: #0C2414;
     --btn2-hover: #B4B6B0;
+    --btn2-border: #C6C7C2;
     --eyebrow: #A9ACA6;
     --mono-muted: #AEB2AD;
+    --grid: rgba(121,168,138,0.05);
+    --seg-off: #A7C4B2;
 
     --overlay: rgba(0,0,0,0.65);
     --shadow: rgba(0,0,0,0.55);
@@ -229,214 +250,151 @@
   }
 }
 
-/* -------------------------------------------------------------------------
-   Dark mode: concrete-grey cards.
-   The cards render on the light (concrete) palette while the banner and page
-   stay near-black. We re-scope the full token set onto the card containers so
-   everything inside (text, inputs, buttons, badges, the version chip) inherits
-   light-appropriate values; only the card surface is nudged a little darker
-   than the light-mode concrete. Covers both explicit dark and system dark.
-   ------------------------------------------------------------------------- */
-:root[data-theme="dark"] .card,
-:root[data-theme="dark"] .config-section,
-:root[data-theme="dark"] .door-card,
-:root[data-theme="dark"] .rule-card,
-:root[data-theme="dark"] .test-rule-card {
-  --bg-primary: #BABCB6;
-  --bg-card: #BABCB6;
-  --bg-secondary: #C6C7C2;
-  --bg-elev: #CFD0CB;
-  --bg-hover: #ADAFA9;
-  --bg-input: #CDCEC9;
-  --border: #9EA09A;
-  --border-light: #AEB0AA;
-  --text-primary: #0C2414;
-  --text-secondary: #35473C;
-  --text-muted: #414B45;
-  --accent: #15522A;
-  --accent-hover: #0E3D1F;
-  --accent-dim: rgba(21,82,42,0.14);
-  --on-accent: #EEF3EC;
-  --neon: #C7E62E;
-  --neon-strong: #B4D822;
-  --neon-dim: #D3E88C;
-  --on-neon: #16320A;
-  --neon-glow: rgba(150,190,20,0.45);
-  --green: #227A43;
-  --green-dim: rgba(34,122,67,0.16);
-  --on-success: #FFFFFF;
-  --yellow: #7E5410;
-  --yellow-dim: rgba(126,84,16,0.16);
-  --on-warning: #FFFFFF;
-  --red: #CF3A2A;
-  --red-hover: #B22E20;
-  --red-dim: rgba(207,58,42,0.14);
-  --on-danger: #FFFFFF;
-  --sage: #3E6B50;
-  --sage-dim: rgba(62,107,80,0.18);
-  --blue-dim: #D3E88C;
-  --btn2-bg: #A6A8A2;
-  --btn2-fg: #0C2414;
-  --btn2-hover: #999B95;
-  --eyebrow: #414B45;
-  --mono-muted: #414B45;
-  --card-accent: #1B5E33;
-  --shadow: rgba(20,30,25,0.22);
-  color: var(--text-primary);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) .card,
-  :root:not([data-theme]) .config-section,
-  :root:not([data-theme]) .door-card,
-  :root:not([data-theme]) .rule-card,
-  :root:not([data-theme]) .test-rule-card {
-    --bg-primary: #BABCB6;
-    --bg-card: #BABCB6;
-    --bg-secondary: #C6C7C2;
-    --bg-elev: #CFD0CB;
-    --bg-hover: #ADAFA9;
-    --bg-input: #CDCEC9;
-    --border: #9EA09A;
-    --border-light: #AEB0AA;
-    --text-primary: #0C2414;
-    --text-secondary: #35473C;
-    --text-muted: #414B45;
-    --accent: #15522A;
-    --accent-hover: #0E3D1F;
-    --accent-dim: rgba(21,82,42,0.14);
-    --on-accent: #EEF3EC;
-    --neon: #C7E62E;
-    --neon-strong: #B4D822;
-    --neon-dim: #D3E88C;
-    --on-neon: #16320A;
-    --neon-glow: rgba(150,190,20,0.45);
-    --green: #227A43;
-    --green-dim: rgba(34,122,67,0.16);
-    --on-success: #FFFFFF;
-    --yellow: #7E5410;
-    --yellow-dim: rgba(126,84,16,0.16);
-    --on-warning: #FFFFFF;
-    --red: #CF3A2A;
-    --red-hover: #B22E20;
-    --red-dim: rgba(207,58,42,0.14);
-    --on-danger: #FFFFFF;
-    --sage: #3E6B50;
-    --sage-dim: rgba(62,107,80,0.18);
-    --blue-dim: #D3E88C;
-    --btn2-bg: #A6A8A2;
-    --btn2-fg: #0C2414;
-    --btn2-hover: #999B95;
-    --eyebrow: #414B45;
-    --mono-muted: #414B45;
-    --card-accent: #1B5E33;
-    --shadow: rgba(20,30,25,0.22);
-    color: var(--text-primary);
-  }
-}
+/* Dark-mode cards now use the real dark panel tokens (the old "light cards on
+   a dark shell" override was removed for the Operator Console look). */
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  font-family: var(--font);
+  font-family: var(--mono);
   background: var(--bg-primary);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.5;
   min-height: 100vh;
   transition: background-color 0.2s ease, color 0.2s ease;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Header */
-.header {
-  background: var(--banner-bg);
-  border-bottom: 1px solid var(--border);
-  padding: 0 24px;
-  height: 56px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  position: sticky;
-  top: 0;
-  z-index: 100;
-}
+/* -------------------------------------------------------------------------
+   Operator Console shell: fixed left rail + command bar + scrolling content.
+   ------------------------------------------------------------------------- */
+.app-shell { height: 100vh; display: grid; grid-template-columns: 232px 1fr; overflow: hidden; }
 
-.header-left { display: flex; align-items: center; gap: 16px; }
+/* Left rail: a constant deep-forest chrome in BOTH themes */
+.rail { background: #05140C; border-right: 1px solid #123E20; display: flex; flex-direction: column; min-height: 0; }
+.rail-brand { padding: 18px 18px 16px; border-bottom: 1px solid #123E20; }
+.rail-brand .logo { font-size: 15px; font-weight: 700; letter-spacing: -0.3px; color: #EAF3EC; }
+.rail-brand .logo span { color: #D4FF3B; }
+.rail-brand .sub { font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: #6E8C79; margin-top: 3px; }
+.rail-nav { padding: 12px 10px; display: flex; flex-direction: column; gap: 1px; flex: 1; overflow-y: auto; }
+.rail-navlabel { font-size: 10px; letter-spacing: 0.18em; color: #4F6B59; padding: 6px 10px 8px; }
+.rail-foot { padding: 14px 18px; border-top: 1px solid #123E20; font-size: 11px; color: #6E8C79; line-height: 1.9; }
+.rail-foot .r { display: flex; justify-content: space-between; }
+.rail-foot .r span:last-child { color: #9FC7AC; }
+.rail-foot .on { display: flex; align-items: center; gap: 7px; color: #9FC7AC; }
+.rail-foot .on .status-dot { background: #79A88A; }
+.rail-foot .build { color: #D4FF3B !important; }
 
-.logo {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--banner-fg);
-  letter-spacing: -0.3px;
-}
-
-.logo span { color: var(--banner-accent); }
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.status-pill.online { background: var(--green-dim); color: var(--green); }
-.status-pill.offline { background: var(--red-dim); color: var(--red); }
-.status-pill.reconnecting { background: var(--yellow-dim); color: var(--yellow); }
-.status-pill.connecting { background: var(--sage-dim); color: var(--sage); }
-
-/* The status pill lives on the banner; keep its text bright enough to read on
-   the dark-green (light mode) or near-black (dark mode) banner background. */
-.header .status-pill { background: rgba(255,255,255,0.10); }
-.header .status-pill.online { color: #7FD69A; }
-.header .status-pill.offline { color: #FF8F7C; }
-.header .status-pill.reconnecting { color: #F0C24A; }
-.header .status-pill.connecting { color: #B7CDBE; }
-
-.status-dot {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: pulse 2s ease infinite;
-}
-
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-
-/* Tabs */
-.tabs {
-  display: flex;
-  gap: 0;
-  background: var(--banner-bg);
-  border-bottom: 1px solid var(--border);
-  padding: 0 24px;
-}
-
+/* Nav items = the tab bar restyled vertical (keeps #tabBar/.tab/role=tab). */
+.tabs { display: flex; flex-direction: column; gap: 1px; background: none; border: none; padding: 0; }
 .tab {
-  padding: 12px 20px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--banner-fg-dim);
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: all 0.15s;
-  user-select: none;
-  /* the tabs are real buttons now (keyboard operable); strip the UA chrome */
-  background: none;
-  border-top: none;
-  border-left: none;
-  border-right: none;
-  font-family: inherit;
-  line-height: normal;
+  display: block; text-align: left; width: 100%;
+  padding: 9px 14px; border-radius: 7px;
+  font-family: var(--mono); font-size: 12.5px; font-weight: 500;
+  color: #8AA997; cursor: pointer; user-select: none;
+  background: none; border: none; line-height: normal;
+  transition: background 0.12s ease, color 0.12s ease;
 }
+.tab:hover { color: #C7E0CE; background: rgba(212,255,59,0.05); }
+.tab.active { color: #D4FF3B; background: rgba(212,255,59,0.10); box-shadow: inset 3px 0 0 #D4FF3B; font-weight: 600; }
 
-.tab:hover { color: var(--banner-fg); }
-.tab.active { color: var(--banner-fg); border-bottom-color: var(--neon); }
+/* Main column: command bar on top, scrolling content below */
+.main-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.cmdbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--bg-secondary); flex: none; }
+.cmd-left { font-size: 12.5px; color: var(--text-muted); }
+.cmd-cursor { display: inline-block; width: 8px; height: 15px; background: var(--neon); margin-left: 6px; vertical-align: -2px; animation: blink 1.1s step-end infinite; }
+.cmd-right { display: flex; align-items: center; gap: 16px; }
+.cmd-ctrl { font-size: 12px; color: var(--text-muted); }
+.cmd-clock { font-size: 12px; color: var(--text-primary); }
+@keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
 
-/* Main content */
-.main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+/* Status pill (kept for updateStatus); compact in the command bar */
+.status-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
+.status-pill.online { color: var(--green); }
+.status-pill.offline { color: var(--red); }
+.status-pill.reconnecting { color: var(--yellow); }
+.status-pill.connecting { color: var(--sage); }
+.status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 2s ease infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+/* In the command bar the CTRL host carries the label, so show only the dot. */
+.cmdbar .status-pill span { display: none; }
+
+/* Segmented toggle (theme switch) */
+.seg { display: inline-flex; gap: 3px; padding: 3px; border-radius: 999px; border: 1px solid var(--border-light); }
+.seg button { border: none; background: transparent; cursor: pointer; font-family: var(--mono); font-size: 11.5px; font-weight: 600; padding: 5px 12px; border-radius: 999px; color: var(--seg-off); transition: all 0.15s ease; }
+.seg button.on { background: var(--neon); color: var(--on-neon); }
+
+/* Content area: subtle dot grid + page padding */
+.main { flex: 1; overflow-y: auto; padding: 22px; max-width: none; margin: 0; background-image: radial-gradient(var(--grid) 1px, transparent 1px); background-size: 22px 22px; }
 .page { display: none; }
 .page.active { display: block; }
+
+/* -------------------------------------------------------------------------
+   Shared console components reused by every reskinned page
+   ------------------------------------------------------------------------- */
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.page-title { display: flex; align-items: baseline; gap: 12px; }
+.page-title h1, .page-title .h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; color: var(--text-primary); margin: 0; }
+.page-title .sub { font-size: 12px; color: var(--text-muted); font-weight: 400; }
+
+/* » section header + hairline rule */
+.sect { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; margin-top: 22px; }
+.sect:first-child { margin-top: 0; }
+.sect .lbl { color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: 0.15em; white-space: nowrap; }
+.sect .meta { font-size: 10.5px; color: var(--text-muted); white-space: nowrap; }
+.sect .rule { flex: 1; height: 1px; background: var(--border); }
+.sect .live { font-size: 10.5px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.sect .live .status-dot { background: var(--green); }
+
+/* Panel + dot-leader key/value rows */
+.panel { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-card); padding: 16px 18px; }
+.panel.flush { padding: 0; overflow: hidden; }
+.dot-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+.dot-row + .dot-row { margin-top: 11px; }
+.dot-row .k { color: var(--text-muted); }
+.dot-row .lead { flex: 1; border-bottom: 1px dotted var(--border-light); align-self: center; }
+.dot-row .v { color: var(--text-primary); }
+
+/* Chips */
+.uchip { font-size: 11.5px; color: var(--text-primary); border: 1px solid var(--border-light); padding: 4px 10px; border-radius: var(--radius-sm); display: inline-flex; align-items: center; gap: 6px; }
+.uchip.on { background: var(--neon); color: var(--on-neon); border-color: transparent; font-weight: 600; }
+.uchip.add { color: var(--accent); border-style: dashed; cursor: pointer; }
+
+/* Dashed add affordance */
+.add-dashed { display: block; text-align: center; border: 1px dashed var(--border-light); border-radius: var(--radius); color: var(--accent); font-size: 12px; font-weight: 600; padding: 10px; cursor: pointer; background: none; width: 100%; font-family: var(--mono); }
+.add-dashed:hover { background: var(--accent-dim); }
+
+/* Stat strip (dashboard) */
+.stat-strip { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-card); overflow: hidden; display: grid; grid-template-columns: repeat(4, 1fr); }
+.stat { padding: 18px 20px; border-right: 1px solid var(--border); position: relative; }
+.stat:last-child { border-right: none; }
+.stat .k { font-size: 10.5px; letter-spacing: 0.13em; color: var(--text-muted); margin-bottom: 12px; }
+.stat .n { font-size: 36px; font-weight: 600; line-height: 1; letter-spacing: -0.02em; color: var(--text-primary); }
+.stat .s { font-size: 11.5px; color: var(--text-secondary); margin-top: 10px; }
+.stat.accent::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--neon); }
+.stat.accent .k { color: var(--accent); }
+@media (max-width: 760px) { .stat-strip { grid-template-columns: repeat(2, 1fr); } }
+
+/* Console tables (grid-based; each table sets its own column template inline) */
+.utable { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-card); overflow: hidden; }
+.utable .thead, .utable .trow { display: grid; gap: 12px; align-items: center; }
+.utable .thead { padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--bg-secondary); font-size: 10px; letter-spacing: 0.1em; color: var(--text-muted); }
+.utable .trow { padding: 11px 18px; border-bottom: 1px solid var(--border); font-size: 11.5px; }
+.utable .trow:last-child { border-bottom: none; }
+.utable .trow.fail { position: relative; }
+.utable .trow.fail::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--red); }
+.utable .trow:hover { background: var(--bg-hover); }
+
+/* Two-column responsive split used by several pages */
+.col2 { display: grid; grid-template-columns: 1fr 1.35fr; gap: 22px; }
+@media (max-width: 1000px) { .col2 { grid-template-columns: 1fr; } }
+
+/* Result cells / status text + code-comment line */
+.res-ok { color: var(--green); }
+.res-skip { color: var(--yellow); }
+.res-fail { color: var(--red); }
+.cmt { font-size: 11px; color: var(--text-muted); }
 
 /* Cards */
 .grid { display: grid; gap: 16px; }
@@ -1373,33 +1331,53 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 </head>
 <body>
 
-<div class="header">
-  <div class="header-left">
-    <div class="logo"><span>UniFi Access</span> Orchestrator</div>
-    <div id="statusPill" class="status-pill connecting" title="UniFi controller link (not the Z-Wave lock)">
-      <div class="status-dot" aria-hidden="true"></div>
-      <span>Connecting</span>
+<div class="app-shell">
+
+  <aside class="rail">
+    <div class="rail-brand">
+      <div class="logo">UniFi <span>Access</span></div>
+      <div class="sub">Orchestrator</div>
     </div>
-  </div>
-  <div style="display:flex;align-items:center;gap:12px">
-    <div style="font-size:12px;color:var(--banner-fg-dim)" id="uptimeDisplay"></div>
-    <button class="btn btn-sm btn-secondary" id="themeToggle" onclick="toggleTheme()" title="Switch color theme" aria-label="Switch color theme">&#127769; Dark</button>
-    <button class="btn btn-sm btn-secondary" id="headerSetupBtn" onclick="showSetupWizard()" title="Controller connection and setup">&#9881; Setup</button>
-  </div>
-</div>
+    <nav class="rail-nav">
+      <div class="rail-navlabel">NAVIGATION</div>
+      <div class="tabs" id="tabBar" role="tablist" aria-label="Main sections">
+        <button class="tab active" role="tab" data-page="dashboard" aria-selected="true" tabindex="0">Dashboard</button>
+        <button class="tab" role="tab" data-page="events" aria-selected="false" tabindex="-1">Live Events</button>
+        <button class="tab" role="tab" data-page="config" aria-selected="false" tabindex="-1">Automations</button>
+        <button class="tab" role="tab" data-page="keypad" aria-selected="false" tabindex="-1">User Settings</button>
+        <button class="tab" role="tab" data-page="deadbolt" aria-selected="false" tabindex="-1">Devices</button>
+        <button class="tab" role="tab" data-page="designer" aria-selected="false" tabindex="-1">Visual Designer</button>
+        <button class="tab" role="tab" data-page="settings" aria-selected="false" tabindex="-1">Settings</button>
+        <button class="tab" role="tab" data-page="tools" aria-selected="false" tabindex="-1">Test Tools</button>
+      </div>
+    </nav>
+    <div class="rail-foot">
+      <div class="on"><div class="status-dot" aria-hidden="true"></div>ONLINE</div>
+      <div class="r"><span>UPTIME</span><span id="uptimeDisplay"></span></div>
+      <div class="r"><span>BUILD</span><span class="build" id="railBuild">&mdash;</span></div>
+    </div>
+  </aside>
 
-<div class="tabs" id="tabBar" role="tablist" aria-label="Main sections">
-  <button class="tab active" role="tab" data-page="dashboard" aria-selected="true" tabindex="0">Dashboard</button>
-  <button class="tab" role="tab" data-page="events" aria-selected="false" tabindex="-1">Live Events</button>
-  <button class="tab" role="tab" data-page="config" aria-selected="false" tabindex="-1">Automations</button>
-  <button class="tab" role="tab" data-page="keypad" aria-selected="false" tabindex="-1">User Settings</button>
-  <button class="tab" role="tab" data-page="deadbolt" aria-selected="false" tabindex="-1">Devices</button>
-  <button class="tab" role="tab" data-page="designer" aria-selected="false" tabindex="-1">Visual Designer</button>
-  <button class="tab" role="tab" data-page="settings" aria-selected="false" tabindex="-1">Settings</button>
-  <button class="tab" role="tab" data-page="tools" aria-selected="false" tabindex="-1">Test Tools</button>
-</div>
+  <div class="main-col">
 
-<div class="main">
+    <div class="cmdbar">
+      <div class="cmd-left">orchestrator<span class="cmd-cursor" aria-hidden="true"></span></div>
+      <div class="cmd-right">
+        <span class="cmd-ctrl">CTRL <span id="cmdHost" style="color:var(--text-primary)">&mdash;</span></span>
+        <div id="statusPill" class="status-pill connecting" title="UniFi controller link (not the Z-Wave lock)">
+          <div class="status-dot" aria-hidden="true"></div>
+          <span>Connecting</span>
+        </div>
+        <span class="cmd-clock" id="cmdClock">--:--:--</span>
+        <button class="btn btn-sm btn-secondary" id="headerSetupBtn" onclick="showSetupWizard()" title="Controller connection and setup">Setup</button>
+        <span class="seg" role="group" aria-label="Color theme">
+          <button type="button" id="segLight" onclick="setTheme('light')">Light</button>
+          <button type="button" id="segDark" onclick="setTheme('dark')">Dark</button>
+        </span>
+      </div>
+    </div>
+
+    <div class="main">
 
   <!-- SETUP WIZARD (guided first-run flow; also reachable any time via the
        header Setup button, the tray, and the app menu) -->
@@ -1988,7 +1966,9 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
     </div>
   </div>
 
-</div>
+      </div><!-- .main -->
+    </div><!-- .main-col -->
+  </div><!-- .app-shell -->
 
 <div class="toast-container" id="toastContainer"></div>
 
@@ -2055,34 +2035,49 @@ function currentTheme() {
     ? 'dark' : 'light';
 }
 
-function applyThemeButton() {
-  const btn = document.getElementById('themeToggle');
-  if (!btn) return;
+// The command bar's segmented control reflects the active theme.
+function applyThemeButtons() {
   const dark = currentTheme() === 'dark';
-  // Offer the mode you would switch to: a sun while dark, a moon while light.
-  btn.innerHTML = dark ? '☀️ Light' : '🌙 Dark';
-  btn.title = dark ? 'Switch to light theme' : 'Switch to dark theme';
+  const light = document.getElementById('segLight');
+  const darkBtn = document.getElementById('segDark');
+  if (light) { light.classList.toggle('on', !dark); light.setAttribute('aria-pressed', String(!dark)); }
+  if (darkBtn) { darkBtn.classList.toggle('on', dark); darkBtn.setAttribute('aria-pressed', String(dark)); }
 }
 
-function toggleTheme() {
-  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+// Set an explicit theme; persists so it survives reloads and overrides the OS.
+function setTheme(mode) {
+  const next = mode === 'light' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
   try { localStorage.setItem('uao-theme', next); } catch (e) {}
-  applyThemeButton();
+  applyThemeButtons();
 }
 
-// Keep the button label in sync with the system preference while the user is
-// still on the default (no explicit choice stored).
+// Kept for the app menu and older callers: flip to the other theme.
+function toggleTheme() { setTheme(currentTheme() === 'dark' ? 'light' : 'dark'); }
+
+// Keep the segmented control in sync with the system preference while the user
+// is still on the default (no explicit choice stored).
 if (window.matchMedia) {
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
   const onSchemeChange = () => {
-    if (!document.documentElement.getAttribute('data-theme')) applyThemeButton();
+    if (!document.documentElement.getAttribute('data-theme')) applyThemeButtons();
   };
   if (mq.addEventListener) mq.addEventListener('change', onSchemeChange);
   else if (mq.addListener) mq.addListener(onSchemeChange);
 }
 
-applyThemeButton();
+applyThemeButtons();
+
+// Live clock in the command bar.
+function tickClock() {
+  const el = document.getElementById('cmdClock');
+  if (!el) return;
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  el.textContent = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+tickClock();
+setInterval(tickClock, 1000);
 
 // ============================================================
 // Tab navigation
@@ -2511,8 +2506,10 @@ function updateDashboard() {
 
   document.getElementById('infoMemory').textContent = `${h.memory_mb || '-'} MB`;
   document.getElementById('infoUptime').textContent = formatUptime(h.uptime_seconds || 0);
-  document.getElementById('uptimeDisplay').textContent = `Uptime: ${formatUptime(h.uptime_seconds || 0)}`;
+  document.getElementById('uptimeDisplay').textContent = formatUptime(h.uptime_seconds || 0);
   document.getElementById('infoHost').textContent = u.host ? `${u.host}:${u.port}` : '-';
+  { const hostEl = document.getElementById('cmdHost'); if (hostEl) hostEl.textContent = u.host || '—'; }
+  { const buildEl = document.getElementById('railBuild'); if (buildEl) buildEl.textContent = h.version ? `v${h.version}` : '—'; }
 
   const connStateEl = document.getElementById('infoConnState');
   const cs = u.connection_state || 'unknown';
@@ -6301,7 +6298,9 @@ function showSetupWizard(startStep) {
   document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
   setup.style.display = 'block';
   setup.classList.add('active');
-  document.getElementById('tabBar').style.display = 'none';
+  // Operator Console keeps the left-rail nav visible during setup (the wizard
+  // takes over the content column, not the whole viewport).
+  document.getElementById('tabBar').style.display = 'flex';
 
   const unifi = (configData && configData.unifi) || {};
   const host = typeof unifi.host === 'string' ? unifi.host.trim() : '';
