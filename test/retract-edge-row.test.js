@@ -49,7 +49,7 @@ function edge(overrides = {}) {
 // signature: buildRetractEdgeRow(door, tIdx, edge, eIdx, locks)
 test('a default edge renders the lock name, the two after-unlock modes, and Remove', () => {
   const out = load()('Front Door', 0, edge(), 0, LOCKS);
-  assert.match(out, /Retract deadbolt/, 'action titled');
+  assert.match(out, /retract deadbolt/, 'action titled');
   assert.match(out, /Front Bolt/, 'friendly lock name shown');
   assert.match(out, /class="chip active" data-df-after="stay_unlocked"/, 'stay unlocked is the default');
   assert.match(out, /data-df-after="relock_after"/);

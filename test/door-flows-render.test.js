@@ -53,7 +53,7 @@ const DATA = {
 test('the section renders a card per flow and an add picker for free doors only', () => {
   const out = loadSection()(DATA);
   assert.match(out, /Front Door/, 'existing flow gets its card');
-  assert.match(out, /badges in/, 'the badge-in trigger renders');
+  assert.match(out, /enters at/, 'the badge-in trigger renders');
   assert.match(out, /id="dfAddDoor"/, 'add-flow picker present');
   assert.match(out, /value="Interior Door"/, 'unconfigured door offered');
   const picker = out.match(/<select id="dfAddDoor"[\s\S]*?<\/select>/)[0];
@@ -82,7 +82,7 @@ test('server warnings surface at the top, escaped', () => {
 
 test('the intro states the door-centric model', () => {
   const out = loadSection()(DATA);
-  assert.match(out, /Everything starts at the door/);
+  assert.match(out, /each door is a flow/);
 });
 
 // --- source-level contracts on the render + save path ----------------------
