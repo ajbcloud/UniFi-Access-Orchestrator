@@ -613,6 +613,18 @@ select.df-scopechip { -webkit-appearance: none; appearance: none; width: auto; b
 .df-menu { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--bg-secondary); margin-top: 8px; }
 .df-menu select { width: auto; }
 
+/* Settings: comp-style field boxes + auto-sync pill toggle */
+.set-panel { font-size: 12px; }
+.set-field { margin-bottom: 14px; }
+.set-field > label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
+.set-field input, .set-field select { width: 100%; font-size: 12.5px; color: var(--text-primary); background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: 6px; padding: 9px 12px; }
+.pill-switch { position: relative; display: inline-block; width: 38px; height: 22px; flex: none; cursor: pointer; }
+.pill-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.pill-switch .pill-knob { position: absolute; inset: 0; border-radius: 999px; background: var(--border-light); transition: background .15s ease; }
+.pill-switch .pill-knob::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--bg-card); transition: transform .15s ease; }
+.pill-switch input:checked + .pill-knob { background: var(--neon); }
+.pill-switch input:checked + .pill-knob::after { transform: translateX(16px); background: var(--on-neon); }
+
 /* Event log container */
 .event-log {
   max-height: 600px;
@@ -1281,9 +1293,9 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 }
 .fd-node:hover { border-color: var(--accent); }
 .fd-node.fd-sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--blue-dim), 0 2px 10px rgba(0,0,0,.35); }
-.fd-node.fd-door { border-left-color: #0070f3; }
-.fd-node.fd-group { border-left-color: #a855f7; }
-.fd-node.fd-deadbolt { border-left-color: #f97316; }
+.fd-node.fd-door { border-left-color: var(--neon); }
+.fd-node.fd-group { border-left-color: var(--green); }
+.fd-node.fd-deadbolt { border-left-color: var(--yellow); }
 .fd-node-role { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-muted); }
 .fd-node-label { font-size: 13px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fd-handle {
@@ -1824,90 +1836,60 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
     <!-- SETTINGS -->
     <div id="settings" class="page">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div style="font-size:15px;font-weight:600" role="heading" aria-level="1">Settings</div>
+      <div class="page-head">
+        <div class="page-title"><span class="h1" role="heading" aria-level="1">Settings</span><span class="sub">connection &middot; sync &middot; logging</span></div>
         <div style="display:flex;gap:8px;align-items:center">
-          <span data-dirty-label style="display:none;font-size:12px;color:var(--text-muted)">Unsaved changes</span>
-          <button class="btn btn-sm btn-secondary" onclick="loadSettings()">Refresh settings</button>
+          <span data-dirty-label style="display:none;font-size:10.5px;color:var(--text-muted)">unsaved</span>
+          <button class="btn btn-sm btn-secondary" onclick="loadSettings()">Refresh</button>
           <button class="btn btn-sm btn-primary" id="saveSettingsBtn" onclick="saveSettings()">Save</button>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-title" role="heading" aria-level="2">Server</div>
-        <div class="form-group">
-          <label class="form-label">App Port</label>
-          <input type="number" id="settingServerPort" placeholder="3000">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Host</label>
-          <input type="text" id="settingServerHost" placeholder="0.0.0.0">
-        </div>
-      </div>
+      <div class="col2" style="grid-template-columns:1fr 1fr">
+        <div>
+          <div class="sect"><span class="lbl">&raquo; SERVER</span><span class="rule"></span></div>
+          <div class="panel set-panel" style="margin-bottom:22px">
+            <div class="set-field"><label>app port</label><input type="number" id="settingServerPort" placeholder="3000"></div>
+            <div class="set-field"><label>host</label><input type="text" id="settingServerHost" placeholder="0.0.0.0"></div>
+          </div>
 
-      <div class="card" style="margin-top:16px">
-        <div class="card-title" role="heading" aria-level="2">UniFi controller</div>
-        <div class="form-group">
-          <label class="form-label">Controller Host / IP</label>
-          <input type="text" id="settingUnifiHost" placeholder="192.168.1.1">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Controller Port</label>
-          <input type="number" id="settingUnifiPort" placeholder="12445">
-        </div>
-        <div class="form-group">
-          <label class="form-label">API Token (masked)</label>
-          <input type="password" id="settingUnifiToken" placeholder="********" autocomplete="new-password">
-          <div style="font-size:12px;color:var(--text-muted);margin-top:8px">For security, the token is masked. Re-enter to change.</div>
-        </div>
-      </div>
+          <div class="sect"><span class="lbl">&raquo; AUTO-SYNC</span><span class="rule"></span></div>
+          <div class="panel set-panel" style="margin-bottom:22px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:12.5px;color:var(--text-primary)">enable auto-sync</span><label class="pill-switch"><input type="checkbox" id="settingAutoSyncEnabled"><span class="pill-knob"></span></label></div>
+            <div class="set-field"><label>interval (seconds)</label><input type="number" id="settingAutoSyncInterval" min="5" max="600" placeholder="15"></div>
+            <div class="cmt" style="border:none;padding:0;margin-top:10px">// read-only reconcile of local + controller changes; 5 to 600s, default 15</div>
+          </div>
 
-      <div class="card" style="margin-top:16px">
-        <div class="card-title" role="heading" aria-level="2">Event source</div>
-        <div id="settingsEventSource"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
-      </div>
+          <div class="sect"><span class="lbl">&raquo; LOGGING</span><span class="rule"></span></div>
+          <div class="panel set-panel">
+            <div class="set-field"><label>log level</label><select id="settingLogLevel"><option value="error">error</option><option value="warn">warn</option><option value="info">info</option><option value="debug">debug</option></select></div>
+          </div>
+        </div>
 
-      <div class="card" style="margin-top:16px">
-        <div class="card-title" role="heading" aria-level="2">Auto-Sync</div>
-        <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
-          Periodic background job that detects local config edits and upstream UniFi controller changes (doors, users, group membership) and reloads in place. Read-only, never writes to <code>config.json</code> or the controller.
-        </div>
-        <div class="form-group">
-          <label class="form-label">
-            <input type="checkbox" id="settingAutoSyncEnabled" style="margin-right:6px"> Enable auto-sync
-          </label>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Interval (seconds)</label>
-          <input type="number" id="settingAutoSyncInterval" min="5" max="600" placeholder="15">
-          <div style="font-size:12px;color:var(--text-muted);margin-top:4px">Allowed range: 5 to 600 seconds. Default 15.</div>
-        </div>
-      </div>
+        <div>
+          <div class="sect"><span class="lbl">&raquo; UNIFI CONTROLLER</span><span class="rule"></span><span class="live" id="settingsConnState"></span></div>
+          <div class="panel set-panel" style="margin-bottom:22px">
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+              <div class="set-field" style="margin-bottom:0"><label>controller host / ip</label><input type="text" id="settingUnifiHost" placeholder="192.168.1.1"></div>
+              <div class="set-field" style="margin-bottom:0"><label>port</label><input type="number" id="settingUnifiPort" placeholder="12445"></div>
+            </div>
+            <div class="set-field" style="margin-top:14px;margin-bottom:0"><label>api token</label><input type="password" id="settingUnifiToken" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="new-password"><div class="cmt" style="border:none;padding:0;margin-top:6px">// masked for security, re-enter to change</div></div>
+          </div>
 
-      <div class="card" style="margin-top:16px">
-        <div class="card-title" role="heading" aria-level="2">Logging</div>
-        <div class="form-group">
-          <label class="form-label">Log Level</label>
-          <select id="settingLogLevel">
-            <option value="error">error</option>
-            <option value="warn">warn</option>
-            <option value="info">info</option>
-            <option value="debug">debug</option>
-          </select>
-        </div>
-      </div>
+          <div class="sect"><span class="lbl">&raquo; EVENT SOURCE</span><span class="rule"></span></div>
+          <div class="panel set-panel" style="margin-bottom:22px" id="settingsEventSource"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
 
-      <div class="card" style="margin-top:16px">
-        <div class="card-title" role="heading" aria-level="2">Backup &amp; Restore</div>
-        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
-          Your configuration is automatically backed up every time you save changes. You can also create manual backups, download them, or restore from a previous backup.
-        </p>
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
-          <button class="btn btn-secondary" onclick="createManualBackup()">Create Backup Now</button>
-          <button class="btn btn-secondary" onclick="loadBackups()">Refresh backups</button>
+          <div class="sect"><span class="lbl">&raquo; BACKUP &amp; RESTORE</span><span class="rule"></span></div>
+          <div class="panel set-panel">
+            <div class="cmt" style="border:none;padding:0;margin-bottom:12px">// auto-backed-up on every save; create, download, or restore below</div>
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+              <button class="btn btn-sm btn-secondary" onclick="createManualBackup()">Create Backup</button>
+              <button class="btn btn-sm btn-secondary" onclick="loadBackups()">Refresh</button>
+            </div>
+            <div id="backupInfo" style="font-size:11.5px;color:var(--text-muted);margin-bottom:10px"></div>
+            <div id="backupsList"></div>
+          </div>
         </div>
-        <div id="backupInfo" style="font-size:12px;color:var(--text-muted);margin-bottom:12px"></div>
-        <div id="backupsList"></div>
       </div>
     </div>
 
@@ -6922,10 +6904,10 @@ setInterval(fetchHealth, 10000);
   const LS_KEY = 'fd_positions_v1';
 
   const EDGE_COLOR = {
-    access: '#0070f3',
-    visitor: '#a855f7',
-    cascade: '#14b8a6',
-    retract: '#f97316',
+    access: '#B7D416',
+    visitor: '#E8583C',
+    cascade: '#5FA87A',
+    retract: '#D9A83A',
   };
   const EDGE_VERB = {
     access: 'badge',
