@@ -3615,17 +3615,11 @@ function buildDeadboltButtons(zw) {
   if (!z.configured) return '';
   const dis = z.pairing_active ? ' disabled' : '';
   if (z.paired) return ''; // paired locks carry their controls on their own cards
-  // Security mode for the next pairing attempt. Auto covers both locks
-  // (S2 when the lock can, S0 when that is all it has). S0-only exists
-  // because a Yale YRD256 whose S2 bootstrap wedges cannot fall back in the
-  // same session; exclude it, pick S0, and pair again.
-  return `<select id="zwavePairSecurity" style="font-size:12px;padding:5px"${dis}>`
-    + `<option value="auto">Security: Auto (recommended)</option>`
-    + `<option value="s2">S2 only (Schlage)</option>`
-    + `<option value="s0">S0 only (Yale YRD256)</option>`
-    + `</select>`
-    + `<button class="btn btn-sm btn-primary" onclick="startPairing()"${dis}>Pair New Lock</button>`
-    + `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis}>Unpair / Exclude Device</button>`;
+  // Pairing itself lives in the "Add a deadbolt" manufacturer picker below,
+  // which sets the correct security mode per model. This row keeps only the
+  // exclude control, so a failed inclusion that left a live node on the
+  // controller can be cleared before the next pairing attempt.
+  return `<button class="btn btn-sm btn-secondary" onclick="startUnpair()"${dis}>Unpair / Exclude Device</button>`;
 }
 
 // DOM-id-safe form of an operator-typed lock id (API calls always use the
@@ -4073,8 +4067,7 @@ async function startPairing() {
     const modelKey = document.getElementById('zwaveAddModel')?.value || '';
     const name = (document.getElementById('zwaveAddName')?.value || '').trim();
     const model = lockCatalogModel(modelKey);
-    const security = (model && model.default_security)
-      || document.getElementById('zwavePairSecurity')?.value || 'auto';
+    const security = (model && model.default_security) || 'auto';
     const lockId = name ? name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') : '';
     const body = { security };
     if (modelKey) body.model_key = modelKey;

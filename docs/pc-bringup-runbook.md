@@ -53,11 +53,11 @@ model, give it a name (for example "Front Door"), and the panel shows that
 model's exact enroll gesture and pre-selects the right security mode. You can
 add more than one lock; each is stored under its own name and appears in the
 Paired locks table with its own Unpair (which shows that model's exclude and
-factory-reset steps on hover). Security modes: **Auto** works for most locks
-(S2 when supported, S0 otherwise); **S0 only** is the fallback for a Yale
-whose S2 handshake wedges. The app persists the security keys in its 0600
-config file automatically at first pairing; nothing goes in environment
-variables.
+factory-reset steps on hover). The panel pre-selects the right security mode
+per model, so there is no manual security choice. If a Yale whose S2 handshake
+wedges will not join, pick the **Yale Assure (ZW2)** model, which joins at S0.
+The app persists the security keys in its 0600 config file automatically at
+first pairing; nothing goes in environment variables.
 
 ### Supported models and procedures (from Add a deadbolt)
 
@@ -79,7 +79,8 @@ and a few field details are marked "verify against the manual" in the UI.
 
 ### Schlage BE469ZP (joins at S2)
 
-- [ ] Click **Pair New Lock** (Auto or S2 only).
+- [ ] In **Add a deadbolt**, pick **Schlage** and the model, then click
+      **Pair this deadbolt**.
 - [ ] On the lock: enter the 6-digit programming code, press the Schlage
       button, then press **0**.
 - [ ] The panel shows the lock's device ID and asks for the PIN. Type the
@@ -92,8 +93,9 @@ and a few field details are marked "verify against the manual" in the UI.
 - [ ] If the Yale was EVER paired anywhere (including a failed attempt),
       exclude it first: click **Unpair / Exclude Device**, then on the lock:
       Master PIN, **#**, **7**, **#**, **3**, **#**. Or factory reset it.
-- [ ] Click **Pair New Lock** with security mode **Auto** (use **S0 only**
-      on a retry if the first attempt failed partway).
+- [ ] In **Add a deadbolt**, pick **Yale** and the model, then click
+      **Pair this deadbolt** (for the ZW/ZW2 500-series module, choose the
+      **Yale Assure (ZW2)** model, which joins at S0).
 - [ ] On the lock: Master PIN, **#**, **7**, **#**, **1**, **#**.
 - [ ] There is NO PIN step for an S0 join; the panel goes straight from
       waiting to done. Expect "Paired!" with **S0 Legacy**. An S2 warning in
@@ -105,8 +107,9 @@ and a few field details are marked "verify against the manual" in the UI.
 ### Either lock
 
 - [ ] If it fails with "joined WITHOUT encryption": exclude the lock, move
-      the stick closer, and pair again (for the Yale, retry with S0 only;
-      a wedged S2 handshake cannot fall back to S0 in the same session).
+      the stick closer, and pair again (for a Yale whose S2 handshake wedges,
+      re-pair after selecting the **Yale Assure (ZW2)** model, which joins at
+      S0; a wedged S2 handshake cannot fall back to S0 in the same session).
 - [ ] If the lock was EVER paired to another controller before: exclude it
       first (the Unpair flow works even for locks joined elsewhere) or
       factory reset it, then pair.

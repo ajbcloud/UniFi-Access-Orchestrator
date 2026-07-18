@@ -45,13 +45,16 @@ test('not configured: no buttons', () => {
   assert.strictEqual(build(null), '');
 });
 
-test('configured + not paired: Pair New Lock AND Unpair / Exclude Device', () => {
+test('configured + not paired: only Unpair / Exclude Device (pairing lives in the Add a deadbolt picker)', () => {
   const build = load();
   const out = build({ configured: true, paired: false });
-  assert.match(out, /onclick="startPairing\(\)"/);
-  assert.match(out, /Pair New Lock/);
   assert.match(out, /onclick="startUnpair\(\)"/);
   assert.match(out, /Unpair \/ Exclude Device/);
+  // The security dropdown and the redundant Pair button were removed; pairing
+  // is driven entirely by the manufacturer picker's "Pair this deadbolt".
+  assert.ok(!out.includes('Pair New Lock'), 'the redundant Pair New Lock button is gone');
+  assert.ok(!out.includes('startPairing'), 'the pair row no longer triggers pairing');
+  assert.ok(!out.includes('zwavePairSecurity'), 'the Yale/Schlage security dropdown is gone');
   // no lock-control buttons in this state
   assert.ok(!out.includes('Test Lock'));
 });
@@ -92,7 +95,7 @@ test('pairing_active disables every button (pair row and lock cards)', () => {
   const build = load();
   const out = build({ configured: true, paired: false, pairing_active: true });
   const buttons = out.match(/<button[^>]*>/g) || [];
-  assert.ok(buttons.length >= 2, 'expected multiple buttons');
+  assert.ok(buttons.length >= 1, 'expected at least the Unpair / Exclude button');
   for (const b of buttons) {
     assert.ok(/\bdisabled\b/.test(b), `button should be disabled while pairing_active: ${b}`);
   }
