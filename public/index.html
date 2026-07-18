@@ -1,26 +1,19 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-colorway="unifi" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>UniFi Access Orchestrator</title>
 <style>
 /* -------------------------------------------------------------------------
-   Theme system (ColorKit palette)
+   Theme system (8 colorways x light/dark)
    -------------------------------------------------------------------------
-   Raw palette:
-     Tennis Ball    #D4FF3B   Haunted Forest #052B15   Chrome    #E0E0E0
-     Green Goddess  #79A88A   Peachy Pinky   #FF715B    + white / black
-
-   Two moods, one identity, driven by a shared neon yellow-green highlight:
-     - Dark mode: a deep, near-black forest-green field lit up with lots of
-       neon (Tennis Ball) highlights on buttons, tabs, focus and selections.
-     - Light mode: a neutral concrete-grey field with dark forest-green text
-       and structure ("dark highlights"), punched up with the same neon pops.
-
-   Light is the default; the dark block applies when the user picks it
-   (html[data-theme="dark"]) or when the system prefers dark and no explicit
-   choice is stored.
+   The palette is a two-axis system on <html>: data-colorway picks the family
+   (unifi, qit, indigo, copper, amber, teal, rose, crimson) and data-theme
+   picks the mode (light / dark). Both are always set (default unifi / dark),
+   restored from localStorage pre-paint and changed from Settings > Appearance.
+   The full token contract + alias layer are documented at the :root blocks
+   just below the @font-face rules.
    ------------------------------------------------------------------------- */
 /* Self-hosted IBM Plex (offline; no CDN fetch). Mono is the primary UI voice;
    Sans is the fallback. Files ship in public/fonts and are served statically. */
@@ -32,226 +25,289 @@
 @font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:500;font-display:swap;src:url('/fonts/ibm-plex-sans-500.woff2') format('woff2');}
 @font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:600;font-display:swap;src:url('/fonts/ibm-plex-sans-600.woff2') format('woff2');}
 
+/* -------------------------------------------------------------------------
+   Theme system - 8 colorways x 2 modes (light / dark)
+   -------------------------------------------------------------------------
+   The palette lives in the data-colorway/data-theme blocks below (pasted
+   verbatim from colorways.css, the source of truth). Those blocks define the
+   design-comp token contract (--bg --panel --ink --neon --success ...); the
+   alias layer that follows maps them onto the token names the app actually
+   consumes (--bg-primary --text-primary --green ...) and derives the tints,
+   hovers and glows the palettes do not ship, via color-mix().
+   Default colorway/mode is unifi / dark; both attributes are always set on
+   <html> (see the pre-paint script and setColorway/setTheme).
+   ------------------------------------------------------------------------- */
+
+/* Colorway-independent tokens (radius + type). */
 :root {
-  /* Raw palette references */
-  --pal-tennis: #D4FF3B;
-  --pal-forest: #052B15;
-  --pal-chrome: #E0E0E0;
-  --pal-goddess: #79A88A;
-  --pal-peach: #FF715B;
-
-  /* ---- Light theme (warm grey field + dark forest-green + neon) ---- */
-  /* Values track the "Operator Console" comp; app variable names are kept. */
-  --bg-primary: #C7C8C3;     /* comp --bg */
-  --bg-secondary: #CFD0CB;   /* comp --panel-2 */
-  --bg-card: #D7D8D3;        /* comp --panel */
-  --bg-elev: #E0E1DC;
-  --bg-hover: #C2C3BE;
-  --bg-input: #CFD0CB;       /* inputs sit on panel-2 with a strong border */
-  --banner-bg: #05140C;      /* the rail stays a constant deep forest */
-  --banner-fg: #EAF3EC;
-  --banner-fg-dim: #8AA997;
-  --banner-accent: #D4FF3B;
-  --card-accent: #15522A;
-  --border: #B6B8B2;         /* comp --line (subtle divider) */
-  --border-light: #A4A69F;   /* comp --line-strong (chips/inputs/leaders) */
-  --text-primary: #0C2414;   /* comp --ink */
-  --text-secondary: #3B4B41; /* comp --ink-2 */
-  --text-muted: #5E6C62;     /* comp --ink-3 */
-
-  /* accent = the readable, text-safe green ("dark highlight" on the grey) */
-  --accent: #15522A;         /* comp --neon-ink / --accent */
-  --accent-hover: #0E3D1F;
-  --accent-dim: rgba(21,82,42,0.12);
-  --on-accent: #EEF3EC;
-
-  /* neon = the signature yellow-green highlight used for pops in both modes */
-  --neon: #B7D416;           /* comp --neon (light) */
-  --neon-strong: #A6C112;
-  --neon-dim: rgba(183,212,22,0.16);
-  --on-neon: #16320A;        /* comp --on-neon (light) */
-  --neon-glow: rgba(150,190,20,0.40);
-
-  --green: #227A43;          /* comp --success */
-  --green-dim: rgba(34,122,67,0.14);
-  --on-success: #FFFFFF;
-
-  --yellow: #8A5D12;         /* comp --warn (light) */
-  --yellow-dim: rgba(138,93,18,0.16);
-  --on-warning: #FFFFFF;
-
-  --red: #CF3A2A;            /* comp --danger */
-  --red-hover: #B22E20;
-  --red-dim: rgba(207,58,42,0.14);
-  --on-danger: #FFFFFF;
-
-  --sage: #3E6B50;
-  --sage-dim: rgba(62,107,80,0.18);
-
-  --blue-dim: rgba(183,212,22,0.14); /* legacy alias -> neon tint */
-
-  --concrete: #C7C8C3;
-  --concrete-strong: #B6B8B2;
-  --on-concrete: #0C2414;
-  --btn2-bg: #E4E5E0;        /* comp --btn2-bg (light) */
-  --btn2-fg: #0C2414;
-  --btn2-hover: #D8D9D4;
-  --btn2-border: #B6B8B2;    /* comp --btn2-border (light) */
-  --eyebrow: #5E6C62;
-  --mono-muted: #5E6C62;
-
-  --grid: rgba(21,82,42,0.06);  /* command-area dot grid */
-  --seg-off: #5E6C62;           /* segmented-toggle off-state text */
-
-  --overlay: rgba(12,36,20,0.5);
-  --shadow: rgba(20,30,25,0.22);
-
   --radius: 8px;
   --radius-lg: 10px;
   --radius-sm: 6px;
   --font: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --mono: 'IBM Plex Mono', 'SF Mono', 'Consolas', ui-monospace, monospace;
   --font-mono: 'IBM Plex Mono', 'SF Mono', 'Consolas', ui-monospace, monospace;
-
-  color-scheme: light;
 }
 
-/* ---- Dark theme (deep dark forest green + neon) ---- */
+/* === Colorway palettes (verbatim from colorways.css) === */
+/* =============================================================================
+   UniFi Access Orchestrator — Colorway system
+   -----------------------------------------------------------------------------
+   5 colorways × 2 modes. Each block defines the SAME token contract the app's
+   Direction B shell already consumes, so applying a colorway is just a matter
+   of setting  <html data-colorway="…" data-theme="…">.
+
+   Token contract
+     Surfaces : --bg --panel --panel-2 --line --line-strong --grid
+     Text     : --ink --ink-2 --ink-3
+     Accent   : --neon (bright fill) --neon-ink (accent TEXT, readable on --panel)
+                --on-neon (text/icon ON a --neon fill) --accent (primary/links)
+     Status   : --success --warn --danger
+     Button 2 : --btn2-bg --btn2-fg --btn2-border   (the concrete/secondary btn)
+     Sidebar  : --side-bg --side-line --side-fg --side-fg-dim
+                --side-active-bg --side-active-fg --side-brand
+   Selectors match BOTH the chooser (descendant) and the app (same element on <html>).
+   ============================================================================= */
+
+/* ============================ 1 · UNIFI (default) ========================== */
+[data-theme="light"] [data-colorway="unifi"], [data-colorway="unifi"][data-theme="light"]{
+  --bg:#C7C8C3; --panel:#D7D8D3; --panel-2:#CFD0CB; --line:#B6B8B2; --line-strong:#A4A69F; --grid:rgba(21,82,42,.06);
+  --ink:#0C2414; --ink-2:#3B4B41; --ink-3:#5E6C62;
+  --neon:#B7D416; --neon-ink:#15522A; --on-neon:#16320A; --accent:#15522A;
+  --success:#227A43; --warn:#8A5D12; --danger:#CF3A2A;
+  --btn2-bg:#E4E5E0; --btn2-fg:#0C2414; --btn2-border:#B6B8B2;
+  --side-bg:#05140C; --side-line:#123E20; --side-fg:#8AA997; --side-fg-dim:#4F6B59;
+  --side-active-bg:rgba(212,255,59,.10); --side-active-fg:#D4FF3B; --side-brand:#D4FF3B;
+}
+[data-theme="dark"] [data-colorway="unifi"], [data-colorway="unifi"][data-theme="dark"]{
+  --bg:#020C07; --panel:#061D0F; --panel-2:#04130A; --line:#123E20; --line-strong:#1C5A32; --grid:rgba(121,168,138,.05);
+  --ink:#E9F3E9; --ink-2:#9FC1AB; --ink-3:#688A74;
+  --neon:#D4FF3B; --neon-ink:#D4FF3B; --on-neon:#04120A; --accent:#D4FF3B;
+  --success:#79A88A; --warn:#E3B341; --danger:#FF715B;
+  --btn2-bg:#C6C7C2; --btn2-fg:#0C2414; --btn2-border:#C6C7C2;
+  --side-bg:#05140C; --side-line:#123E20; --side-fg:#8AA997; --side-fg-dim:#4F6B59;
+  --side-active-bg:rgba(212,255,59,.12); --side-active-fg:#D4FF3B; --side-brand:#D4FF3B;
+}
+
+/* ============================ 2 · QIT (azure & navy) ======================= */
+[data-theme="light"] [data-colorway="qit"], [data-colorway="qit"][data-theme="light"]{
+  --bg:#EEF2F6; --panel:#FFFFFF; --panel-2:#F4F7FA; --line:#E5EBF0; --line-strong:#C7CBD0; --grid:rgba(14,35,52,.05);
+  --ink:#15222E; --ink-2:#54616E; --ink-3:#7E8A96;
+  --neon:#00B9F1; --neon-ink:#0094CC; --on-neon:#05202B; --accent:#0094CC;
+  --success:#1E9E6A; --warn:#B7791F; --danger:#D64550;
+  --btn2-bg:#FFFFFF; --btn2-fg:#15222E; --btn2-border:#C7CBD0;
+  --side-bg:#0E2334; --side-line:#1E3A52; --side-fg:#8CA0B3; --side-fg-dim:#55708A;
+  --side-active-bg:rgba(0,185,241,.14); --side-active-fg:#4FD0FA; --side-brand:#00B9F1;
+}
+[data-theme="dark"] [data-colorway="qit"], [data-colorway="qit"][data-theme="dark"]{
+  --bg:#0A1622; --panel:#0F2334; --panel-2:#0C1C2B; --line:#1E3A52; --line-strong:#2C4E6B; --grid:rgba(79,208,250,.05);
+  --ink:#EAF2F8; --ink-2:#A9BED0; --ink-3:#6E8AA2;
+  --neon:#00B9F1; --neon-ink:#4FD0FA; --on-neon:#05202B; --accent:#4FD0FA;
+  --success:#46C08A; --warn:#E3B341; --danger:#FF6B78;
+  --btn2-bg:#1B3247; --btn2-fg:#EAF2F8; --btn2-border:#2C4E6B;
+  --side-bg:#081521; --side-line:#1A3247; --side-fg:#8CA0B3; --side-fg-dim:#55708A;
+  --side-active-bg:rgba(0,185,241,.16); --side-active-fg:#4FD0FA; --side-brand:#00B9F1;
+}
+
+/* ============================ 3 · INDIGO (indigo & violet) ================= */
+[data-theme="light"] [data-colorway="indigo"], [data-colorway="indigo"][data-theme="light"]{
+  --bg:#EEECF6; --panel:#FFFFFF; --panel-2:#F5F4FB; --line:#E6E3F2; --line-strong:#CFC9E6; --grid:rgba(30,27,52,.05);
+  --ink:#1E1B34; --ink-2:#4A4568; --ink-3:#757090;
+  --neon:#6366F1; --neon-ink:#4F46E5; --on-neon:#FFFFFF; --accent:#4F46E5;
+  --success:#1E9E6A; --warn:#B7791F; --danger:#E0435A;
+  --btn2-bg:#FFFFFF; --btn2-fg:#1E1B34; --btn2-border:#CFC9E6;
+  --side-bg:#171432; --side-line:#2C2856; --side-fg:#9A93C4; --side-fg-dim:#635C93;
+  --side-active-bg:rgba(129,140,248,.16); --side-active-fg:#A9A2FF; --side-brand:#818CF8;
+}
+[data-theme="dark"] [data-colorway="indigo"], [data-colorway="indigo"][data-theme="dark"]{
+  --bg:#100E20; --panel:#1A1736; --panel-2:#15122C; --line:#2C2856; --line-strong:#3D3873; --grid:rgba(169,162,255,.05);
+  --ink:#ECEAFB; --ink-2:#B3ADD6; --ink-3:#7B75A6;
+  --neon:#818CF8; --neon-ink:#A9A2FF; --on-neon:#100E20; --accent:#A9A2FF;
+  --success:#4FC08A; --warn:#E3B341; --danger:#FF6B7E;
+  --btn2-bg:#2A2650; --btn2-fg:#ECEAFB; --btn2-border:#3D3873;
+  --side-bg:#0E0C1E; --side-line:#26224A; --side-fg:#9A93C4; --side-fg-dim:#635C93;
+  --side-active-bg:rgba(129,140,248,.18); --side-active-fg:#A9A2FF; --side-brand:#818CF8;
+}
+
+/* ============================ 4 · COPPER (graphite & copper) =============== */
+[data-theme="light"] [data-colorway="copper"], [data-colorway="copper"][data-theme="light"]{
+  --bg:#EDEBE7; --panel:#FBFAF7; --panel-2:#F3F1EC; --line:#E2DFD8; --line-strong:#CAC6BC; --grid:rgba(38,32,25,.05);
+  --ink:#262019; --ink-2:#575044; --ink-3:#857D6E;
+  --neon:#C2632D; --neon-ink:#A24E1E; --on-neon:#FBEDE4; --accent:#A24E1E;
+  --success:#3E8E56; --warn:#B7791F; --danger:#C6413A;
+  --btn2-bg:#FBFAF7; --btn2-fg:#262019; --btn2-border:#CAC6BC;
+  --side-bg:#1C1A16; --side-line:#34302A; --side-fg:#A69E8F; --side-fg-dim:#6E675A;
+  --side-active-bg:rgba(210,112,58,.16); --side-active-fg:#E08A4E; --side-brand:#D2703A;
+}
+[data-theme="dark"] [data-colorway="copper"], [data-colorway="copper"][data-theme="dark"]{
+  --bg:#17130F; --panel:#241B15; --panel-2:#1C1510; --line:#3A2C22; --line-strong:#513D2E; --grid:rgba(224,138,78,.05);
+  --ink:#F3EAE2; --ink-2:#C9B8A9; --ink-3:#8F7E6E;
+  --neon:#E08A4E; --neon-ink:#E08A4E; --on-neon:#17130F; --accent:#E08A4E;
+  --success:#6FB98A; --warn:#E3B341; --danger:#FF6B5E;
+  --btn2-bg:#34271D; --btn2-fg:#F3EAE2; --btn2-border:#513D2E;
+  --side-bg:#141009; --side-line:#302518; --side-fg:#A69E8F; --side-fg-dim:#6E675A;
+  --side-active-bg:rgba(224,138,78,.18); --side-active-fg:#E08A4E; --side-brand:#D2703A;
+}
+
+/* ============================ 5 · ROSE (plum & rose) ====================== */
+[data-theme="light"] [data-colorway="rose"], [data-colorway="rose"][data-theme="light"]{
+  --bg:#F4ECEF; --panel:#FFFFFF; --panel-2:#FAF2F5; --line:#EEE2E8; --line-strong:#DCC8D2; --grid:rgba(42,22,34,.05);
+  --ink:#2A1622; --ink-2:#5C4450; --ink-3:#8A6E7A;
+  --neon:#DB2777; --neon-ink:#BE185D; --on-neon:#FFFFFF; --accent:#BE185D;
+  --success:#2E9E6A; --warn:#B7791F; --danger:#DC2626;
+  --btn2-bg:#FFFFFF; --btn2-fg:#2A1622; --btn2-border:#DCC8D2;
+  --side-bg:#24101B; --side-line:#3E2130; --side-fg:#BE97A8; --side-fg-dim:#855F70;
+  --side-active-bg:rgba(236,72,153,.16); --side-active-fg:#F472B6; --side-brand:#EC4899;
+}
+[data-theme="dark"] [data-colorway="rose"], [data-colorway="rose"][data-theme="dark"]{
+  --bg:#1A0E15; --panel:#281422; --panel-2:#200F1A; --line:#3E2130; --line-strong:#582E43; --grid:rgba(244,114,182,.05);
+  --ink:#F7E9F0; --ink-2:#D4AFC0; --ink-3:#9E7688;
+  --neon:#F472B6; --neon-ink:#F472B6; --on-neon:#1A0E15; --accent:#F472B6;
+  --success:#4FC08A; --warn:#E3B341; --danger:#FF6B6B;
+  --btn2-bg:#391E2E; --btn2-fg:#F7E9F0; --btn2-border:#582E43;
+  --side-bg:#160B11; --side-line:#361C29; --side-fg:#BE97A8; --side-fg-dim:#855F70;
+  --side-active-bg:rgba(244,114,182,.18); --side-active-fg:#F472B6; --side-brand:#EC4899;
+}
+
+/* ============================ 6 · TEAL (slate & teal) ===================== */
+[data-theme="light"] [data-colorway="teal"], [data-colorway="teal"][data-theme="light"]{
+  --bg:#E9EDEC; --panel:#FBFCFC; --panel-2:#F1F5F4; --line:#DCE4E2; --line-strong:#C2CFCC; --grid:rgba(17,44,42,.05);
+  --ink:#112C2A; --ink-2:#3E5654; --ink-3:#6C817E;
+  --neon:#0FA697; --neon-ink:#0B7C71; --on-neon:#EAFBF8; --accent:#0B7C71;
+  --success:#2E9E6A; --warn:#B7791F; --danger:#D64550;
+  --btn2-bg:#FBFCFC; --btn2-fg:#112C2A; --btn2-border:#C2CFCC;
+  --side-bg:#0C201E; --side-line:#1C3936; --side-fg:#8AA6A2; --side-fg-dim:#566E6B;
+  --side-active-bg:rgba(20,196,178,.15); --side-active-fg:#2FD3C2; --side-brand:#14C4B2;
+}
+[data-theme="dark"] [data-colorway="teal"], [data-colorway="teal"][data-theme="dark"]{
+  --bg:#071412; --panel:#0D2320; --panel-2:#0A1C1A; --line:#1C3936; --line-strong:#2A514C; --grid:rgba(47,211,194,.05);
+  --ink:#E6F4F1; --ink-2:#A6C6C1; --ink-3:#6E8C88;
+  --neon:#14C4B2; --neon-ink:#2FD3C2; --on-neon:#071412; --accent:#2FD3C2;
+  --success:#4FC08A; --warn:#E3B341; --danger:#FF6B78;
+  --btn2-bg:#173330; --btn2-fg:#E6F4F1; --btn2-border:#2A514C;
+  --side-bg:#051210; --side-line:#193330; --side-fg:#8AA6A2; --side-fg-dim:#566E6B;
+  --side-active-bg:rgba(20,196,178,.18); --side-active-fg:#2FD3C2; --side-brand:#14C4B2;
+}
+
+/* ============================ 7 · AMBER (charcoal & amber) ================ */
+[data-theme="light"] [data-colorway="amber"], [data-colorway="amber"][data-theme="light"]{
+  --bg:#ECECEA; --panel:#FBFBFA; --panel-2:#F2F2F0; --line:#E0E0DD; --line-strong:#C8C8C4; --grid:rgba(28,28,26,.05);
+  --ink:#1C1C1A; --ink-2:#4C4C48; --ink-3:#7C7C76;
+  --neon:#E8A317; --neon-ink:#9A6A0E; --on-neon:#2A1D05; --accent:#9A6A0E;
+  --success:#3E8E56; --warn:#C27803; --danger:#C6413A;
+  --btn2-bg:#FBFBFA; --btn2-fg:#1C1C1A; --btn2-border:#C8C8C4;
+  --side-bg:#171716; --side-line:#302F2D; --side-fg:#9C9C96; --side-fg-dim:#64645E;
+  --side-active-bg:rgba(240,184,64,.16); --side-active-fg:#F0B840; --side-brand:#E8A317;
+}
+[data-theme="dark"] [data-colorway="amber"], [data-colorway="amber"][data-theme="dark"]{
+  --bg:#121211; --panel:#1D1D1B; --panel-2:#171715; --line:#2E2E2B; --line-strong:#43433F; --grid:rgba(240,184,64,.05);
+  --ink:#EFEEE9; --ink-2:#BDBCB4; --ink-3:#83827B;
+  --neon:#F0B840; --neon-ink:#F0B840; --on-neon:#121211; --accent:#F0B840;
+  --success:#6FB98A; --warn:#E0872E; --danger:#FF6B5E;
+  --btn2-bg:#2A2A26; --btn2-fg:#EFEEE9; --btn2-border:#43433F;
+  --side-bg:#0F0F0E; --side-line:#2A2A27; --side-fg:#9C9C96; --side-fg-dim:#64645E;
+  --side-active-bg:rgba(240,184,64,.18); --side-active-fg:#F0B840; --side-brand:#E8A317;
+}
+
+/* ============================ 8 · CRIMSON (ash & crimson) ================= */
+[data-theme="light"] [data-colorway="crimson"], [data-colorway="crimson"][data-theme="light"]{
+  --bg:#EEEBEB; --panel:#FCFAFA; --panel-2:#F4F1F1; --line:#E4DFDF; --line-strong:#CDC5C5; --grid:rgba(38,26,26,.05);
+  --ink:#261A1A; --ink-2:#544545; --ink-3:#847272;
+  --neon:#DC2B34; --neon-ink:#B91C24; --on-neon:#FCEDED; --accent:#B91C24;
+  --success:#2E9E6A; --warn:#B7791F; --danger:#B91C24;
+  --btn2-bg:#FCFAFA; --btn2-fg:#261A1A; --btn2-border:#CDC5C5;
+  --side-bg:#1E1414; --side-line:#372525; --side-fg:#AC9494; --side-fg-dim:#6E5A5A;
+  --side-active-bg:rgba(239,68,76,.15); --side-active-fg:#F26069; --side-brand:#E23744;
+}
+[data-theme="dark"] [data-colorway="crimson"], [data-colorway="crimson"][data-theme="dark"]{
+  --bg:#160F0F; --panel:#231717; --panel-2:#1B1212; --line:#372525; --line-strong:#4F3636; --grid:rgba(242,96,105,.05);
+  --ink:#F4EAEA; --ink-2:#CBB2B2; --ink-3:#8F7676;
+  --neon:#F2606A; --neon-ink:#F2606A; --on-neon:#160F0F; --accent:#F2606A;
+  --success:#4FC08A; --warn:#E3B341; --danger:#FF6B6B;
+  --btn2-bg:#331F1F; --btn2-fg:#F4EAEA; --btn2-border:#4F3636;
+  --side-bg:#120C0C; --side-line:#2C1D1D; --side-fg:#AC9494; --side-fg-dim:#6E5A5A;
+  --side-active-bg:rgba(242,96,105,.18); --side-active-fg:#F2606A; --side-brand:#E23744;
+}
+
+/* -------------------------------------------------------------------------
+   Alias layer: bridge the colorway token contract to the names the app
+   consumes. Shared names (--accent --neon --on-neon --grid --btn2-bg
+   --btn2-fg) are NOT re-declared here - they pass straight through from the
+   colorway block (aliasing a name to itself would be a CSS var cycle).
+   ------------------------------------------------------------------------- */
+:root {
+  --bg-primary: var(--bg);
+  --bg-card: var(--panel);
+  --bg-secondary: var(--panel-2);
+  --bg-input: var(--panel-2);
+  --bg-elev: color-mix(in srgb, var(--panel), #ffffff 8%);
+  --bg-hover: color-mix(in srgb, var(--panel), var(--ink) 8%);
+
+  --border: var(--line);
+  --border-light: var(--line-strong);
+
+  --text-primary: var(--ink);
+  --text-secondary: var(--ink-2);
+  --text-muted: var(--ink-3);
+  --eyebrow: var(--ink-3);
+  --mono-muted: var(--ink-3);
+  --seg-off: var(--ink-3);
+
+  --accent-hover: color-mix(in srgb, var(--accent), var(--ink) 22%);
+  --accent-dim: color-mix(in srgb, var(--accent) 12%, transparent);
+
+  --neon-strong: color-mix(in srgb, var(--neon), var(--ink) 15%);
+  --neon-dim: color-mix(in srgb, var(--neon) 15%, transparent);
+  --neon-glow: color-mix(in srgb, var(--neon) 38%, transparent);
+
+  --green: var(--success);
+  --green-dim: color-mix(in srgb, var(--success) 15%, transparent);
+  --yellow: var(--warn);
+  --yellow-dim: color-mix(in srgb, var(--warn) 16%, transparent);
+  --red: var(--danger);
+  --red-hover: color-mix(in srgb, var(--danger), var(--ink) 15%);
+  --red-dim: color-mix(in srgb, var(--danger) 14%, transparent);
+
+  --sage: var(--success);
+  --sage-dim: color-mix(in srgb, var(--success) 18%, transparent);
+  --blue-dim: color-mix(in srgb, var(--neon) 14%, transparent);
+
+  --btn2-hover: color-mix(in srgb, var(--btn2-bg), var(--ink) 8%);
+}
+
+/* Text/icon on filled accent + status surfaces, plus overlay/shadow. Light
+   accents are dark enough for white text; dark accents are bright enough for
+   dark (the colorway --bg) text. */
+:root[data-theme="light"] {
+  --on-accent: #ffffff;
+  --on-success: #ffffff;
+  --on-warning: #ffffff;
+  --on-danger: #ffffff;
+  --overlay: rgba(12, 36, 20, 0.5);
+  --shadow: rgba(20, 30, 25, 0.22);
+  color-scheme: light;
+}
 :root[data-theme="dark"] {
-  --bg-primary: #020C07;
-  --bg-secondary: #04130A;
-  --bg-card: #061D0F;
-  --bg-elev: #0A2B16;
-  --bg-hover: #0D3318;
-  --bg-input: #010805;
-  --banner-bg: #020C07;
-  --banner-fg: #E9F3E9;
-  --banner-fg-dim: #9FC1AB;
-  --banner-accent: #D4FF3B;
-  --card-accent: #2B6A45;
-  --border: #123E20;
-  --border-light: #1C5A32;
-  --text-primary: #E9F3E9;
-  --text-secondary: #9FC1AB;
-  --text-muted: #688A74;
-
-  --accent: #D4FF3B;
-  --accent-hover: #E4FF6B;
-  --accent-dim: rgba(212,255,59,0.14);
-  --on-accent: #020C07;
-
-  --neon: #D4FF3B;
-  --neon-strong: #E4FF6B;
-  --neon-dim: rgba(212,255,59,0.15);
-  --on-neon: #04120A;
-  --neon-glow: rgba(212,255,59,0.35);
-
-  --green: #79A88A;
-  --green-dim: rgba(121,168,138,0.18);
-  --on-success: #020C07;
-
-  --yellow: #E3B341;
-  --yellow-dim: rgba(227,179,65,0.16);
-
-  --red: #FF715B;
-  --red-hover: #FF8C79;
-  --red-dim: rgba(255,113,91,0.16);
-  --on-danger: #020C07;
-
-  --sage: #79A88A;
-  --sage-dim: rgba(121,168,138,0.16);
-
-  --blue-dim: rgba(212,255,59,0.12);
-
-  /* concrete pops: a light neutral against the near-black forest field */
-  --concrete: #C6C7C2;
-  --concrete-strong: #B4B6B0;
-  --on-concrete: #0C2414;
-  --btn2-bg: #C6C7C2;
-  --btn2-fg: #0C2414;
-  --btn2-hover: #B4B6B0;
-  --btn2-border: #C6C7C2;
-  --eyebrow: #A9ACA6;
-  --mono-muted: #AEB2AD;
-  --grid: rgba(121,168,138,0.05);
-  --seg-off: #A7C4B2;
-
-  --overlay: rgba(0,0,0,0.65);
-  --shadow: rgba(0,0,0,0.55);
-
+  --on-accent: var(--bg);
+  --on-success: var(--bg);
+  --on-warning: var(--bg);
+  --on-danger: var(--bg);
+  --overlay: rgba(0, 0, 0, 0.65);
+  --shadow: rgba(0, 0, 0, 0.55);
   color-scheme: dark;
 }
 
-/* Follow the system when the user has not made an explicit choice */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) {
-    --bg-primary: #020C07;
-    --bg-secondary: #04130A;
-    --bg-card: #061D0F;
-    --bg-elev: #0A2B16;
-    --bg-hover: #0D3318;
-    --bg-input: #010805;
-    --banner-bg: #020C07;
-    --banner-fg: #E9F3E9;
-    --banner-fg-dim: #9FC1AB;
-    --banner-accent: #D4FF3B;
-    --card-accent: #2B6A45;
-    --border: #123E20;
-    --border-light: #1C5A32;
-    --text-primary: #E9F3E9;
-    --text-secondary: #9FC1AB;
-    --text-muted: #688A74;
-
-    --accent: #D4FF3B;
-    --accent-hover: #E4FF6B;
-    --accent-dim: rgba(212,255,59,0.14);
-    --on-accent: #020C07;
-
-    --neon: #D4FF3B;
-    --neon-strong: #E4FF6B;
-    --neon-dim: rgba(212,255,59,0.15);
-    --on-neon: #04120A;
-    --neon-glow: rgba(212,255,59,0.35);
-
-    --green: #79A88A;
-    --green-dim: rgba(121,168,138,0.18);
-    --on-success: #020C07;
-
-    --yellow: #E3B341;
-    --yellow-dim: rgba(227,179,65,0.16);
-
-    --red: #FF715B;
-    --red-hover: #FF8C79;
-    --red-dim: rgba(255,113,91,0.16);
-    --on-danger: #020C07;
-
-    --sage: #79A88A;
-    --sage-dim: rgba(121,168,138,0.16);
-
-    --blue-dim: rgba(212,255,59,0.12);
-
-    /* concrete pops: a light neutral against the near-black forest field */
-    --concrete: #C6C7C2;
-    --concrete-strong: #B4B6B0;
-    --on-concrete: #0C2414;
-    --btn2-bg: #C6C7C2;
-    --btn2-fg: #0C2414;
-    --btn2-hover: #B4B6B0;
-    --btn2-border: #C6C7C2;
-    --eyebrow: #A9ACA6;
-    --mono-muted: #AEB2AD;
-    --grid: rgba(121,168,138,0.05);
-    --seg-off: #A7C4B2;
-
-    --overlay: rgba(0,0,0,0.65);
-    --shadow: rgba(0,0,0,0.55);
-
-    color-scheme: dark;
-  }
+/* On saturated mid-tone dark accents (red/pink/violet/orange), a hue-tinted
+   near-black label reads muddy; white text is visibly crisper. The bright
+   yellow-green/cyan accents (unifi, teal, amber) and the high-contrast blue
+   (qit) keep dark text, where white would wash out. Overrides --on-neon /
+   --on-accent (used by .btn-primary, .seg button.on, badges and chips). */
+:root[data-theme="dark"][data-colorway="crimson"],
+:root[data-theme="dark"][data-colorway="rose"],
+:root[data-theme="dark"][data-colorway="indigo"],
+:root[data-theme="dark"][data-colorway="copper"] {
+  --on-neon: #ffffff;
+  --on-accent: #ffffff;
 }
-
-/* Dark-mode cards now use the real dark panel tokens (the old "light cards on
-   a dark shell" override was removed for the Operator Console look). */
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -269,22 +325,27 @@ body {
 /* -------------------------------------------------------------------------
    Operator Console shell: fixed left rail + command bar + scrolling content.
    ------------------------------------------------------------------------- */
-.app-shell { height: 100vh; display: grid; grid-template-columns: 232px 1fr; overflow: hidden; }
+/* The content backdrop is painted here (a normal element), not left to the
+   <body> canvas: Blink does not always re-invalidate the propagated body
+   background when a custom property changes on <html>, which would leave the
+   main area on the previous colorway after a runtime switch. .app-shell fills
+   the viewport, so .main (transparent) shows this reliably-updated fill. */
+.app-shell { height: 100vh; display: grid; grid-template-columns: 232px 1fr; overflow: hidden; background: var(--bg-primary); }
 
 /* Left rail: a constant deep-forest chrome in BOTH themes */
-.rail { background: #05140C; border-right: 1px solid #123E20; display: flex; flex-direction: column; min-height: 0; }
-.rail-brand { padding: 18px 18px 16px; border-bottom: 1px solid #123E20; }
-.rail-brand .logo { font-size: 15px; font-weight: 700; letter-spacing: -0.3px; color: #EAF3EC; }
-.rail-brand .logo span { color: #D4FF3B; }
-.rail-brand .sub { font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: #6E8C79; margin-top: 3px; }
+.rail { background: var(--side-bg); border-right: 1px solid var(--side-line); display: flex; flex-direction: column; min-height: 0; }
+.rail-brand { padding: 18px 18px 16px; border-bottom: 1px solid var(--side-line); }
+.rail-brand .logo { font-size: 15px; font-weight: 700; letter-spacing: -0.3px; color: color-mix(in srgb, var(--side-fg), #ffffff 55%); }
+.rail-brand .logo span { color: var(--side-brand); }
+.rail-brand .sub { font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--side-fg-dim); margin-top: 3px; }
 .rail-nav { padding: 12px 10px; display: flex; flex-direction: column; gap: 1px; flex: 1; overflow-y: auto; }
-.rail-navlabel { font-size: 10px; letter-spacing: 0.18em; color: #4F6B59; padding: 6px 10px 8px; }
-.rail-foot { padding: 14px 18px; border-top: 1px solid #123E20; font-size: 11px; color: #6E8C79; line-height: 1.9; }
+.rail-navlabel { font-size: 10px; letter-spacing: 0.18em; color: var(--side-fg-dim); padding: 6px 10px 8px; }
+.rail-foot { padding: 14px 18px; border-top: 1px solid var(--side-line); font-size: 11px; color: var(--side-fg-dim); line-height: 1.9; }
 .rail-foot .r { display: flex; justify-content: space-between; }
-.rail-foot .r span:last-child { color: #9FC7AC; }
-.rail-foot .on { display: flex; align-items: center; gap: 7px; color: #9FC7AC; }
-.rail-foot .on .status-dot { background: #79A88A; }
-.rail-foot .build { color: #D4FF3B !important; }
+.rail-foot .r span:last-child { color: var(--side-fg); }
+.rail-foot .on { display: flex; align-items: center; gap: 7px; color: var(--side-fg); }
+.rail-foot .on .status-dot { background: var(--side-fg); }
+.rail-foot .build { color: var(--side-brand) !important; }
 
 /* Nav items = the tab bar restyled vertical (keeps #tabBar/.tab/role=tab). */
 .tabs { display: flex; flex-direction: column; gap: 1px; background: none; border: none; padding: 0; }
@@ -292,12 +353,12 @@ body {
   display: block; text-align: left; width: 100%;
   padding: 9px 14px; border-radius: 7px;
   font-family: var(--mono); font-size: 12.5px; font-weight: 500;
-  color: #8AA997; cursor: pointer; user-select: none;
+  color: var(--side-fg); cursor: pointer; user-select: none;
   background: none; border: none; line-height: normal;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.tab:hover { color: #C7E0CE; background: rgba(212,255,59,0.05); }
-.tab.active { color: #D4FF3B; background: rgba(212,255,59,0.10); box-shadow: inset 3px 0 0 #D4FF3B; font-weight: 600; }
+.tab:hover { color: color-mix(in srgb, var(--side-fg), #ffffff 35%); background: color-mix(in srgb, var(--side-brand) 6%, transparent); }
+.tab.active { color: var(--side-active-fg); background: var(--side-active-bg); box-shadow: inset 3px 0 0 var(--side-brand); font-weight: 600; }
 
 /* Main column: command bar on top, scrolling content below */
 .main-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -1387,16 +1448,19 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 }
 </style>
 <script>
-// Apply the saved theme before first paint so there is no flash of the wrong
-// palette. When nothing is stored we leave data-theme unset and let the
-// prefers-color-scheme media query decide.
+// Apply the saved colorway + mode before first paint so there is no flash of
+// the wrong palette. Both attributes are always set; default is unifi / dark.
 (function () {
+  var COLORWAYS = ['unifi', 'qit', 'indigo', 'copper', 'amber', 'teal', 'rose', 'crimson'];
+  var cw = 'unifi', th = 'dark';
   try {
-    var t = localStorage.getItem('uao-theme');
-    if (t === 'light' || t === 'dark') {
-      document.documentElement.setAttribute('data-theme', t);
-    }
+    var storedCw = localStorage.getItem('uao-colorway');
+    if (COLORWAYS.indexOf(storedCw) !== -1) cw = storedCw;
+    var storedTh = localStorage.getItem('uao-theme');
+    if (storedTh === 'light' || storedTh === 'dark') th = storedTh;
   } catch (e) {}
+  document.documentElement.setAttribute('data-colorway', cw);
+  document.documentElement.setAttribute('data-theme', th);
 })();
 </script>
 </head>
@@ -1441,10 +1505,6 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
         </div>
         <span class="cmd-clock" id="cmdClock">--:--:--</span>
         <button class="btn btn-sm btn-secondary" id="headerSetupBtn" onclick="showSetupWizard()" title="Controller connection and setup">Setup</button>
-        <span class="seg" role="group" aria-label="Color theme">
-          <button type="button" id="segLight" onclick="setTheme('light')">Light</button>
-          <button type="button" id="segDark" onclick="setTheme('dark')">Dark</button>
-        </span>
       </div>
     </div>
 
@@ -1820,7 +1880,7 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
     <!-- SETTINGS -->
     <div id="settings" class="page">
       <div class="page-head">
-        <div class="page-title"><span class="h1" role="heading" aria-level="1">Settings</span><span class="sub">connection &middot; sync &middot; logging</span></div>
+        <div class="page-title"><span class="h1" role="heading" aria-level="1">Settings</span><span class="sub">appearance &middot; connection &middot; sync</span></div>
         <div style="display:flex;gap:8px;align-items:center">
           <span data-dirty-label style="display:none;font-size:10.5px;color:var(--text-muted)">unsaved</span>
           <button class="btn btn-sm btn-secondary" onclick="loadSettings()">Refresh</button>
@@ -1830,6 +1890,28 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
       <div class="col2" style="grid-template-columns:1fr 1fr">
         <div>
+          <div class="sect"><span class="lbl">&raquo; APPEARANCE</span><span class="rule"></span></div>
+          <!-- Colorway + mode are instant, client-only prefs (localStorage). The
+               stopPropagation stoppers keep their input/change events from reaching
+               the #settings dirty-save listener, so they never mark the page unsaved. -->
+          <div class="panel set-panel" style="margin-bottom:22px" oninput="event.stopPropagation()" onchange="event.stopPropagation()">
+            <div class="set-field"><label>colorway</label><select id="colorwaySelect" aria-label="Colorway" onchange="setColorway(this.value)">
+              <option value="unifi">UniFi &mdash; forest &amp; lime</option>
+              <option value="qit">QIT &mdash; azure &amp; navy</option>
+              <option value="indigo">Indigo &mdash; indigo &amp; violet</option>
+              <option value="copper">Copper &mdash; graphite &amp; copper</option>
+              <option value="amber">Amber &mdash; charcoal &amp; amber</option>
+              <option value="teal">Teal &mdash; slate &amp; teal</option>
+              <option value="rose">Rose &mdash; plum &amp; rose</option>
+              <option value="crimson">Crimson &mdash; ash &amp; crimson</option>
+            </select></div>
+            <div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:12.5px;color:var(--text-primary)">mode</span><span class="seg" role="group" aria-label="Color mode">
+              <button type="button" id="segLight" onclick="setTheme('light')">Light</button>
+              <button type="button" id="segDark" onclick="setTheme('dark')">Dark</button>
+            </span></div>
+            <div class="cmt" style="border:none;padding:0;margin-top:10px">// applies instantly, saved to this browser</div>
+          </div>
+
           <div class="sect"><span class="lbl">&raquo; SERVER</span><span class="rule"></span></div>
           <div class="panel set-panel" style="margin-bottom:22px">
             <div class="set-field"><label>app port</label><input type="number" id="settingServerPort" placeholder="3000"></div>
@@ -2049,19 +2131,23 @@ let eventFilters = null;   // { kind, door, text }, session-persisted
 const expandedSkips = new Set(); // collapsed skipped-run keys the user opened
 
 // ============================================================
-// Theme (light = Chrome background, dark = Haunted Forest)
+// Theme: colorway (palette family) x mode (light / dark)
 // ============================================================
-// The effective theme is the explicit choice on <html> when present, otherwise
-// whatever the operating system prefers. The toggle stores an explicit choice
-// so it survives reloads and overrides the system default.
+// Both data-colorway and data-theme are always set on <html> (see the pre-paint
+// script). The Settings > Appearance controls change them and persist to
+// localStorage (uao-colorway / uao-theme) so the choice survives reloads.
+const COLORWAYS = ['unifi', 'qit', 'indigo', 'copper', 'amber', 'teal', 'rose', 'crimson'];
+
 function currentTheme() {
-  const explicit = document.documentElement.getAttribute('data-theme');
-  if (explicit === 'light' || explicit === 'dark') return explicit;
-  return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
-    ? 'dark' : 'light';
+  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
 }
 
-// The command bar's segmented control reflects the active theme.
+function currentColorway() {
+  const c = document.documentElement.getAttribute('data-colorway');
+  return COLORWAYS.indexOf(c) !== -1 ? c : 'unifi';
+}
+
+// Reflect the active mode on the Appearance segmented control.
 function applyThemeButtons() {
   const dark = currentTheme() === 'dark';
   const light = document.getElementById('segLight');
@@ -2070,7 +2156,13 @@ function applyThemeButtons() {
   if (darkBtn) { darkBtn.classList.toggle('on', dark); darkBtn.setAttribute('aria-pressed', String(dark)); }
 }
 
-// Set an explicit theme; persists so it survives reloads and overrides the OS.
+// Reflect the active colorway on the Appearance select.
+function applyColorwaySelect() {
+  const sel = document.getElementById('colorwaySelect');
+  if (sel) sel.value = currentColorway();
+}
+
+// Set an explicit mode; persists so it survives reloads.
 function setTheme(mode) {
   const next = mode === 'light' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
@@ -2078,21 +2170,20 @@ function setTheme(mode) {
   applyThemeButtons();
 }
 
-// Kept for the app menu and older callers: flip to the other theme.
-function toggleTheme() { setTheme(currentTheme() === 'dark' ? 'light' : 'dark'); }
-
-// Keep the segmented control in sync with the system preference while the user
-// is still on the default (no explicit choice stored).
-if (window.matchMedia) {
-  const mq = window.matchMedia('(prefers-color-scheme: dark)');
-  const onSchemeChange = () => {
-    if (!document.documentElement.getAttribute('data-theme')) applyThemeButtons();
-  };
-  if (mq.addEventListener) mq.addEventListener('change', onSchemeChange);
-  else if (mq.addListener) mq.addListener(onSchemeChange);
+// Set the colorway (palette family); persists so it survives reloads.
+function setColorway(name) {
+  const next = COLORWAYS.indexOf(name) !== -1 ? name : 'unifi';
+  document.documentElement.setAttribute('data-colorway', next);
+  try { localStorage.setItem('uao-colorway', next); } catch (e) {}
+  applyColorwaySelect();
 }
 
+// Kept for the app menu and older callers: flip to the other mode.
+function toggleTheme() { setTheme(currentTheme() === 'dark' ? 'light' : 'dark'); }
+
+// Initial sync of the Appearance controls to the restored attributes.
 applyThemeButtons();
+applyColorwaySelect();
 
 // Live clock in the command bar.
 function tickClock() {
