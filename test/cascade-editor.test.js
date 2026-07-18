@@ -39,8 +39,8 @@ test('an empty action renders nothing (a door is always chosen on add)', () => {
 
 test('a single-door unlock card names the target door and shows its debounce + delay', () => {
   const out = load()('Front Door', 0, { doors: ['Elevator'], debounce_seconds: 15, delay_seconds: 5 }, 0);
-  assert.match(out, /data-df-action="unlock"/, 'it is an unlock action card');
-  assert.match(out, /Unlock a door/, 'titled Unlock a door');
+  assert.match(out, /data-df-action="unlock"/, 'it is an unlock action row');
+  assert.match(out, /df-timing/, 'shows the per-door debounce and delay timing');
   assert.match(out, /Elevator/, 'the one target door is named');
   assert.match(out, /value="15"/, 'saved debounce shown');
   assert.match(out, /value="5"/, 'saved delay shown');

@@ -61,9 +61,9 @@ function flow(overrides = {}) {
 test('a card carries the door name, its trigger, edges, Save, and Remove Flow', () => {
   const out = load()('Front Door', flow(), DATA);
   assert.match(out, /Front Door/);
-  assert.match(out, /badges in/, 'a no-groups site shows the plain badge-in trigger');
+  assert.match(out, /enters at/, 'a no-groups site shows the entry trigger connector');
   assert.match(out, /everyone/, 'no-groups scope shows static everyone text');
-  assert.match(out, /Retract deadbolt/, 'the retract action is titled');
+  assert.match(out, /retract deadbolt/, 'the retract action is titled');
   assert.match(out, /Front Bolt/, 'the retracted lock is named');
   assert.match(out, /data-df-save/, 'Save button carries the dirty-save hook');
   assert.match(out, /saveDoorFlow\(&quot;Front Door&quot;\)/);
@@ -111,14 +111,14 @@ test('the unlock-a-door action renders once a door is added (one card per door)'
 test('with groups, entry reads "[scope] badges in" and the doorbell scope option is "anyone"', () => {
   const out = load(['Staff', 'Visitors'])('Front Door', flow(), DATA);
   assert.match(out, /id="dfScope_/, 'the scope dropdown renders when groups exist');
-  assert.match(out, /badges in/, 'the type chip reads badges in');
+  assert.match(out, /enters at/, 'entry reads [scope] enters at [door]');
   assert.ok(!out.includes('taps in'), 'the redundant taps-in sentence is gone');
   const doorbellFlow = flow({ triggers: [{ type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: null, retract: [] } }] });
   const bell = load(['Staff'])('Front Door', doorbellFlow, DATA);
   assert.match(bell, />anyone</, 'doorbell scope offers anyone');
   assert.ok(!bell.includes('anyone who answers'), 'never reads "anyone who answers answers"');
-  assert.match(bell, /rings,/, 'doorbell reads: doorbell rings, [scope] answers and unlocks the door');
-  assert.match(bell, /answers and unlocks the door/, 'doorbell states the intended outcome');
+  assert.match(bell, /rings,/, 'doorbell reads: doorbell rings, [scope] answers at [door]');
+  assert.match(bell, /answers at/, 'doorbell states where it answers');
 });
 
 test('the doorbell advanced expander explains the reason code in plain language', () => {
@@ -152,7 +152,7 @@ test('both actions in use: the chooser marks each done, and retract + unlock sti
   assert.match(out, /every other door already added/, 'unlock picker is exhausted (only Interior Door, already added)');
   assert.match(out, /every paired deadbolt is already retracting/, 'retract is shown as exhausted');
   // multiple actions genuinely coexist in one trigger
-  assert.match(out, /Retract deadbolt/);
+  assert.match(out, /retract deadbolt/);
   assert.match(out, /data-df-action="unlock"/);
   assert.match(out, /Interior Door/, 'the added unlock door is named on its card');
   assert.match(out, /Front Bolt/);
@@ -205,7 +205,7 @@ test('the action chooser stays collapsed by default; + add action reveals both c
 
 test('the inline gating note points at Keypad Users when a deadbolt retracts', () => {
   const out = load()('Front Door', flow(), DATA);
-  assert.match(out, /follow UniFi access to <strong>Front Door<\/strong>/, 'gating stated where it is caused');
+  assert.match(out, /follow UniFi access to Front Door/, 'gating stated where it is caused');
   assert.match(out, /openKeypadTab\(\)/, 'links to the Keypad Users tab');
   const noRetract = load()('Front Door', flow({ triggers: [entryTrigger([])] }), DATA);
   assert.ok(!/follow UniFi access/.test(noRetract), 'no gating note without a retract');

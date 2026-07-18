@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg,#020c07); -webkit-font-smoothing:antialiased; }
+  a { color:var(--neon-ink,#15522A); text-decoration:none; }
+  a:hover { color:var(--accent-hover,#0E3D1F); }
+  @keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+  @keyframes uao-pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  [data-theme="light"]{
+    --bg:#C7C8C3; --panel:#D7D8D3; --panel-2:#CFD0CB; --line:#B6B8B2; --line-strong:#A4A69F;
+    --ink:#0C2414; --ink-2:#3B4B41; --ink-3:#5E6C62;
+    --neon:#B7D416; --neon-ink:#15522A; --on-neon:#16320A; --accent:#15522A;
+    --success:#227A43; --warn:#8A5D12; --danger:#CF3A2A;
+    --btn2-bg:#E4E5E0; --btn2-fg:#0C2414; --btn2-border:#B6B8B2;
+    --grid:rgba(21,82,42,.06); --seg-off:#5E6C62;
+  }
+  [data-theme="dark"]{
+    --bg:#020C07; --panel:#061D0F; --panel-2:#04130A; --line:#123E20; --line-strong:#1C5A32;
+    --ink:#E9F3E9; --ink-2:#9FC1AB; --ink-3:#688A74;
+    --neon:#D4FF3B; --neon-ink:#D4FF3B; --on-neon:#04120A; --accent:#D4FF3B;
+    --success:#79A88A; --warn:#E3B341; --danger:#FF715B;
+    --btn2-bg:#C6C7C2; --btn2-fg:#0C2414; --btn2-border:#C6C7C2;
+    --grid:rgba(121,168,138,.05); --seg-off:#A7C4B2;
+  }
+
+  /* nav (sidebar is constant deep-forest chrome) */
+  .nav-item{ display:flex; align-items:center; padding:9px 14px; border-radius:7px; font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:#8AA997; cursor:pointer; transition:all .12s ease; }
+  .nav-item:hover{ color:#C7E0CE; background:rgba(212,255,59,.05); }
+  [data-active="dashboard"] .nav-item[data-nav="dashboard"],
+  [data-active="events"] .nav-item[data-nav="events"],
+  [data-active="automations"] .nav-item[data-nav="automations"],
+  [data-active="users"] .nav-item[data-nav="users"],
+  [data-active="devices"] .nav-item[data-nav="devices"],
+  [data-active="designer"] .nav-item[data-nav="designer"],
+  [data-active="settings"] .nav-item[data-nav="settings"],
+  [data-active="tools"] .nav-item[data-nav="tools"]{ color:#D4FF3B; background:rgba(212,255,59,.1); box-shadow:inset 3px 0 0 #D4FF3B; font-weight:600; }
+
+  /* screen switching */
+  .screen{ display:none; }
+  [data-active="dashboard"] #sc-dashboard,
+  [data-active="events"] #sc-events,
+  [data-active="automations"] #sc-automations,
+  [data-active="users"] #sc-users,
+  [data-active="devices"] #sc-devices,
+  [data-active="designer"] #sc-designer,
+  [data-active="settings"] #sc-settings,
+  [data-active="tools"] #sc-tools,
+  [data-active="setup"] #sc-setup{ display:block; }
+
+  .col2{ display:grid; grid-template-columns:1fr 1.35fr; gap:22px; }
+  @media (max-width:1000px){ .col2{ grid-template-columns:1fr; } }
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" data-active="{{ page }}" style="height:100vh;display:grid;grid-template-columns:232px 1fr;background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans',sans-serif;overflow:hidden;">
+
+  <!-- ===== Sidebar ===== -->
+  <div style="background:#05140C;border-right:1px solid #123E20;display:flex;flex-direction:column;min-height:0;">
+    <div style="padding:18px 18px 16px;border-bottom:1px solid #123E20;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:700;letter-spacing:-.3px;color:#EAF3EC;">UniFi <span style="color:#D4FF3B;">Access</span></div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:#6E8C79;margin-top:3px;">Orchestrator</div>
+    </div>
+    <div style="padding:12px 10px;display:flex;flex-direction:column;gap:1px;flex:1;overflow-y:auto;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.18em;color:#4F6B59;padding:6px 10px 8px;">NAVIGATION</div>
+      <div class="nav-item" data-nav="dashboard" onClick="{{ nav }}">Dashboard</div>
+      <div class="nav-item" data-nav="events" onClick="{{ nav }}">Live Events</div>
+      <div class="nav-item" data-nav="automations" onClick="{{ nav }}">Automations</div>
+      <div class="nav-item" data-nav="users" onClick="{{ nav }}">User Settings</div>
+      <div class="nav-item" data-nav="devices" onClick="{{ nav }}">Devices</div>
+      <div class="nav-item" data-nav="designer" onClick="{{ nav }}">Visual Designer</div>
+      <div class="nav-item" data-nav="settings" onClick="{{ nav }}">Settings</div>
+      <div class="nav-item" data-nav="tools" onClick="{{ nav }}">Test Tools</div>
+    </div>
+    <div style="padding:14px 18px;border-top:1px solid #123E20;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6E8C79;line-height:1.9;">
+      <div style="display:flex;align-items:center;gap:7px;color:#9FC7AC;"><span style="width:7px;height:7px;border-radius:50%;background:#79A88A;animation:uao-pulse 2s ease infinite;"></span>ONLINE</div>
+      <div style="display:flex;justify-content:space-between;"><span>UPTIME</span><span style="color:#9FC7AC;">6d 4h</span></div>
+      <div style="display:flex;justify-content:space-between;"><span>BUILD</span><span style="color:#D4FF3B;">v10.8.1</span></div>
+    </div>
+  </div>
+
+  <!-- ===== Main ===== -->
+  <div style="display:flex;flex-direction:column;min-width:0;min-height:0;">
+    <!-- command bar -->
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 24px;border-bottom:1px solid var(--line);background:var(--panel-2);flex:none;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--ink-3);">orchestrator<span style="display:inline-block;width:8px;height:15px;background:var(--neon);margin-left:6px;vertical-align:-2px;animation:blink 1.1s step-end infinite;"></span></div>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-3);">CTRL <span style="color:var(--ink);">192.168.1.10</span> <span style="color:var(--success);">●</span></span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink);">14:32:08</span>
+        <span data-nav="setup" onClick="{{ nav }}" style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:600;color:var(--btn2-fg);background:var(--btn2-bg);border:1px solid var(--btn2-border);padding:6px 12px;border-radius:7px;">Setup</span>
+        <span style="display:inline-flex;gap:3px;padding:3px;border-radius:999px;border:1px solid var(--line-strong);">
+          <button onClick="{{ setLight }}" style="{{ segLight }}">Light</button>
+          <button onClick="{{ setDark }}" style="{{ segDark }}">Dark</button>
+        </span>
+      </div>
+    </div>
+
+    <!-- screens -->
+    <div style="flex:1;overflow-y:auto;background:var(--bg);background-image:radial-gradient(var(--grid) 1px, transparent 1px);background-size:22px 22px;">
+
+      <!-- ===== DASHBOARD ===== -->
+      <section class="screen" id="sc-dashboard" style="padding:22px;">
+        <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:18px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600;letter-spacing:-.01em;">Dashboard</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-3);">system overview</span></div>
+        <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden;margin-bottom:22px;">
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);">
+            <div style="padding:18px 20px;border-right:1px solid var(--line);"><div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.13em;color:var(--ink-3);margin-bottom:12px;">DOORS</div><div style="font-family:'IBM Plex Mono',monospace;font-size:36px;font-weight:600;line-height:1;letter-spacing:-.02em;">12</div><div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--ink-2);margin-top:10px;"><span style="color:var(--success);">●</span> 10 online <span style="color:var(--ink-3);">· 2 off</span></div></div>
+            <div style="padding:18px 20px;border-right:1px solid var(--line);"><div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.13em;color:var(--ink-3);margin-bottom:12px;">USERS</div><div style="font-family:'IBM Plex Mono',monospace;font-size:36px;font-weight:600;line-height:1;letter-spacing:-.02em;">148</div><div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--ink-2);margin-top:10px;">6 groups mapped</div></div>
+            <div style="padding:18px 20px;border-right:1px solid var(--line);"><div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.13em;color:var(--ink-3);margin-bottom:12px;">EVENTS</div><div style="font-family:'IBM Plex Mono',monospace;font-size:36px;font-weight:600;line-height:1;letter-spacing:-.02em;">3,204</div><div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--ink-2);margin-top:10px;">99.3% processed</div></div>
+            <div style="padding:18px 20px;position:relative;"><div style="position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--neon);"></div><div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.13em;color:var(--neon-ink);margin-bottom:12px;">UNLOCKS ▸</div><div style="font-family:'IBM Plex Mono',monospace;font-size:36px;font-weight:600;line-height:1;letter-spacing:-.02em;">512</div><div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--danger);margin-top:10px;">● 2 failed</div></div>
+          </div>
+        </div>
+        <div class="col2">
+          <div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» SYSTEM</span><span style="flex:1;height:1px;background:var(--line);"></span></div>
+            <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:16px 18px;display:flex;flex-direction:column;gap:11px;margin-bottom:22px;">
+              <div style="display:flex;align-items:baseline;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;"><span style="color:var(--ink-3);">event source</span><span style="flex:1;border-bottom:1px dotted var(--line-strong);align-self:center;"></span><span style="color:var(--ink);">WEBSOCKET</span><span style="color:var(--success);">●</span></div>
+              <div style="display:flex;align-items:baseline;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;"><span style="color:var(--ink-3);">memory</span><span style="flex:1;border-bottom:1px dotted var(--line-strong);align-self:center;"></span><span style="color:var(--ink);">84 MB</span></div>
+              <div style="display:flex;align-items:baseline;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;"><span style="color:var(--ink-3);">uptime</span><span style="flex:1;border-bottom:1px dotted var(--line-strong);align-self:center;"></span><span style="color:var(--ink);">6d 4h 12m</span></div>
+              <div style="display:flex;align-items:baseline;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;"><span style="color:var(--ink-3);">controller</span><span style="flex:1;border-bottom:1px dotted var(--line-strong);align-self:center;"></span><span style="color:var(--ink);">192.168.1.10</span></div>
+              <div style="display:flex;align-items:baseline;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;"><span style="color:var(--ink-3);">version</span><span style="flex:1;border-bottom:1px dotted var(--line-strong);align-self:center;"></span><span style="color:var(--neon-ink);">v10.8.1</span></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» DEADBOLT</span><span style="flex:1;height:1px;background:var(--line);"></span></div>
+            <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:16px 18px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;color:var(--ink);">Lobby Deadbolt</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;color:var(--on-neon);background:var(--neon);padding:2px 9px;border-radius:4px;">LOCKED</span></div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 18px;font-family:'IBM Plex Mono',monospace;font-size:11.5px;"><div style="display:flex;justify-content:space-between;"><span style="color:var(--ink-3);">battery</span><span style="color:var(--ink);">82%</span></div><div style="display:flex;justify-content:space-between;"><span style="color:var(--ink-3);">link</span><span style="color:var(--success);">strong</span></div><div style="display:flex;justify-content:space-between;"><span style="color:var(--ink-3);">security</span><span style="color:var(--ink);">S2</span></div><div style="display:flex;justify-content:space-between;"><span style="color:var(--ink-3);">trigger</span><span style="color:var(--ink);">Main Ent.</span></div></div>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» RECENT ACTIVITY</span><span style="flex:1;height:1px;background:var(--line);"></span><span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--ink-3);display:inline-flex;align-items:center;gap:5px;"><span style="width:6px;height:6px;border-radius:50%;background:var(--success);animation:uao-pulse 2s ease infinite;"></span>LIVE</span></div>
+            <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden;font-family:'IBM Plex Mono',monospace;">
+              <div style="display:grid;grid-template-columns:76px 1fr 62px;gap:10px;padding:9px 16px;border-bottom:1px solid var(--line);background:var(--panel-2);font-size:10px;letter-spacing:.1em;color:var(--ink-3);"><span>TIME</span><span>ACTOR · ACTION</span><span style="text-align:right;">RESULT</span></div>
+              <div style="display:grid;grid-template-columns:76px 1fr 62px;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);font-size:11.5px;align-items:center;"><span style="color:var(--ink-3);">14:32:08</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Sarah Chen</span> → elevator, stairwell</span><span style="text-align:right;color:var(--success);">OK</span></div>
+              <div style="display:grid;grid-template-columns:76px 1fr 62px;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);font-size:11.5px;align-items:center;"><span style="color:var(--ink-3);">14:30:51</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Suite 200</span> → lobby, suite 200</span><span style="text-align:right;color:var(--success);">OK</span></div>
+              <div style="display:grid;grid-template-columns:76px 1fr 62px;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);font-size:11.5px;align-items:center;"><span style="color:var(--ink-3);">14:28:12</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Marcus Reyes</span> → no matching rule</span><span style="text-align:right;color:var(--warn);">SKIP</span></div>
+              <div style="display:grid;grid-template-columns:76px 1fr 62px;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);font-size:11.5px;align-items:center;position:relative;"><span style="position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--danger);"></span><span style="color:var(--ink-3);">14:19:47</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Priya Shah</span> → retract lobby deadbolt</span><span style="text-align:right;color:var(--danger);">FAIL</span></div>
+              <div style="display:grid;grid-template-columns:76px 1fr 62px;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);font-size:11.5px;align-items:center;"><span style="color:var(--ink-3);">14:15:30</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Front Desk</span> → front door</span><span style="text-align:right;color:var(--success);">OK</span></div>
+              <div style="display:grid;grid-template-columns:76px 1fr 62px;gap:10px;padding:10px 16px;font-size:11.5px;align-items:center;"><span style="color:var(--ink-3);">14:09:02</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Dana Wu</span> → elevator</span><span style="text-align:right;color:var(--success);">OK</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== LIVE EVENTS ===== -->
+      <section class="screen" id="sc-events" style="padding:22px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+          <div style="display:flex;align-items:baseline;gap:12px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600;">Live Events</span><span style="display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--success);"><span style="width:6px;height:6px;border-radius:50%;background:currentColor;animation:uao-pulse 2s ease infinite;"></span>LIVE</span></div>
+          <div style="display:flex;gap:8px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Autoscroll</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Clear</span></div>
+        </div>
+        <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:14px;font-family:'IBM Plex Mono',monospace;">
+          <span style="font-size:11.5px;font-weight:600;padding:6px 13px;border-radius:999px;background:var(--neon);color:var(--on-neon);">ALL</span>
+          <span style="font-size:11.5px;padding:6px 13px;border-radius:999px;border:1px solid var(--line-strong);color:var(--ink-2);">ACTIONED</span>
+          <span style="font-size:11.5px;padding:6px 13px;border-radius:999px;border:1px solid var(--line-strong);color:var(--ink-2);">SKIPPED</span>
+          <span style="font-size:11.5px;padding:6px 13px;border-radius:999px;border:1px solid var(--line-strong);color:var(--ink-2);">FAILED</span>
+          <span style="margin-left:auto;font-size:11.5px;color:var(--ink-3);border:1px solid var(--line-strong);border-radius:7px;padding:7px 12px;min-width:180px;">/ search events</span>
+        </div>
+        <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden;font-family:'IBM Plex Mono',monospace;">
+          <div style="display:grid;grid-template-columns:80px 96px 1fr 120px 70px;gap:12px;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--panel-2);font-size:10px;letter-spacing:.1em;color:var(--ink-3);"><span>TIME</span><span>TYPE</span><span>ACTOR · ACTION</span><span>LOCATION</span><span style="text-align:right;">RESULT</span></div>
+          <div style="display:grid;grid-template-columns:80px 96px 1fr 120px 70px;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:11.5px;align-items:center;"><span style="color:var(--ink-3);">14:32:08</span><span style="color:var(--neon-ink);">UNLOCK</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Sarah Chen</span> → elevator, stairwell</span><span style="color:var(--ink-2);">Main Entrance</span><span style="text-align:right;color:var(--success);">OK</span></div>
+          <div style="display:grid;grid-template-columns:80px 96px 1fr 120px 70px;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:11.5px;align-items:center;"><span style="color:var(--ink-3);">14:30:51</span><span style="color:var(--success);">DOORBELL</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Suite 200</span> → lobby, suite 200</span><span style="color:var(--ink-2);">Intercom</span><span style="text-align:right;color:var(--success);">OK</span></div>
+          <div style="display:grid;grid-template-columns:80px 96px 1fr 120px 70px;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:11.5px;align-items:center;"><span style="color:var(--ink-3);">14:28:12</span><span style="color:var(--neon-ink);">UNLOCK</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Marcus Reyes</span> → no matching rule</span><span style="color:var(--ink-2);">Side Door</span><span style="text-align:right;color:var(--warn);">SKIP</span></div>
+          <div style="display:grid;grid-template-columns:80px 96px 1fr 120px 70px;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:11.5px;align-items:center;"><span style="color:var(--ink-3);">14:22:03</span><span style="color:var(--neon-ink);">UNLOCK</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Unknown</span> → group not resolved</span><span style="color:var(--ink-2);">Loading Dock</span><span style="text-align:right;color:var(--warn);">SKIP</span></div>
+          <div style="display:grid;grid-template-columns:80px 96px 1fr 120px 70px;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:11.5px;align-items:center;position:relative;"><span style="position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--danger);"></span><span style="color:var(--ink-3);">14:19:47</span><span style="color:var(--neon-ink);">UNLOCK</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Priya Shah</span> → retract lobby deadbolt</span><span style="color:var(--ink-2);">Main Entrance</span><span style="text-align:right;color:var(--danger);">FAIL</span></div>
+          <div style="display:grid;grid-template-columns:80px 96px 1fr 120px 70px;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:11.5px;align-items:center;"><span style="color:var(--ink-3);">14:15:30</span><span style="color:var(--success);">DOORBELL</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Front Desk</span> → front door</span><span style="color:var(--ink-2);">Intercom</span><span style="text-align:right;color:var(--success);">OK</span></div>
+          <div style="display:grid;grid-template-columns:80px 96px 1fr 120px 70px;gap:12px;padding:11px 18px;font-size:11.5px;align-items:center;"><span style="color:var(--ink-3);">14:09:02</span><span style="color:var(--neon-ink);">UNLOCK</span><span style="color:var(--ink-2);"><span style="color:var(--ink);">Dana Wu</span> → elevator</span><span style="color:var(--ink-2);">Main Entrance</span><span style="text-align:right;color:var(--success);">OK</span></div>
+        </div>
+      </section>
+
+      <!-- ===== AUTOMATIONS ===== -->
+      <section class="screen" id="sc-automations" style="padding:22px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
+          <div style="display:flex;align-items:baseline;gap:12px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600;">Automations</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-3);">door flows</span></div>
+          <div style="display:flex;gap:8px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Reload</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» MAIN ENTRANCE</span><span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--ink-3);">[ 1 deadbolt · 2 doors ]</span><span style="flex:1;height:1px;background:var(--line);"></span></div>
+        <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:18px;font-family:'IBM Plex Mono',monospace;">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-bottom:14px;border-bottom:1px dotted var(--line-strong);">
+            <span style="font-size:10.5px;letter-spacing:.12em;color:var(--ink-3);width:64px;">WHEN</span>
+            <span style="font-size:12.5px;font-weight:600;color:var(--on-neon);background:var(--neon);padding:5px 12px;border-radius:6px;">Staff ▾</span>
+            <span style="font-size:12.5px;color:var(--ink-2);">enters at</span>
+            <span style="font-size:12.5px;font-weight:600;color:var(--ink);border:1px solid var(--line-strong);padding:5px 12px;border-radius:6px;">Main Entrance</span>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;padding:16px 0 6px;">
+            <span style="font-size:10.5px;letter-spacing:.12em;color:var(--ink-3);width:64px;padding-top:6px;">DO</span>
+            <div style="flex:1;min-width:240px;display:flex;flex-direction:column;gap:10px;">
+              <div style="border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:var(--panel-2);">
+                <div style="font-size:12.5px;font-weight:600;color:var(--ink);margin-bottom:10px;">unlock other doors</div>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;"><span style="color:var(--ink);border:1px solid var(--line-strong);padding:4px 10px;border-radius:6px;">Elevator</span><span style="color:var(--ink);border:1px solid var(--line-strong);padding:4px 10px;border-radius:6px;">Stairwell</span><span style="color:var(--neon-ink);border:1px dashed var(--line-strong);padding:4px 10px;border-radius:6px;">+ door</span><span style="margin-left:auto;color:var(--ink-3);">debounce <span style="color:var(--ink);">8s</span> · delay <span style="color:var(--ink);">0s</span></span></div>
+              </div>
+              <div style="border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:var(--panel-2);">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;"><span style="font-size:12.5px;font-weight:600;color:var(--ink);">retract deadbolt</span><span style="font-size:11.5px;color:var(--ink);border:1px solid var(--line-strong);padding:3px 10px;border-radius:6px;">Lobby Deadbolt ▾</span></div>
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-2);"><span style="color:var(--ink-3);">after unlock</span><span style="color:var(--ink-3);border:1px solid var(--line-strong);padding:4px 10px;border-radius:6px;">stay unlocked</span><span style="color:var(--on-neon);background:var(--neon);padding:4px 10px;border-radius:6px;font-weight:600;">relock after 30s</span></div>
+                <div style="margin-top:10px;padding-top:10px;border-top:1px dotted var(--line-strong);font-size:11px;color:var(--ink-3);">advanced · require result <span style="color:var(--ink-2);">ACCESS</span> · mirror unlocks <span style="color:var(--ink-2);">off</span> · relock cooldown <span style="color:var(--ink-2);">10s</span></div>
+              </div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;"><span style="flex:1 1 150px;text-align:center;border:1px dashed var(--line-strong);border-radius:8px;color:var(--neon-ink);font-size:12px;font-weight:600;padding:10px;">+ add action</span><span style="flex:1 1 150px;text-align:center;border:1px dashed var(--line-strong);border-radius:8px;color:var(--neon-ink);font-size:12px;font-weight:600;padding:10px;">+ add trigger</span></div>
+            </div>
+          </div>
+          <div style="margin-top:8px;padding-top:12px;border-top:1px dotted var(--line-strong);font-size:11px;color:var(--ink-3);">// keypad for Lobby Deadbolt follows UniFi access to Main Entrance</div>
+        </div>
+      </section>
+
+      <!-- ===== SETTINGS ===== -->
+      <section class="screen" id="sc-settings" style="padding:22px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
+          <div style="display:flex;align-items:baseline;gap:12px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600;">Settings</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-3);">connection · sync · logging</span></div>
+          <div style="display:flex;gap:8px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Refresh</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:600;padding:6px 14px;border-radius:7px;background:var(--neon);color:var(--on-neon);">Save</span></div>
+        </div>
+        <div class="col2" style="grid-template-columns:1fr 1fr;">
+          <div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» SERVER</span><span style="flex:1;height:1px;background:var(--line);"></span></div>
+            <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:16px 18px;margin-bottom:22px;font-family:'IBM Plex Mono',monospace;">
+              <div style="margin-bottom:12px;"><div style="font-size:11px;color:var(--ink-3);margin-bottom:6px;">app port</div><div style="font-size:12.5px;color:var(--ink);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:6px;padding:9px 12px;">3000</div></div>
+              <div><div style="font-size:11px;color:var(--ink-3);margin-bottom:6px;">host</div><div style="font-size:12.5px;color:var(--ink);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:6px;padding:9px 12px;">0.0.0.0</div></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» AUTO-SYNC</span><span style="flex:1;height:1px;background:var(--line);"></span></div>
+            <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:16px 18px;font-family:'IBM Plex Mono',monospace;">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;"><span style="font-size:12.5px;color:var(--ink);">enable auto-sync</span><span style="width:38px;height:22px;border-radius:999px;background:var(--neon);position:relative;flex:none;"><span style="position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:50%;background:var(--on-neon);"></span></span></div>
+              <div><div style="font-size:11px;color:var(--ink-3);margin-bottom:6px;">interval (seconds)</div><div style="font-size:12.5px;color:var(--ink);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:6px;padding:9px 12px;">15</div></div>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» UNIFI CONTROLLER</span><span style="flex:1;height:1px;background:var(--line);"></span><span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--success);">● CONNECTED</span></div>
+            <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:16px 18px;font-family:'IBM Plex Mono',monospace;">
+              <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:12px;"><div><div style="font-size:11px;color:var(--ink-3);margin-bottom:6px;">controller host / ip</div><div style="font-size:12.5px;color:var(--ink);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:6px;padding:9px 12px;">192.168.1.10</div></div><div><div style="font-size:11px;color:var(--ink-3);margin-bottom:6px;">port</div><div style="font-size:12.5px;color:var(--ink);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:6px;padding:9px 12px;">12445</div></div></div>
+              <div><div style="font-size:11px;color:var(--ink-3);margin-bottom:6px;">api token</div><div style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-3);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:6px;padding:9px 12px;"><span style="letter-spacing:2px;">••••••••••••</span><span style="margin-left:auto;color:var(--neon-ink);font-weight:600;">change</span></div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== placeholders (built next) ===== -->
+      <section class="screen" id="sc-users" style="padding:22px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;"><div style="display:flex;align-items:baseline;gap:12px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600;">User Settings</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-3);">keypad PINs · groups</span></div><span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Refresh</span></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» KEYPAD USERS</span><span style="flex:1;height:1px;background:var(--line);"></span></div>
+        <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden;font-family:'IBM Plex Mono',monospace;margin-bottom:22px;">
+          <div style="display:grid;grid-template-columns:1.5fr 1fr 72px 1.3fr;gap:12px;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--panel-2);font-size:10px;letter-spacing:.1em;color:var(--ink-3);"><span>USER</span><span>GROUP</span><span>PIN</span><span>LOCKS</span></div>
+          <div style="display:grid;grid-template-columns:1.5fr 1fr 72px 1.3fr;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:12px;align-items:center;"><span style="color:var(--ink);">Sarah Chen</span><span style="color:var(--ink-2);">Staff</span><span style="color:var(--ink);">••31</span><span style="color:var(--ink-2);">Lobby Deadbolt</span></div>
+          <div style="display:grid;grid-template-columns:1.5fr 1fr 72px 1.3fr;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:12px;align-items:center;"><span style="color:var(--ink);">Marcus Reyes</span><span style="color:var(--ink-2);">Suite 200</span><span style="color:var(--ink);">••88</span><span style="color:var(--ink-2);">Lobby Deadbolt</span></div>
+          <div style="display:grid;grid-template-columns:1.5fr 1fr 72px 1.3fr;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:12px;align-items:center;"><span style="color:var(--ink);">Priya Shah</span><span style="color:var(--ink-2);">Management</span><span style="color:var(--ink);">••04</span><span style="color:var(--ink-2);">Lobby · Server</span></div>
+          <div style="display:grid;grid-template-columns:1.5fr 1fr 72px 1.3fr;gap:12px;padding:11px 18px;font-size:12px;align-items:center;"><span style="color:var(--ink);">Dana Wu</span><span style="color:var(--ink-2);">Staff</span><span style="color:var(--ink-3);">— not set</span><span style="color:var(--ink-3);">none</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» USER GROUPS</span><span style="flex:1;height:1px;background:var(--line);"></span></div>
+        <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:16px 18px;display:flex;flex-direction:column;gap:11px;font-family:'IBM Plex Mono',monospace;font-size:12px;">
+          <div style="display:flex;align-items:center;gap:10px;"><span style="color:var(--ink-2);">Office Staff</span><span style="color:var(--ink-3);">→</span><span style="color:var(--ink);border:1px solid var(--line-strong);padding:3px 10px;border-radius:6px;">staff</span></div>
+          <div style="display:flex;align-items:center;gap:10px;"><span style="color:var(--ink-2);">Suite 200 Tenants</span><span style="color:var(--ink-3);">→</span><span style="color:var(--ink);border:1px solid var(--line-strong);padding:3px 10px;border-radius:6px;">suite_200</span></div>
+          <div style="display:flex;align-items:center;gap:10px;"><span style="color:var(--ink-2);">Building Management</span><span style="color:var(--ink-3);">→</span><span style="color:var(--ink);border:1px solid var(--line-strong);padding:3px 10px;border-radius:6px;">management</span></div>
+        </div>
+      </section>
+      <section class="screen" id="sc-devices" style="padding:22px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;"><div style="display:flex;align-items:baseline;gap:12px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600;">Devices</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-3);">Z-Wave deadbolts · door mappings</span></div><span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Refresh Ports</span></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» DEADBOLTS (Z-WAVE)</span><span style="flex:1;height:1px;background:var(--line);"></span></div>
+        <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:16px 18px;margin-bottom:22px;font-family:'IBM Plex Mono',monospace;">
+          <div style="display:flex;align-items:baseline;gap:8px;font-size:12px;margin-bottom:16px;"><span style="color:var(--ink-3);">serial port</span><span style="flex:1;border-bottom:1px dotted var(--line-strong);align-self:center;"></span><span style="color:var(--ink);">/dev/ttyUSB0 · Zooz ZST39</span><span style="color:var(--success);">● enabled</span></div>
+          <div style="border:1px solid var(--line-strong);border-radius:8px;background:var(--panel-2);padding:14px 16px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;"><span style="font-size:13px;font-weight:600;color:var(--ink);">Lobby Deadbolt</span><span style="font-size:11px;font-weight:600;color:var(--on-neon);background:var(--neon);padding:2px 9px;border-radius:4px;">LOCKED</span></div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:11.5px;margin-bottom:14px;"><div style="display:flex;flex-direction:column;gap:3px;"><span style="color:var(--ink-3);">battery</span><span style="color:var(--ink);">82%</span></div><div style="display:flex;flex-direction:column;gap:3px;"><span style="color:var(--ink-3);">link</span><span style="color:var(--success);">strong</span></div><div style="display:flex;flex-direction:column;gap:3px;"><span style="color:var(--ink-3);">security</span><span style="color:var(--ink);">S2</span></div><div style="display:flex;flex-direction:column;gap:3px;"><span style="color:var(--ink-3);">trigger</span><span style="color:var(--ink);">Main Ent.</span></div></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;"><span style="font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Test Lock</span><span style="font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Test Unlock</span><span style="font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Health Check</span></div>
+          </div>
+          <div style="text-align:center;border:1px dashed var(--line-strong);border-radius:8px;color:var(--neon-ink);font-size:12px;font-weight:600;padding:11px;margin-top:12px;">+ Pair New Lock</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» DOOR MAPPINGS</span><span style="flex:1;height:1px;background:var(--line);"></span><span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:600;padding:5px 11px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Rediscover</span></div>
+        <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden;font-family:'IBM Plex Mono',monospace;">
+          <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:12px;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--panel-2);font-size:10px;letter-spacing:.1em;color:var(--ink-3);"><span>DOOR</span><span>ID</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:12px;"><span style="color:var(--ink);">Main Entrance</span><span style="color:var(--ink-3);">a1b2c3d4-0001</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:12px;"><span style="color:var(--ink);">Elevator</span><span style="color:var(--ink-3);">c3d4e5f6-0002</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:12px;"><span style="color:var(--ink);">Stairwell</span><span style="color:var(--ink-3);">e5f6a7b8-0003</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);font-size:12px;"><span style="color:var(--ink);">Lobby</span><span style="color:var(--ink-3);">7a8b9c0d-0004</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:12px;padding:11px 18px;font-size:12px;"><span style="color:var(--ink);">Side Door</span><span style="color:var(--ink-3);">9c0d1e2f-0005</span></div>
+        </div>
+      </section>
+      <section class="screen" id="sc-designer" style="padding:22px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;"><div style="display:flex;align-items:baseline;gap:12px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600;">Visual Designer</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-3);">read-only map · edit on the door's card</span></div><span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Refresh</span></div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:520px;position:relative;border:1px solid var(--line);border-radius:10px;background:var(--panel);background-image:radial-gradient(var(--line-strong) 1px, transparent 1px);background-size:20px 20px;height:400px;overflow:hidden;">
+            <svg width="720" height="380" style="position:absolute;left:0;top:0;"><path d="M180 148 C240 148 240 104 296 104" fill="none" stroke="var(--neon)" stroke-width="2"/><path d="M180 148 C240 148 240 232 296 232" fill="none" stroke="var(--neon)" stroke-width="2"/><path d="M452 104 C510 104 510 64 566 64" fill="none" stroke="var(--success)" stroke-width="2"/><path d="M452 104 C510 104 510 144 566 144" fill="none" stroke="var(--success)" stroke-width="2"/><path d="M452 104 C510 104 510 324 566 324" fill="none" stroke="var(--warn)" stroke-width="2"/><path d="M452 232 C512 232 512 232 566 232" fill="none" stroke="var(--danger)" stroke-width="2"/></svg>
+            <div style="position:absolute;left:24px;top:130px;width:156px;border:1px solid var(--line-strong);border-left:3px solid var(--neon);border-radius:8px;background:var(--panel-2);padding:9px 12px;font-family:'IBM Plex Mono',monospace;"><div style="font-size:9px;letter-spacing:.1em;color:var(--ink-3);">TRIGGER DOOR</div><div style="font-size:12.5px;font-weight:600;color:var(--ink);">Main Entrance</div></div>
+            <div style="position:absolute;left:296px;top:84px;width:156px;border:1px solid var(--line-strong);border-left:3px solid var(--success);border-radius:8px;background:var(--panel-2);padding:9px 12px;font-family:'IBM Plex Mono',monospace;"><div style="font-size:9px;letter-spacing:.1em;color:var(--ink-3);">GROUP</div><div style="font-size:12.5px;font-weight:600;color:var(--ink);">Staff</div></div>
+            <div style="position:absolute;left:296px;top:212px;width:156px;border:1px solid var(--line-strong);border-left:3px solid var(--danger);border-radius:8px;background:var(--panel-2);padding:9px 12px;font-family:'IBM Plex Mono',monospace;"><div style="font-size:9px;letter-spacing:.1em;color:var(--ink-3);">GROUP</div><div style="font-size:12.5px;font-weight:600;color:var(--ink);">Suite 200</div></div>
+            <div style="position:absolute;left:566px;top:46px;width:132px;border:1px solid var(--line-strong);border-radius:8px;background:var(--panel-2);padding:8px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;color:var(--ink);">Elevator</div>
+            <div style="position:absolute;left:566px;top:126px;width:132px;border:1px solid var(--line-strong);border-radius:8px;background:var(--panel-2);padding:8px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;color:var(--ink);">Stairwell</div>
+            <div style="position:absolute;left:566px;top:214px;width:132px;border:1px solid var(--line-strong);border-radius:8px;background:var(--panel-2);padding:8px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;color:var(--ink);">Lobby</div>
+            <div style="position:absolute;left:566px;top:302px;width:132px;border:1px solid var(--line-strong);border-left:3px solid var(--warn);border-radius:8px;background:var(--panel-2);padding:8px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;color:var(--ink);">Lobby Deadbolt</div>
+            <div style="position:absolute;left:12px;bottom:12px;display:flex;gap:6px;"><span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line-strong);border-radius:6px;background:var(--panel);color:var(--ink);font-family:'IBM Plex Mono',monospace;">+</span><span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line-strong);border-radius:6px;background:var(--panel);color:var(--ink);font-family:'IBM Plex Mono',monospace;">−</span><span style="padding:0 10px;height:28px;display:flex;align-items:center;border:1px solid var(--line-strong);border-radius:6px;background:var(--panel);color:var(--ink);font-family:'IBM Plex Mono',monospace;font-size:11px;">Fit</span><span style="padding:0 10px;height:28px;display:flex;align-items:center;border:1px solid var(--line-strong);border-radius:6px;background:var(--panel);color:var(--ink);font-family:'IBM Plex Mono',monospace;font-size:11px;">Arrange</span></div>
+          </div>
+          <div style="width:200px;flex:none;border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:16px;font-family:'IBM Plex Mono',monospace;">
+            <div style="font-size:11px;font-weight:600;letter-spacing:.12em;color:var(--ink-3);margin-bottom:14px;">LEGEND</div>
+            <div style="display:flex;flex-direction:column;gap:11px;font-size:11.5px;color:var(--ink-2);"><div style="display:flex;align-items:center;gap:9px;"><span style="width:16px;height:3px;border-radius:2px;background:var(--neon);"></span>entry</div><div style="display:flex;align-items:center;gap:9px;"><span style="width:16px;height:3px;border-radius:2px;background:var(--danger);"></span>doorbell</div><div style="display:flex;align-items:center;gap:9px;"><span style="width:16px;height:3px;border-radius:2px;background:var(--success);"></span>unlock</div><div style="display:flex;align-items:center;gap:9px;"><span style="width:16px;height:3px;border-radius:2px;background:var(--warn);"></span>deadbolt</div></div>
+            <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line);font-size:11px;color:var(--ink-3);line-height:1.6;">Click any node or edge to see its flows and jump to the door's card.</div>
+          </div>
+        </div>
+      </section>
+      <section class="screen" id="sc-tools" style="padding:22px;">
+        <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:18px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600;">Test Tools</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-3);">simulate · unlock · diagnostics</span></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» TEST DOOR UNLOCK</span><span style="flex:1;height:1px;background:var(--line);"></span></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:22px;font-family:'IBM Plex Mono',monospace;">
+          <div style="border:1px solid var(--line-strong);border-radius:8px;background:var(--panel);padding:14px;text-align:center;font-size:12.5px;font-weight:600;color:var(--ink);">Main Entrance</div>
+          <div style="border:1px solid var(--line-strong);border-radius:8px;background:var(--panel);padding:14px;text-align:center;font-size:12.5px;font-weight:600;color:var(--ink);">Elevator</div>
+          <div style="border:1px solid var(--line-strong);border-radius:8px;background:var(--panel);padding:14px;text-align:center;font-size:12.5px;font-weight:600;color:var(--ink);">Stairwell</div>
+          <div style="border:1px solid var(--line-strong);border-radius:8px;background:var(--panel);padding:14px;text-align:center;font-size:12.5px;font-weight:600;color:var(--ink);">Lobby</div>
+          <div style="border:1px solid var(--line-strong);border-radius:8px;background:var(--panel);padding:14px;text-align:center;font-size:12.5px;font-weight:600;color:var(--ink);">Side Door</div>
+        </div>
+        <div class="col2" style="grid-template-columns:1fr 1fr;">
+          <div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» EVENT SIMULATION</span><span style="flex:1;height:1px;background:var(--line);"></span></div>
+            <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:16px 18px;font-family:'IBM Plex Mono',monospace;">
+              <div style="margin-bottom:12px;"><div style="font-size:11px;color:var(--ink-3);margin-bottom:6px;">event type</div><div style="font-size:12.5px;color:var(--ink);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:6px;padding:9px 12px;display:flex;justify-content:space-between;">Door Unlock <span style="color:var(--ink-3);">▾</span></div></div>
+              <div style="margin-bottom:12px;"><div style="font-size:11px;color:var(--ink-3);margin-bottom:6px;">location</div><div style="font-size:12.5px;color:var(--ink);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:6px;padding:9px 12px;display:flex;justify-content:space-between;">Main Entrance <span style="color:var(--ink-3);">▾</span></div></div>
+              <div style="margin-bottom:14px;"><div style="font-size:11px;color:var(--ink-3);margin-bottom:6px;">user</div><div style="font-size:12.5px;color:var(--ink);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:6px;padding:9px 12px;display:flex;justify-content:space-between;">Sarah Chen <span style="color:var(--ink-3);">▾</span></div></div>
+              <span style="display:inline-block;font-size:12px;font-weight:600;padding:8px 16px;border-radius:7px;background:var(--neon);color:var(--on-neon);">Simulate Event</span>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-family:'IBM Plex Mono',monospace;color:var(--neon-ink);font-size:11px;font-weight:600;letter-spacing:.15em;">» QUICK ACTIONS</span><span style="flex:1;height:1px;background:var(--line);"></span></div>
+            <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:16px 18px;display:flex;flex-direction:column;gap:10px;font-family:'IBM Plex Mono',monospace;">
+              <span style="font-size:12px;font-weight:600;padding:9px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);text-align:center;">Force User Sync</span>
+              <span style="font-size:12px;font-weight:600;padding:9px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);text-align:center;">Reload Service</span>
+              <span style="font-size:12px;font-weight:600;padding:9px 12px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);text-align:center;">Refresh Health</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== SETUP WIZARD (reachable via command-bar Setup) ===== -->
+      <section class="screen" id="sc-setup" style="padding:22px;">
+        <div style="max-width:640px;margin:0 auto;">
+          <div data-nav="dashboard" onClick="{{ nav }}" style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--ink-3);margin-bottom:16px;">‹ back to dashboard</div>
+          <div style="text-align:center;margin-bottom:20px;"><div style="font-family:'IBM Plex Mono',monospace;font-size:19px;font-weight:600;">Connect your controller</div><div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-3);margin-top:4px;">find it, authorize, and confirm it responds</div></div>
+          <div style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;margin-bottom:20px;font-family:'IBM Plex Mono',monospace;font-size:11.5px;"><span style="display:inline-flex;align-items:center;gap:7px;color:var(--on-neon);background:var(--neon);padding:5px 12px;border-radius:999px;font-weight:600;">1 Connect</span><span style="color:var(--ink-3);">·</span><span style="color:var(--ink-2);padding:5px 12px;">2 Confirm</span><span style="color:var(--ink-3);">·</span><span style="color:var(--ink-2);padding:5px 12px;">3 Rule</span><span style="color:var(--ink-3);">·</span><span style="color:var(--ink-2);padding:5px 12px;">4 Done</span></div>
+          <div style="border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:20px;font-family:'IBM Plex Mono',monospace;">
+            <div style="font-size:11px;color:var(--neon-ink);font-weight:600;letter-spacing:.12em;margin-bottom:12px;">» FIND CONTROLLER</div>
+            <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap;"><span style="font-size:12px;font-weight:600;padding:8px 14px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Scan Network</span><span style="font-size:11.5px;color:var(--ink-3);">or enter IP manually</span></div>
+            <div style="font-size:12.5px;color:var(--ink);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:6px;padding:9px 12px;margin-bottom:18px;">192.168.1.10</div>
+            <div style="font-size:11px;color:var(--neon-ink);font-weight:600;letter-spacing:.12em;margin-bottom:12px;">» API TOKEN</div>
+            <div style="font-size:12.5px;color:var(--ink-3);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:6px;padding:9px 12px;margin-bottom:18px;letter-spacing:2px;">••••••••••••••••</div>
+            <div style="font-size:11px;color:var(--neon-ink);font-weight:600;letter-spacing:.12em;margin-bottom:12px;">» TEST</div>
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;"><span style="font-size:12px;font-weight:600;padding:8px 14px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);">Test Connection</span><span style="font-size:11.5px;color:var(--success);">● Connected — 12 doors, 148 users</span></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;margin-top:18px;"><span style="font-size:12px;font-weight:600;padding:8px 16px;border-radius:7px;background:var(--btn2-bg);border:1px solid var(--btn2-border);color:var(--btn2-fg);font-family:'IBM Plex Mono',monospace;">Back</span><span style="flex:1;"></span><span style="font-size:12px;color:var(--ink-3);padding:8px 12px;font-family:'IBM Plex Mono',monospace;">Skip for now</span><span style="font-size:12px;font-weight:600;padding:8px 18px;border-radius:7px;background:var(--neon);color:var(--on-neon);font-family:'IBM Plex Mono',monospace;">Next</span></div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1320,&quot;height&quot;:860},&quot;startTheme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;'light'|'dark'&quot;}}">
+class Component extends DCLogic {
+  state = { theme: null, page: 'dashboard' };
+  seg(active) {
+    return { display:'inline-flex', alignItems:'center', padding:'5px 12px', border:'none', borderRadius:'999px', fontFamily:"'IBM Plex Mono',monospace", fontSize:'11.5px', fontWeight:600, cursor:'pointer', transition:'all .18s ease', background: active ? 'var(--neon)' : 'transparent', color: active ? 'var(--on-neon)' : 'var(--seg-off)' };
+  }
+  renderVals() {
+    const theme = this.state.theme ?? (this.props.startTheme || 'dark');
+    const isDark = theme === 'dark';
+    return {
+      theme, page: this.state.page,
+      nav: (e) => this.setState({ page: e.currentTarget.getAttribute('data-nav') }),
+      setLight: () => this.setState({ theme:'light' }),
+      setDark: () => this.setState({ theme:'dark' }),
+      segLight: this.seg(!isDark), segDark: this.seg(isDark),
+    };
+  }
+}
+</script>
+</body>
+</html>
