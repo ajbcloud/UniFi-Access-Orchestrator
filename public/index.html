@@ -1573,7 +1573,7 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
           <div class="sect" role="heading" aria-level="2"><span class="lbl">&raquo; NAME YOUR GROUPS</span><span class="tip" tabindex="0" data-tip="UniFi group names are often technical. Map them to friendly labels (like Staff or Delivery) that your rules will use. Leave a row blank to keep the UniFi name.">?</span><span class="rule"></span></div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             Give your UniFi groups friendly names to use in rules. This is
-            optional; you can always change it later in the Automations tab.
+            optional; you can always change it later in the User Settings tab.
           </div>
           <div id="wizGroupMappings"><div style="color:var(--text-muted)">Loading groups...</div></div>
         </div>
@@ -4533,7 +4533,7 @@ function buildTriggerBlock(door, tIdx, trigger, data, hasSameTypeSiblings) {
   const retractRow = canAddRetract
     ? choiceRow(`${rowLabel('Retract a deadbolt')}<select id="dfAddLock_${sfx2}" style="min-width:160px">${freeLocks.map((l) => `<option value="${escapeHtml(l.lock_id)}">${escapeHtml(l.name || l.lock_id)}</option>`).join('')}</select><button class="btn btn-sm btn-secondary" onclick="addRetractEdge(${doorArg}, ${tIdx})">Add</button>`)
     : choiceRow(`${rowLabel('Retract a deadbolt')}<select style="min-width:160px" disabled><option>${usableLocks.length ? 'all retracting' : 'none paired'}</option></select><button class="btn btn-sm btn-secondary" disabled>Add</button>${usableLocks.length ? muted('every paired deadbolt is already retracting on this trigger') : muted('no deadbolt is paired yet, pair one on the <a href="#" onclick="openDeadboltTab();return false;" style="color:var(--accent)">Devices tab</a>')}`);
-  const addMenu = `<div id="dfAddMenu_${sfx2}" class="df-menu" style="display:none"><div style="font-weight:600;font-size:11.5px;margin-bottom:8px">Add a door to unlock or a deadbolt to retract:</div><div style="display:flex;flex-direction:column;gap:10px">${unlockRow}${retractRow}</div></div>`;
+  const addMenu = `<div id="dfAddMenu_${sfx2}" class="df-menu" style="display:none"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px"><span style="font-weight:600;font-size:11.5px">Add a door to unlock or a deadbolt to retract:</span><button type="button" class="df-chip-x" title="Close" onclick="closeAddAction(${doorArg}, ${tIdx})">&times;</button></div><div style="display:flex;flex-direction:column;gap:10px">${unlockRow}${retractRow}</div></div>`;
   const addActions = `<div class="df-addrow"><span class="df-add2" onclick="toggleAddAction(${doorArg}, ${tIdx})">+ add action</span></div>`;
 
   const scopeNote = (hasSameTypeSiblings && groups.length)
@@ -4901,6 +4901,13 @@ function setAfterUnlock(door, tIdx, eIdx, val) {
 function toggleAddAction(door, tIdx) {
   const m = document.getElementById(`dfAddMenu_${cssId(door)}_${tIdx}`);
   if (m) m.style.display = m.style.display === 'none' ? '' : 'none';
+}
+
+// Close a trigger's "+ add action" chooser panel via its own dismiss control, so
+// the panel is never a dead end when every door and deadbolt is already used up.
+function closeAddAction(door, tIdx) {
+  const m = document.getElementById(`dfAddMenu_${cssId(door)}_${tIdx}`);
+  if (m) m.style.display = 'none';
 }
 
 // Add an "unlock a door" action for the door chosen in the trigger's picker.
@@ -6240,7 +6247,7 @@ function buildWizardFinishHtml(summary) {
     + '<div class="help-blurb" style="text-align:left;margin-top:16px;margin-bottom:0">'
     + '<strong>What you can do next:</strong>'
     + '<ul>'
-    + '<li>Fine-tune doors, triggers, and group names on the <strong>Automations</strong> tab.</li>'
+    + '<li>Fine-tune doors and triggers on the <strong>Automations</strong> tab, and group names on the <strong>User Settings</strong> tab.</li>'
     + '<li>Add a doorbell trigger on a door\'s card, plus backups and alerts under <strong>Settings</strong>.</li>'
     + '<li>Pair a smart deadbolt on the <strong>Devices</strong> tab once the hardware is connected.</li>'
     + '<li>Reopen this wizard any time from the <strong>Setup</strong> button in the top bar.</li>'
@@ -6565,9 +6572,22 @@ async function saveWizardGroups() {
   armDirtySave('#wizGroupMappings', 'button[onclick^="saveWizardGroups"]');
 }
 
-function renderWizardRuleStep() {
+// Re-read door flows into the wizard's cached configData. Door flows persist via
+// PUT /api/door-flows, which never refreshes configData, so the wizard's rule and
+// finish counts would otherwise miss a door the user just set up on the editor.
+async function refreshWizardDoorFlows() {
+  try {
+    const fresh = await api('GET', '/api/config');
+    if (configData && typeof configData === 'object' && fresh && typeof fresh === 'object') {
+      configData.door_flows = fresh.door_flows || {};
+    }
+  } catch (e) { /* keep the cached value if the refresh fails */ }
+}
+
+async function renderWizardRuleStep() {
   const el = document.getElementById('wizRuleSummary');
   if (!el) return;
+  await refreshWizardDoorFlows();
   let count = 0;
   try { count = Object.keys(configData?.door_flows || {}).length; } catch (e) { count = 0; }
   el.innerHTML = '<div style="background:var(--bg-input);border-radius:var(--radius);padding:16px;margin-bottom:16px">'
@@ -6612,6 +6632,7 @@ async function renderWizardFinish() {
     doors = (h.unifi && h.unifi.doors_discovered) || 0;
     users = (h.unifi && h.unifi.users_mapped) || 0;
   } catch (e) { /* summary is best-effort */ }
+  await refreshWizardDoorFlows();
   try { rules = Object.keys(configData?.door_flows || {}).length; } catch (e) { rules = 0; }
   try { mode = (configData && configData.event_source && configData.event_source.mode) || ''; } catch (e) { mode = ''; }
   el.innerHTML = buildWizardFinishHtml({ doors, users, rules, eventMode: mode });
