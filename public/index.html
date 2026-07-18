@@ -1630,13 +1630,16 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
   <!-- DOCUMENTATION (shown from Help > Documentation) -->
   <div id="docs" class="page" style="display:none">
-    <div style="max-width:860px;margin:0 auto;padding:24px 0">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
-        <h2 style="margin:0;font-size:18px;font-weight:700">Documentation</h2>
+    <div style="max-width:860px;margin:0 auto;padding:22px 0">
+      <div class="page-head" style="display:flex;justify-content:space-between;align-items:center">
+        <div class="page-title">
+          <div class="h1">Documentation</div>
+          <div class="sub">Reference guide and setup notes</div>
+        </div>
         <button class="btn btn-sm btn-secondary" onclick="hideDocs()">Back to Dashboard</button>
       </div>
-      <div class="card">
-        <div id="docsContent" style="font-size:14px;line-height:1.8;color:var(--text-secondary)"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
+      <div class="panel">
+        <div id="docsContent" style="font-family:var(--font-mono);font-size:13px;line-height:1.8;color:var(--text-secondary)"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
       </div>
     </div>
   </div>
@@ -6084,10 +6087,10 @@ function renderMarkdown(md) {
   let html = md
     // Code blocks (``` ... ```)
     .replace(/```(\w*)\n([\s\S]*?)```/g, (m, lang, code) => {
-      return `<pre style="background:var(--bg-primary);padding:16px;border-radius:var(--radius);overflow-x:auto;font-size:13px;line-height:1.5;border:1px solid var(--border)"><code>${code.replace(/</g,'&lt;').replace(/>/g,'&gt;').trim()}</code></pre>`;
+      return `<pre style="background:var(--bg-secondary);padding:16px;border-radius:var(--radius);overflow-x:auto;font-size:12px;line-height:1.5;border:1px solid var(--border);font-family:var(--font-mono)"><code>${code.replace(/</g,'&lt;').replace(/>/g,'&gt;').trim()}</code></pre>`;
     })
     // Inline code
-    .replace(/`([^`]+)`/g, '<code style="background:var(--bg-primary);padding:2px 6px;border-radius:4px;font-size:13px">$1</code>')
+    .replace(/`([^`]+)`/g, '<code style="background:var(--bg-secondary);padding:2px 6px;border-radius:4px;font-size:12px;font-family:var(--font-mono);border:1px solid var(--border)">$1</code>')
     // Tables
     .replace(/\n\|(.+)\|\n\|[-| :]+\|\n((?:\|.+\|\n?)*)/g, (m, header, body) => {
       const ths = header.split('|').map(h => h.trim()).filter(Boolean).map(h => `<th style="text-align:left;padding:8px 12px;border-bottom:2px solid var(--border);font-size:12px;color:var(--text-muted)">${h}</th>`).join('');
