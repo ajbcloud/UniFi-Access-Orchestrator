@@ -1018,46 +1018,47 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 /* Guided setup wizard: a header, a clickable stepper, per-step sections that
    toggle with .active, a bottom nav bar, and a small tooltip primitive. Uses
    only existing theme variables so it inherits light/dark automatically. */
-.wizard-shell { max-width: 660px; margin: 32px auto; }
+.wizard-shell { max-width: 640px; margin: 32px auto; }
 .wizard-head { text-align: center; margin-bottom: 22px; }
-.wizard-head .wizard-emoji { font-size: 38px; margin-bottom: 10px; }
-.wizard-head h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
-.wizard-head p { color: var(--text-secondary); font-size: 14px; }
+.wizard-head .wizard-emoji { font-size: 34px; margin-bottom: 10px; }
+.wizard-head h1 { font-family: var(--mono); font-size: 19px; font-weight: 600; margin-bottom: 6px; }
+.wizard-head p { color: var(--text-muted); font-family: var(--mono); font-size: 12px; }
 
 .wizard-steps {
   display: flex;
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
   margin-bottom: 22px;
+  font-family: var(--mono);
 }
 .wizard-steps .wstep {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 7px;
+  font-size: 11.5px;
   color: var(--text-muted);
-  padding: 4px 8px;
+  padding: 5px 12px 5px 5px;
   border-radius: 999px;
   cursor: default;
 }
 .wizard-steps .wstep .wdot {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 700;
   border: 1px solid var(--border);
   background: var(--bg-input);
   color: var(--text-muted);
 }
 .wizard-steps .wstep.done .wdot { background: var(--green); border-color: var(--green); color: var(--on-success); }
-.wizard-steps .wstep.active { color: var(--text-primary); }
-.wizard-steps .wstep.active .wdot { background: var(--neon); border-color: var(--neon); color: var(--on-neon); }
+.wizard-steps .wstep.active { background: var(--neon); color: var(--on-neon); font-weight: 600; }
+.wizard-steps .wstep.active .wdot { background: var(--on-neon); border-color: transparent; color: var(--neon); }
 .wizard-steps .wstep.clickable { cursor: pointer; }
 .wizard-steps .wstep.clickable:hover { color: var(--text-primary); }
 
@@ -1463,8 +1464,8 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
       <!-- STEP: welcome -->
       <section class="wizard-step" data-step="welcome">
-        <div class="card">
-          <div class="card-title" role="heading" aria-level="2">What this wizard does</div>
+        <div class="panel">
+          <div class="sect" role="heading" aria-level="2"><span class="lbl">&raquo; WHAT THIS WIZARD DOES</span><span class="rule"></span></div>
           <div style="font-size:13px;color:var(--text-secondary);line-height:1.6">
             In a few short steps we'll connect to your UniFi Access controller,
             confirm it can see your doors and users, and help you create your
@@ -1485,16 +1486,14 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
       <!-- STEP: connect (merges discovery + token + advanced; IDs preserved so
            runDiscovery / selectController / testConnection work unchanged) -->
       <section class="wizard-step" data-step="connect">
-        <div class="card" id="setupStep1">
-          <div class="card-title" role="heading" aria-level="2">Step 1 of 3: find your controller
-            <span class="tip" tabindex="0" data-tip="We scan your local subnets for devices answering on the UniFi Access API port. If yours is on another VLAN, type its IP below.">?</span>
-          </div>
+        <div class="panel" id="setupStep1">
+          <div class="sect" role="heading" aria-level="2"><span class="lbl">&raquo; FIND CONTROLLER</span><span class="tip" tabindex="0" data-tip="We scan your local subnets for devices answering on the UniFi Access API port. If yours is on another VLAN, type its IP below.">?</span><span class="rule"></span></div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             We'll scan your local network for UniFi controllers.
           </div>
 
           <div id="discoveryStatus" style="margin-bottom:16px">
-            <button class="btn btn-secondary" onclick="runDiscovery()" id="discoverBtn">
+            <button class="btn btn-sm btn-secondary" onclick="runDiscovery()" id="discoverBtn">
               Scan Network
             </button>
           </div>
@@ -1503,28 +1502,27 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
             <div id="discoveryList"></div>
           </div>
 
-          <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
-            <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Or enter the IP address manually:</div>
+          <div class="set-field" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);margin-bottom:0">
+            <label>Or enter the IP address manually</label>
             <input type="text" id="setupHost" placeholder="e.g. 192.168.1.1 or 10.1.10.1">
           </div>
         </div>
 
-        <div class="card" style="margin-top:16px" id="setupStep2">
-          <div class="card-title" role="heading" aria-level="2">Step 2 of 3: API token
-            <span class="tip" tabindex="0" data-tip="The token authorizes this app to read doors and users and to trigger unlocks. Treat it like a password; it is stored locally and never shown again after saving.">?</span>
-          </div>
+        <div class="panel" style="margin-top:16px" id="setupStep2">
+          <div class="sect" role="heading" aria-level="2"><span class="lbl">&raquo; API TOKEN</span><span class="tip" tabindex="0" data-tip="The token authorizes this app to read doors and users and to trigger unlocks. Treat it like a password; it is stored locally and never shown again after saving.">?</span><span class="rule"></span></div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
             Generate a token in the UniFi Access portal at:<br>
             <strong>Access &gt; Settings &gt; General &gt; Advanced &gt; API Token</strong>
           </div>
 
-          <div class="form-group" style="margin-bottom:0">
+          <div class="set-field" style="margin-bottom:0">
+            <label>API token</label>
             <input type="password" id="setupToken" placeholder="Paste your API token here" autocomplete="off">
           </div>
         </div>
 
-        <div class="card" style="margin-top:16px">
-          <div class="card-title" role="heading" aria-level="2">Step 3 of 3: test the connection</div>
+        <div class="panel" style="margin-top:16px">
+          <div class="sect" role="heading" aria-level="2"><span class="lbl">&raquo; TEST</span><span class="rule"></span></div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             We'll save these details and check that the controller responds and
             can see your doors and users. Once it succeeds you can continue.
@@ -1535,13 +1533,13 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
               &#9654; Advanced Settings
             </div>
             <div id="advancedSettings" style="display:none;margin-top:12px;padding:12px;background:var(--bg-input);border-radius:var(--radius)">
-              <div class="form-group">
-                <label class="form-label">API Port</label>
+              <div class="set-field">
+                <label>API Port</label>
                 <input type="number" id="setupPort" value="12445">
                 <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Default 12445. Only change if your controller uses a non-standard port.</div>
               </div>
-              <div class="form-group" style="margin-bottom:0">
-                <label class="form-label">Service Port</label>
+              <div class="set-field" style="margin-bottom:0">
+                <label>Service Port</label>
                 <input type="number" id="setupServerPort" value="3000">
                 <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Port for the webhook listener and this dashboard. Default 3000.</div>
               </div>
@@ -1549,7 +1547,7 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
           </div>
 
           <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
-            <button class="btn btn-secondary" onclick="testConnection()" id="setupTestBtn">Test Connection</button>
+            <button class="btn btn-sm btn-secondary" onclick="testConnection()" id="setupTestBtn">Test Connection</button>
           </div>
 
           <div id="setupStatus" style="margin-top:16px;font-size:13px"></div>
@@ -1558,10 +1556,8 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
       <!-- STEP: sync -->
       <section class="wizard-step" data-step="sync">
-        <div class="card">
-          <div class="card-title" role="heading" aria-level="2">Confirm doors and users
-            <span class="tip" tabindex="0" data-tip="The orchestrator pulls the door list and the user directory from the controller. Rules reference these by name, so it helps to confirm they came through.">?</span>
-          </div>
+        <div class="panel">
+          <div class="sect" role="heading" aria-level="2"><span class="lbl">&raquo; CONFIRM DOORS &amp; USERS</span><span class="tip" tabindex="0" data-tip="The orchestrator pulls the door list and the user directory from the controller. Rules reference these by name, so it helps to confirm they came through.">?</span><span class="rule"></span></div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             Here's what the orchestrator can currently see on your controller. If
             users are missing, run a sync; new users appear once they badge in or
@@ -1573,10 +1569,8 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
       <!-- STEP: groups -->
       <section class="wizard-step" data-step="groups">
-        <div class="card">
-          <div class="card-title" role="heading" aria-level="2">Name your groups
-            <span class="tip" tabindex="0" data-tip="UniFi group names are often technical. Map them to friendly labels (like Staff or Delivery) that your rules will use. Leave a row blank to keep the UniFi name.">?</span>
-          </div>
+        <div class="panel">
+          <div class="sect" role="heading" aria-level="2"><span class="lbl">&raquo; NAME YOUR GROUPS</span><span class="tip" tabindex="0" data-tip="UniFi group names are often technical. Map them to friendly labels (like Staff or Delivery) that your rules will use. Leave a row blank to keep the UniFi name.">?</span><span class="rule"></span></div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             Give your UniFi groups friendly names to use in rules. This is
             optional; you can always change it later in the Automations tab.
@@ -1587,10 +1581,8 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
       <!-- STEP: rule -->
       <section class="wizard-step" data-step="rule">
-        <div class="card">
-          <div class="card-title" role="heading" aria-level="2">Create your first rule
-            <span class="tip" tabindex="0" data-tip="An access rule says: when someone in a group badges at a chosen door, unlock one or more doors. This is the core of the orchestrator.">?</span>
-          </div>
+        <div class="panel">
+          <div class="sect" role="heading" aria-level="2"><span class="lbl">&raquo; FIRST RULE</span><span class="tip" tabindex="0" data-tip="An access rule says: when someone in a group badges at a chosen door, unlock one or more doors. This is the core of the orchestrator.">?</span><span class="rule"></span></div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             Rules are what make the orchestrator act. A simple first rule might
             be: when <em>Staff</em> badge at the <em>Front Door</em>, also unlock
@@ -1603,10 +1595,8 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
       <!-- STEP: events -->
       <section class="wizard-step" data-step="events">
-        <div class="card">
-          <div class="card-title" role="heading" aria-level="2">How events reach the app
-            <span class="tip" tabindex="0" data-tip="This is how the controller tells the app that someone badged in. Most installs should use Alarm Manager, which the app configures on the controller for you.">?</span>
-          </div>
+        <div class="panel">
+          <div class="sect" role="heading" aria-level="2"><span class="lbl">&raquo; EVENT DELIVERY</span><span class="tip" tabindex="0" data-tip="This is how the controller tells the app that someone badged in. Most installs should use Alarm Manager, which the app configures on the controller for you.">?</span><span class="rule"></span></div>
           <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
             Pick how the orchestrator learns about access events. If you're not
             sure, leave the recommended option selected.
@@ -1622,10 +1612,10 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
       <!-- Shared navigation -->
       <div class="wizard-nav">
-        <button class="btn btn-secondary" id="wizBackBtn" onclick="wizardBack()">Back</button>
+        <button class="btn btn-sm btn-secondary" id="wizBackBtn" onclick="wizardBack()">Back</button>
         <div class="spacer"></div>
-        <button class="btn btn-secondary" id="wizSkipBtn" onclick="skipSetup()">Skip for now</button>
-        <button class="btn btn-primary" id="wizNextBtn" onclick="wizardNext()">Next</button>
+        <button class="btn btn-sm btn-secondary" id="wizSkipBtn" onclick="skipSetup()">Skip for now</button>
+        <button class="btn btn-sm btn-primary" id="wizNextBtn" onclick="wizardNext()">Next</button>
       </div>
     </div>
   </div>
@@ -6239,7 +6229,7 @@ function buildWizardFinishHtml(summary) {
   const nudge = rules === 0
     ? '<div class="help-blurb" style="margin-top:16px;margin-bottom:0;text-align:left">No rules yet. The orchestrator will connect and sync, but it will not automate anything until you add at least one rule on the Automations tab.</div>'
     : '';
-  return '<div class="card" style="text-align:center">'
+  return '<div class="panel" style="text-align:center">'
     + '<div style="font-size:40px;margin-bottom:8px">&#127881;</div>'
     + '<div style="font-size:18px;font-weight:700;margin-bottom:6px">You\'re all set</div>'
     + '<div style="font-size:13px;color:var(--text-secondary)">Here is where things stand.</div>'
