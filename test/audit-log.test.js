@@ -26,7 +26,10 @@ test('appendEntry chains entries and readEntries returns them', () => {
   } finally { fs.rmSync(f, { force: true }); }
 });
 
-test('the audit file is created owner-only (0600)', () => {
+// POSIX file modes are not represented on Windows (Node reports 0o666), so the
+// exact-bits assertion only holds on POSIX. The 0600 write itself is exercised
+// on the platforms where it is meaningful.
+test('the audit file is created owner-only (0600)', { skip: process.platform === 'win32' ? 'POSIX file modes not represented on Windows' : false }, () => {
   const f = tmpFile();
   try {
     auditLog.appendEntry(f, { actor: 'admin', action: 'admin_pin_set' });
