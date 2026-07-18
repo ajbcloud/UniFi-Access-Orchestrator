@@ -732,11 +732,26 @@ class UniFiClient {
     };
 
     if (this.ws) {
-      this.ws.removeAllListeners();
-      if (this.ws.readyState === WebSocket.OPEN ||
-          this.ws.readyState === WebSocket.CONNECTING ||
-          this.ws.readyState === WebSocket.CLOSING) {
-        this.ws.terminate();
+      const stale = this.ws;
+      this.ws = null;
+      stale.removeAllListeners();
+      // Absorb late errors from the socket we are discarding. Terminating a
+      // connection that never finished the handshake — the usual case when the
+      // controller is unreachable and the socket is stuck CONNECTING — makes ws
+      // surface "WebSocket was closed before the connection was established".
+      // With the listeners just removed that would be an unhandled 'error'
+      // event (Node throws when 'error' has no listener), which crashed the
+      // Electron main process. Keep a no-op sink and wrap terminate() so a
+      // synchronous throw cannot escape either.
+      stale.on('error', () => {});
+      try {
+        if (stale.readyState === WebSocket.OPEN ||
+            stale.readyState === WebSocket.CONNECTING ||
+            stale.readyState === WebSocket.CLOSING) {
+          stale.terminate();
+        }
+      } catch (e) {
+        logger.debug(`Ignored error terminating stale WebSocket: ${e.message}`);
       }
     }
 
@@ -764,7 +779,7 @@ class UniFiClient {
         const silentMs = Date.now() - this.lastWsInboundAt;
         if (silentMs > 90000) {
           logger.warn(`WebSocket heartbeat timeout — nothing received for ${Math.round(silentMs / 1000)}s; terminating stale connection`);
-          this.ws.terminate();
+          try { this.ws.terminate(); } catch (e) { /* socket already closing */ }
           return;
         }
         try { this.ws.ping(); } catch (e) { /* socket mid-close */ }
@@ -900,7 +915,7 @@ class UniFiClient {
       this.wsReconnectTimer = null;
     }
     if (this.ws) {
-      this.ws.close();
+      try { this.ws.close(); } catch (e) { /* already closed */ }
       this.ws = null;
     }
     if (this.agent) {
