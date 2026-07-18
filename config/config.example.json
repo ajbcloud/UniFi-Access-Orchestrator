@@ -59,5 +59,12 @@
   "auto_sync": {
     "enabled": true,
     "interval_seconds": 15
+  },
+  "security": {
+    "admin_pin": null,
+    "pin_encryption": {
+      "enabled": true,
+      "algo": "aes-256-gcm"
+    }
   }
 }

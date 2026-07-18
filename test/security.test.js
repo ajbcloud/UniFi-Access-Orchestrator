@@ -161,6 +161,16 @@ test('validateConfigUpdates allows an empty object and unknown-but-safe keys', (
   assert.strictEqual(validateConfigUpdates({ logging: { level: 'debug' } }).ok, true);
 });
 
+test('validateConfigUpdates rejects the security block (managed via /api/security only)', () => {
+  // A generic config save must never be able to set or clear the admin PIN or
+  // the encryption metadata; those go through the dedicated endpoints.
+  const res = validateConfigUpdates({ security: { admin_pin: { hash: 'x' } } });
+  assert.strictEqual(res.ok, false);
+  assert.match(res.error, /security/i);
+  // Even an empty security object is refused, so a stale round-trip cannot slip through.
+  assert.strictEqual(validateConfigUpdates({ security: {} }).ok, false);
+});
+
 test('Z-Wave security keys redact fully and survive a PUT round trip', () => {
   const cfg = {
     devices: { zwave: { serial_path: 'COM3', security_keys: {

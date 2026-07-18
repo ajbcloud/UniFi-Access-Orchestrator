@@ -126,5 +126,12 @@
       "controller_disconnected",
       "controller_reconnected"
     ]
+  },
+  "security": {
+    "admin_pin": null,
+    "pin_encryption": {
+      "enabled": true,
+      "algo": "aes-256-gcm"
+    }
   }
 }
