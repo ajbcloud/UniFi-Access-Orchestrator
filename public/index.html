@@ -1575,64 +1575,74 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 
   <!-- DASHBOARD -->
   <div id="dashboard" class="page active">
-    <div class="grid grid-4" style="margin-bottom:16px">
-      <div class="card">
-        <div class="card-title" role="heading" aria-level="2">Doors Discovered</div>
-        <div class="card-value" id="statDoors">-</div>
-        <div class="card-sub" id="statDoorsOnline"></div>
+    <div class="page-head">
+      <div class="page-title"><span class="h1" role="heading" aria-level="1">Dashboard</span><span class="sub">system overview</span></div>
+    </div>
+
+    <div class="stat-strip" style="margin-bottom:22px">
+      <div class="stat">
+        <div class="k">DOORS</div>
+        <div class="n" id="statDoors">-</div>
+        <div class="s" id="statDoorsOnline"></div>
       </div>
-      <div class="card">
-        <div class="card-title" role="heading" aria-level="2">Users Mapped</div>
-        <div class="card-value" id="statUsers">-</div>
-        <div class="card-sub" id="statUsersGroups"></div>
+      <div class="stat">
+        <div class="k">USERS</div>
+        <div class="n" id="statUsers">-</div>
+        <div class="s" id="statUsersGroups"></div>
       </div>
-      <div class="card">
-        <div class="card-title" role="heading" aria-level="2">Events Received</div>
-        <div class="card-value" id="statEvents">-</div>
-        <div class="card-sub" id="statEventsProcessed"></div>
+      <div class="stat">
+        <div class="k">EVENTS</div>
+        <div class="n" id="statEvents">-</div>
+        <div class="s" id="statEventsProcessed"></div>
       </div>
-      <div class="card">
-        <div class="card-title" role="heading" aria-level="2">Unlocks Triggered</div>
-        <div class="card-value" id="statUnlocks">-</div>
-        <div class="card-sub" id="statUnlocksFailed"></div>
+      <div class="stat accent">
+        <div class="k">UNLOCKS</div>
+        <div class="n" id="statUnlocks">-</div>
+        <div class="s" id="statUnlocksFailed"></div>
       </div>
     </div>
 
-    <div class="grid grid-2">
-      <div class="card">
-        <div class="card-title" role="heading" aria-level="2">Last Event</div>
-        <div id="lastEvent" style="font-size:13px;color:var(--text-secondary)">No events yet</div>
-      </div>
-      <div class="card">
-        <div class="card-title" role="heading" aria-level="2">Last Unlock</div>
-        <div id="lastUnlock" style="font-size:13px;color:var(--text-secondary)">No unlocks yet</div>
-      </div>
-    </div>
+    <div class="col2">
+      <div>
+        <div class="sect"><span class="lbl">&raquo; SYSTEM</span><span class="rule"></span></div>
+        <div class="panel">
+          <div class="dot-row"><span class="k">event source</span><span class="lead"></span><span class="v" id="infoEventSource">-</span><span id="infoWsStatus" style="margin-left:6px"></span></div>
+          <div class="dot-row"><span class="k">memory</span><span class="lead"></span><span class="v" id="infoMemory">-</span></div>
+          <div class="dot-row"><span class="k">uptime</span><span class="lead"></span><span class="v" id="infoUptime">-</span></div>
+          <div class="dot-row"><span class="k">controller</span><span class="lead"></span><span class="v" id="infoHost">-</span><span id="infoConnState" style="margin-left:6px"></span></div>
+          <div class="dot-row"><span class="k">version</span><span class="lead"></span><span class="v" id="infoVersion" style="color:var(--accent)">-</span></div>
+          <div class="dot-row" id="infoLastEvent" style="display:none"><span class="k">last event</span><span class="lead"></span><span class="v" id="infoLastEventAge">-</span></div>
+          <div class="dot-row" id="infoLastRule" style="display:none"><span class="k">last rule</span><span class="lead"></span><span class="v" id="infoLastRuleText">-</span></div>
+          <div class="dot-row" id="infoWsFilter" style="display:none"><span class="k">ws events</span><span class="lead"></span><span class="v" id="infoWsFilterStats">-</span></div>
+        </div>
 
-    <div class="card" style="margin-top:16px">
-      <div class="card-title" role="heading" aria-level="2" style="display:flex;align-items:center;gap:8px">System Info <span id="infoVersion" style="font-size:11px;font-weight:500;color:var(--text-muted);background:var(--bg-secondary);padding:2px 8px;border-radius:4px">-</span></div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px">
-        <div><span style="color:var(--text-muted)">Event Source:</span> <span id="infoEventSource">-</span> <span id="infoWsStatus"></span></div>
-        <div><span style="color:var(--text-muted)">Memory:</span> <span id="infoMemory">-</span></div>
-        <div><span style="color:var(--text-muted)">Uptime:</span> <span id="infoUptime">-</span></div>
-        <div><span style="color:var(--text-muted)">UniFi controller:</span> <span id="infoHost">-</span> <span id="infoConnState"></span></div>
-        <div id="infoLastEvent" style="display:none"><span style="color:var(--text-muted)">Last Event:</span> <span id="infoLastEventAge">-</span></div>
-        <div id="infoLastRule" style="display:none;grid-column:1 / -1"><span style="color:var(--text-muted)">Last Rule Triggered:</span> <span id="infoLastRuleText">-</span></div>
-        <div id="infoWsFilter" style="display:none"><span style="color:var(--text-muted)">WS Events:</span> <span id="infoWsFilterStats">-</span></div>
+        <div id="deadboltSection" style="display:none">
+          <div class="sect"><span class="lbl">&raquo; DEADBOLT</span><span class="rule"></span></div>
+          <div class="panel" id="deadboltCard">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+              <span id="deadboltModel" style="font-size:13px;font-weight:600;color:var(--text-primary)">-</span>
+              <span id="deadboltState" class="badge">-</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 18px;font-size:11.5px">
+              <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">battery</span><span id="deadboltBattery" style="color:var(--text-primary)">-</span></div>
+              <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">link</span><span id="deadboltLink" style="color:var(--text-primary)">-</span></div>
+              <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">security</span><span id="deadboltSecurity" style="color:var(--text-primary)">-</span></div>
+              <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">trigger</span><span id="deadboltDoor" style="color:var(--text-primary)">-</span></div>
+            </div>
+            <div style="margin-top:12px;padding-top:10px;border-top:1px dotted var(--border-light);font-size:11px;color:var(--text-muted)">last action <span id="deadboltLastAction" style="color:var(--text-secondary)">-</span></div>
+            <div style="margin-top:6px;font-size:11px;color:var(--text-muted)">totals <span id="deadboltStats" style="color:var(--text-secondary)">-</span></div>
+            <div id="deadboltLocksList" style="margin-top:8px"></div>
+          </div>
+        </div>
       </div>
-    </div>
 
-    <div class="card" id="deadboltCard" style="margin-top:16px;display:none">
-      <div class="card-title" role="heading" aria-level="2" style="display:flex;align-items:center;gap:8px">Smart Deadbolt <span id="deadboltState" class="badge">-</span></div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:13px">
-        <div><span style="color:var(--text-muted)">Lock:</span> <span id="deadboltModel">-</span></div>
-        <div><span style="color:var(--text-muted)">Security:</span> <span id="deadboltSecurity">-</span></div>
-        <div><span style="color:var(--text-muted)">Battery:</span> <span id="deadboltBattery">-</span></div>
-        <div><span style="color:var(--text-muted)">Link:</span> <span id="deadboltLink">-</span></div>
-        <div><span style="color:var(--text-muted)">Trigger door:</span> <span id="deadboltDoor">-</span></div>
-        <div style="grid-column:1 / -1"><span style="color:var(--text-muted)">Last action:</span> <span id="deadboltLastAction">-</span></div>
-        <div style="grid-column:1 / -1"><span style="color:var(--text-muted)">Totals:</span> <span id="deadboltStats">-</span></div>
-        <div style="grid-column:1 / -1" id="deadboltLocksList"></div>
+      <div>
+        <div class="sect"><span class="lbl">&raquo; RECENT ACTIVITY</span><span class="rule"></span><span class="live"><span class="status-dot" aria-hidden="true"></span>LIVE</span></div>
+        <div class="utable">
+          <div class="thead" style="grid-template-columns:76px 1fr 62px"><span>TIME</span><span>ACTOR &middot; ACTION</span><span style="text-align:right">RESULT</span></div>
+          <div id="dashRecent"></div>
+        </div>
+        <div style="display:none"><span id="lastEvent"></span><span id="lastUnlock"></span></div>
       </div>
     </div>
   </div>
@@ -2552,6 +2562,7 @@ function updateDashboard() {
   }
 
   renderDeadbolt(h);
+  renderDashRecent();
 }
 
 // Pure descriptors for the deadbolt Link and Battery readouts, shared by the
@@ -2614,6 +2625,9 @@ function renderDeadbolt(h) {
   const card = document.getElementById('deadboltCard');
   if (!card) return;
   const db = h && h.deadbolt;
+  // Hide the whole "» DEADBOLT" section (header + card) when no lock is enabled.
+  const sec = document.getElementById('deadboltSection');
+  if (sec) sec.style.display = (!db || !db.enabled) ? 'none' : '';
   if (!db || !db.enabled) { card.style.display = 'none'; setCardState(card, null); return; }
   card.style.display = '';
 
@@ -2743,6 +2757,31 @@ function classifyEventRow(evt) {
   if (e.success === false) return 'failed';
   const a = String(e.action || '');
   return /Skipped|No action|No group|No rules|not an admin/.test(a) ? 'skipped' : 'actioned';
+}
+
+// Dashboard "Recent Activity" table: the last few events from the shared feed.
+function renderDashRecent() {
+  const host = document.getElementById('dashRecent');
+  if (!host) return;
+  const rows = (eventBuffer || []).slice(0, 6);
+  if (!rows.length) {
+    host.innerHTML = '<div class="trow" style="grid-template-columns:1fr"><span style="color:var(--text-muted)">No activity yet</span></div>';
+    return;
+  }
+  host.innerHTML = rows.map((evt) => {
+    const d = new Date(evt.timestamp);
+    const p = (n) => String(n).padStart(2, '0');
+    const time = isNaN(d.getTime()) ? '--:--:--' : `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    const kind = classifyEventRow(evt);
+    const res = kind === 'failed' ? 'FAIL' : kind === 'skipped' ? 'SKIP' : 'OK';
+    const resCls = kind === 'failed' ? 'res-fail' : kind === 'skipped' ? 'res-skip' : 'res-ok';
+    const actor = escapeHtml(evt.actor || 'Unknown');
+    const action = escapeHtml((evt.action && String(evt.action).trim()) ? String(evt.action).trim() : narrateEvent(evt));
+    return `<div class="trow${kind === 'failed' ? ' fail' : ''}" style="grid-template-columns:76px 1fr 62px">`
+      + `<span style="color:var(--text-muted)">${time}</span>`
+      + `<span style="color:var(--text-secondary)"><span style="color:var(--text-primary)">${actor}</span> &rarr; ${action}</span>`
+      + `<span style="text-align:right" class="${resCls}">${res}</span></div>`;
+  }).join('');
 }
 
 function skippedGroupLabel(n) {
@@ -2889,6 +2928,7 @@ function addEventRow(evt) {
   while (eventBuffer.length > 200) eventBuffer.pop();
   syncEventFilterControls();
   renderEventFeed();
+  renderDashRecent();
 }
 
 function toggleAutoscroll() {
