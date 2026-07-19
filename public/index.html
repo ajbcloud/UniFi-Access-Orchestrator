@@ -9,7 +9,7 @@
    Theme system (8 colorways x light/dark)
    -------------------------------------------------------------------------
    The palette is a two-axis system on <html>: data-colorway picks the family
-   (unifi, qit, indigo, copper, amber, teal, rose, crimson) and data-theme
+   (unifi, forest, indigo, copper, amber, teal, rose, crimson) and data-theme
    picks the mode (light / dark). Both are always set (default unifi / dark),
    restored from localStorage pre-paint and changed from Settings > Appearance.
    The full token contract + alias layer are documented at the :root blocks
@@ -68,8 +68,8 @@
    Selectors match BOTH the chooser (descendant) and the app (same element on <html>).
    ============================================================================= */
 
-/* ============================ 1 · UNIFI (default) ========================== */
-[data-theme="light"] [data-colorway="unifi"], [data-colorway="unifi"][data-theme="light"]{
+/* ============================ 1 · FOREST (forest & lime) ================== */
+[data-theme="light"] [data-colorway="forest"], [data-colorway="forest"][data-theme="light"]{
   --bg:#C7C8C3; --panel:#D7D8D3; --panel-2:#CFD0CB; --line:#B6B8B2; --line-strong:#A4A69F; --grid:rgba(21,82,42,.06);
   --ink:#0C2414; --ink-2:#3B4B41; --ink-3:#5E6C62;
   --neon:#B7D416; --neon-ink:#15522A; --on-neon:#16320A; --accent:#15522A;
@@ -78,7 +78,7 @@
   --side-bg:#05140C; --side-line:#123E20; --side-fg:#8AA997; --side-fg-dim:#4F6B59;
   --side-active-bg:rgba(212,255,59,.10); --side-active-fg:#D4FF3B; --side-brand:#D4FF3B;
 }
-[data-theme="dark"] [data-colorway="unifi"], [data-colorway="unifi"][data-theme="dark"]{
+[data-theme="dark"] [data-colorway="forest"], [data-colorway="forest"][data-theme="dark"]{
   --bg:#020C07; --panel:#061D0F; --panel-2:#04130A; --line:#123E20; --line-strong:#1C5A32; --grid:rgba(121,168,138,.05);
   --ink:#E9F3E9; --ink-2:#9FC1AB; --ink-3:#688A74;
   --neon:#D4FF3B; --neon-ink:#D4FF3B; --on-neon:#04120A; --accent:#D4FF3B;
@@ -88,8 +88,8 @@
   --side-active-bg:rgba(212,255,59,.12); --side-active-fg:#D4FF3B; --side-brand:#D4FF3B;
 }
 
-/* ============================ 2 · QIT (azure & navy) ======================= */
-[data-theme="light"] [data-colorway="qit"], [data-colorway="qit"][data-theme="light"]{
+/* ============================ 2 · UNIFI (azure & navy, default) =========== */
+[data-theme="light"] [data-colorway="unifi"], [data-colorway="unifi"][data-theme="light"]{
   --bg:#EEF2F6; --panel:#FFFFFF; --panel-2:#F4F7FA; --line:#E5EBF0; --line-strong:#C7CBD0; --grid:rgba(14,35,52,.05);
   --ink:#15222E; --ink-2:#54616E; --ink-3:#7E8A96;
   --neon:#00B9F1; --neon-ink:#0094CC; --on-neon:#05202B; --accent:#0094CC;
@@ -98,7 +98,7 @@
   --side-bg:#0E2334; --side-line:#1E3A52; --side-fg:#8CA0B3; --side-fg-dim:#55708A;
   --side-active-bg:rgba(0,185,241,.14); --side-active-fg:#4FD0FA; --side-brand:#00B9F1;
 }
-[data-theme="dark"] [data-colorway="qit"], [data-colorway="qit"][data-theme="dark"]{
+[data-theme="dark"] [data-colorway="unifi"], [data-colorway="unifi"][data-theme="dark"]{
   --bg:#0A1622; --panel:#0F2334; --panel-2:#0C1C2B; --line:#1E3A52; --line-strong:#2C4E6B; --grid:rgba(79,208,250,.05);
   --ink:#EAF2F8; --ink-2:#A9BED0; --ink-3:#6E8AA2;
   --neon:#00B9F1; --neon-ink:#4FD0FA; --on-neon:#05202B; --accent:#4FD0FA;
@@ -298,8 +298,8 @@
 
 /* On saturated mid-tone dark accents (red/pink/violet/orange), a hue-tinted
    near-black label reads muddy; white text is visibly crisper. The bright
-   yellow-green/cyan accents (unifi, teal, amber) and the high-contrast blue
-   (qit) keep dark text, where white would wash out. Overrides --on-neon /
+   yellow-green/cyan accents (forest, teal, amber) and the high-contrast blue
+   (unifi) keep dark text, where white would wash out. Overrides --on-neon /
    --on-accent (used by .btn-primary, .seg button.on, badges and chips). */
 :root[data-theme="dark"][data-colorway="crimson"],
 :root[data-theme="dark"][data-colorway="rose"],
@@ -402,6 +402,10 @@ body {
 /* » section header + hairline rule */
 .sect { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; margin-top: 22px; }
 .sect:first-child { margin-top: 0; }
+/* A section header that is the first child of a toggled wrapper (e.g. the
+   deadbolt block) still follows a card above it, so keep the normal top gap
+   instead of the first-in-column reset. */
+#deadboltSection > .sect:first-child { margin-top: 22px; }
 .sect .lbl { color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: 0.15em; white-space: nowrap; }
 .sect .meta { font-size: 10.5px; color: var(--text-muted); white-space: nowrap; }
 .sect .rule { flex: 1; height: 1px; background: var(--border); }
@@ -1451,7 +1455,7 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
 // Apply the saved colorway + mode before first paint so there is no flash of
 // the wrong palette. Both attributes are always set; default is unifi / dark.
 (function () {
-  var COLORWAYS = ['unifi', 'qit', 'indigo', 'copper', 'amber', 'teal', 'rose', 'crimson'];
+  var COLORWAYS = ['unifi', 'forest', 'indigo', 'copper', 'amber', 'teal', 'rose', 'crimson'];
   var cw = 'unifi', th = 'dark';
   try {
     var storedCw = localStorage.getItem('uao-colorway');
@@ -1920,8 +1924,8 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
                the #settings dirty-save listener, so they never mark the page unsaved. -->
           <div class="panel set-panel" style="margin-bottom:22px" oninput="event.stopPropagation()" onchange="event.stopPropagation()">
             <div class="set-field"><label>colorway</label><select id="colorwaySelect" aria-label="Colorway" onchange="setColorway(this.value)">
-              <option value="unifi">UniFi &mdash; forest &amp; lime</option>
-              <option value="qit">QIT &mdash; azure &amp; navy</option>
+              <option value="unifi">UniFi &mdash; azure &amp; navy</option>
+              <option value="forest">Forest &mdash; forest &amp; lime</option>
               <option value="indigo">Indigo &mdash; indigo &amp; violet</option>
               <option value="copper">Copper &mdash; graphite &amp; copper</option>
               <option value="amber">Amber &mdash; charcoal &amp; amber</option>
@@ -2194,7 +2198,7 @@ const expandedSkips = new Set(); // collapsed skipped-run keys the user opened
 // Both data-colorway and data-theme are always set on <html> (see the pre-paint
 // script). The Settings > Appearance controls change them and persist to
 // localStorage (uao-colorway / uao-theme) so the choice survives reloads.
-const COLORWAYS = ['unifi', 'qit', 'indigo', 'copper', 'amber', 'teal', 'rose', 'crimson'];
+const COLORWAYS = ['unifi', 'forest', 'indigo', 'copper', 'amber', 'teal', 'rose', 'crimson'];
 
 function currentTheme() {
   return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
