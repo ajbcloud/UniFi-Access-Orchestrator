@@ -6,10 +6,13 @@ Built for multi-tenant commercial buildings where different tenants need differe
 
 Beyond door-to-door unlocks it can also drive a Z-Wave smart deadbolt (retract on entry, re-lock on secured), keep keypad PINs in sync with UniFi Access one PIN per person, and send out-of-band alerts to a webhook, Slack or Teams, or email when a lock fails, jams, or drops offline. It runs as a Windows/macOS/Linux desktop app or as a headless service on a Raspberry Pi.
 
+![UniFi Access Orchestrator dashboard](docs/screenshots/dashboard.png)
+
 ---
 
 ## Table of Contents
 
+- [Screenshots](#screenshots)
 - [How It Works](#how-it-works)
 - [Prerequisites](#prerequisites)
 - [Option A: Windows Desktop App](#option-a-windows-desktop-app)
@@ -31,6 +34,35 @@ Beyond door-to-door unlocks it can also drive a Z-Wave smart deadbolt (retract o
 - [Project Structure](#project-structure)
 - [Contributing](#contributing)
 - [License](#license)
+
+---
+
+## Screenshots
+
+Everything runs in one local web UI (the Electron desktop app or the headless service), no cloud and no account required.
+
+|  |  |
+|:--:|:--:|
+| ![Automations](docs/screenshots/automations.png)<br>**Automations**: per-door "when X badges in, unlock Y" flows | ![Live Events](docs/screenshots/live-events.png)<br>**Live Events**: the real-time access feed |
+| ![User Settings](docs/screenshots/user-settings.png)<br>**User Settings**: keypad PINs and group mapping | ![Devices](docs/screenshots/devices.png)<br>**Devices**: Z-Wave deadbolt pairing and status |
+| ![Test Tools](docs/screenshots/test-tools.png)<br>**Test Tools**: simulate events and run diagnostics | ![Settings](docs/screenshots/settings.png)<br>**Settings**: connection, auto-sync, and appearance |
+
+### Themes
+
+Eight built-in colorways, each with a light and a dark mode. Pick one under **Settings &rsaquo; Appearance**; it applies instantly and is remembered per browser.
+
+| Colorway | Light | Dark |
+|:--|:--:|:--:|
+| **UniFi** (azure & navy, default) | ![UniFi light](docs/screenshots/theme-unifi-light.png) | ![UniFi dark](docs/screenshots/theme-unifi-dark.png) |
+| **Forest** (forest & lime) | ![Forest light](docs/screenshots/theme-forest-light.png) | ![Forest dark](docs/screenshots/theme-forest-dark.png) |
+| **Indigo** (indigo & violet) | ![Indigo light](docs/screenshots/theme-indigo-light.png) | ![Indigo dark](docs/screenshots/theme-indigo-dark.png) |
+| **Copper** (graphite & copper) | ![Copper light](docs/screenshots/theme-copper-light.png) | ![Copper dark](docs/screenshots/theme-copper-dark.png) |
+| **Amber** (charcoal & amber) | ![Amber light](docs/screenshots/theme-amber-light.png) | ![Amber dark](docs/screenshots/theme-amber-dark.png) |
+| **Teal** (slate & teal) | ![Teal light](docs/screenshots/theme-teal-light.png) | ![Teal dark](docs/screenshots/theme-teal-dark.png) |
+| **Rose** (plum & rose) | ![Rose light](docs/screenshots/theme-rose-light.png) | ![Rose dark](docs/screenshots/theme-rose-dark.png) |
+| **Crimson** (ash & crimson) | ![Crimson light](docs/screenshots/theme-crimson-light.png) | ![Crimson dark](docs/screenshots/theme-crimson-dark.png) |
+
+The screenshots use sample data for illustration.
 
 ---
 
