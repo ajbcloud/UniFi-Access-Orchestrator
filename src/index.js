@@ -386,6 +386,16 @@ const zwavePairing = new ZwavePairing({
         }
       );
       zw.enabled = true;
+      // Re-pairing the SAME physical node under a NEW id supersedes the old
+      // binding. Remove the stale entry (mirrors the failed-node unpair sweep) so
+      // its user_codes + pending_clears and its door_flows retract edges do not
+      // linger as an orphan that strands a user in "removal pending" and cannot
+      // be cleared. The collision guard above only handles the reverse case.
+      for (const id of Object.keys(zw.locks)) {
+        if (id !== lockId && zw.locks[id] && zw.locks[id].node_id === nodeId) {
+          removeLockEntry(cfg, id);
+        }
+      }
       // Door-centric model: automation is a door's retract edge, created in
       // the Door Flows editor. A freshly paired lock is manually controllable
       // immediately (zw.enabled gates that) and gets wired to a door when the
@@ -1223,6 +1233,13 @@ function persistZwaveMutation(mutator) {
   let diskConfig;
   try {
     diskConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    // Decrypt keypad PINs so the mutator sees CLEARTEXT here, exactly as it does
+    // on the in-memory pass below. Without this, a mutator that compares pin_code
+    // (e.g. e.pushed_to_unifi = String(e.pin_code) === pin, or markStaleAfterPush)
+    // runs against encrypted envelopes on disk and silently gets it wrong, which
+    // persisted a bogus "UniFi not synced" state for every user. writeConfigFile
+    // re-encrypts on the way back out.
+    if (dek) pinCrypto.decryptConfigPins(diskConfig, dek);
   } catch (e) {
     diskConfig = JSON.parse(JSON.stringify(config));
   }
@@ -1267,6 +1284,7 @@ async function revokeHeldCode({ lockId, driver, label }, slot, userId, reason) {
   }
   const revoked = confirmed === true;
   const requestedAt = new Date().toISOString(); // computed once, mutator runs twice
+  let armed = false;
   persistZwaveMutation((cfg) => {
     const lock = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
       && cfg.devices.zwave.locks[lockId];
@@ -1281,16 +1299,31 @@ async function revokeHeldCode({ lockId, driver, label }, slot, userId, reason) {
     if (revoked) {
       if (lock.pending_clears) delete lock.pending_clears[String(slot)];
     } else {
-      lock.pending_clears = lock.pending_clears || {};
-      lock.pending_clears[String(slot)] = { user_id: userId, name, requested_at: requestedAt, reason };
+      // Only arm a retry marker when the clear could EVER confirm later: a live
+      // driver now, or a real paired node (node_id > 0) that can be retried when
+      // it wakes. A driverless, unpaired/superseded entry can never confirm, so a
+      // marker there would strand the user forever (retryPendingClears skips it);
+      // instead drop any stale marker and treat the code as gone.
+      const paired = !!(lock.node_id && lock.node_id > 0);
+      if (driver || paired) {
+        lock.pending_clears = lock.pending_clears || {};
+        lock.pending_clears[String(slot)] = { user_id: userId, name, requested_at: requestedAt, reason };
+        armed = true;
+      } else if (lock.pending_clears) {
+        delete lock.pending_clears[String(slot)];
+      }
     }
   });
   if (revoked) {
     logger.info(`Deadbolt: revoked "${userId}" from "${label}" (${reason})`);
-  } else {
+  } else if (armed) {
     logger.warn(`Deadbolt: clear unconfirmed for "${userId}" on "${label}" slot ${slot}; entry removed, retry queued (${reason})`);
+  } else {
+    logger.warn(`Deadbolt: cleared "${userId}" from unreachable/unpaired "${label}" slot ${slot}; entry removed, no retry possible (${reason})`);
   }
-  return { lock_id: lockId, slot, confirmed, revoked, revoke_pending: !revoked, reason, error };
+  // revoke_pending is true only when a retry is actually armed; a no-driver/unpaired
+  // holding reports as removed (not pending) so the caller never shows it stuck.
+  return { lock_id: lockId, slot, confirmed, revoked, revoke_pending: armed, no_driver: !revoked && !armed, reason, error };
 }
 
 // Re-attempt every armed pending clear. Deletes the marker only when the
@@ -1305,7 +1338,22 @@ async function retryPendingClears(onlyLockId) {
     const slots = Object.keys(pend);
     if (!slots.length) continue;
     const driver = lockDrivers.get(lockId);
-    if (!driver || typeof driver.clearUserCode !== 'function') continue;
+    if (!driver || typeof driver.clearUserCode !== 'function') {
+      // No live driver: if this is also NOT a real paired node (a superseded /
+      // removed entry), the markers here can never confirm, so garbage-collect
+      // them rather than leave them (and any stuck user) forever. A real but
+      // offline/asleep node (node_id > 0) is left alone to retry when it wakes.
+      const paired = !!(lock && lock.node_id && lock.node_id > 0);
+      if (!paired) {
+        persistZwaveMutation((cfg) => {
+          const l = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
+            && cfg.devices.zwave.locks[lockId];
+          if (l) l.pending_clears = {};
+        });
+        logger.info(`Deadbolt: dropped orphan pending clears on unreachable, unpaired "${lockLabel(lockId)}"`);
+      }
+      continue;
+    }
     for (const slotKey of slots) {
       let confirmed = null;
       try {
@@ -1577,7 +1625,21 @@ function authorizeSensitivePinOp(body, { allowCurrentPin = false, userId = null 
     error: allowCurrentPin
       ? "admin PIN required (or this user's current PIN to change their own)"
       : 'admin PIN required',
+    // Machine-readable so the frontend can pop the PIN prompt and retry instead
+    // of dead-ending on the error (e.g. the "Rewrite Codes to Lock" button).
+    admin_pin_required: true,
+    allow_current_pin: !!allowCurrentPin,
   };
+}
+
+// Uniform 403/423 response for a denied sensitive op, carrying the flags the
+// frontend uses to auto-prompt for the PIN and retry.
+function sendAuthDenied(res, auth) {
+  return res.status(auth.status).json({
+    error: auth.error,
+    admin_pin_required: !!auth.admin_pin_required,
+    allow_current_pin: !!auth.allow_current_pin,
+  });
 }
 
 // Append one tamper-evident audit entry. Best-effort: an audit failure is logged
@@ -2312,10 +2374,25 @@ app.post('/api/deadbolt/user-codes', async (req, res) => {
   if (!/^[0-9]{4,10}$/.test(pin)) {
     return res.status(400).json({ error: 'pin must be 4 to 10 digits' });
   }
-  // Same gate as the user-centric endpoint: admin PIN, or the user's current PIN
-  // to change their own. Closes the bypass of writing codes via the raw layer.
-  const auth = authorizeSensitivePinOp(b, { allowCurrentPin: true, userId: b.user_id });
-  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+  const zwLocks0 = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  // One PIN per person everywhere (locks + UniFi reject duplicates): refuse a PIN
+  // another user already holds, up front.
+  const conflict = keypadUsers.findPinConflict(zwLocks0, config.unifi_pin_state, b.user_id, pin);
+  if (conflict) {
+    const who = conflict.name || conflict.user_id;
+    return res.status(409).json({
+      error: `That PIN is already in use by ${who}. PINs must be unique per person; choose a different one.`,
+      conflict: { user_id: conflict.user_id, name: conflict.name },
+    });
+  }
+  // First-time set needs no admin PIN; a change still requires the admin PIN or
+  // the user's own current PIN. Closes the bypass of writing codes via the raw
+  // layer while matching the user-centric endpoint's initial-set behavior.
+  const isInitialSet = !keypadUsers.canonicalPins(zwLocks0).has(b.user_id);
+  if (!isInitialSet) {
+    const auth = authorizeSensitivePinOp(b, { allowCurrentPin: true, userId: b.user_id });
+    if (!auth.ok) return sendAuthDenied(res, auth);
+  }
   try {
     const cap = await target.driver.userCodesCapability();
     if (!cap.supported) {
@@ -2462,7 +2539,7 @@ app.delete('/api/deadbolt/user-codes/:slot', async (req, res) => {
   }
   // Deleting a code is admin-only (mirrors the user-centric delete gate).
   const auth = authorizeSensitivePinOp(req.body, { allowCurrentPin: false });
-  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+  if (!auth.ok) return sendAuthDenied(res, auth);
   const target = resolveLockRequest(req, res);
   if (!target) return;
   if (typeof target.driver.clearUserCode !== 'function') {
@@ -2505,7 +2582,7 @@ app.post('/api/deadbolt/user-codes/rewrite', async (req, res) => {
   }
   // Re-pushing codes is an admin maintenance action; gate it too.
   const auth = authorizeSensitivePinOp(req.body, { allowCurrentPin: false });
-  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+  if (!auth.ok) return sendAuthDenied(res, auth);
   const target = resolveLockRequest(req, res);
   if (!target) return;
   if (typeof target.driver.rewriteUserCodes !== 'function') {
@@ -2600,7 +2677,7 @@ app.get('/api/deadbolt/keypad-users', async (req, res) => {
         verdicts.set(`${u.user_id}|${v.lock_id}`, v.verdict);
       }
     }
-    const users = keypadUsers.aggregateKeypadUsers(zwLocks, relevantForAgg, verdicts).map((u) => Object.assign(u, {
+    const users = keypadUsers.aggregateKeypadUsers(zwLocks, relevantForAgg, verdicts, config.unifi_pin_state).map((u) => Object.assign(u, {
       user_missing: !!(u.user_id && known.size && !known.has(u.user_id)),
     }));
     res.json({
@@ -2649,10 +2726,28 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
   if (!/^[0-9]{4,10}$/.test(pin)) {
     return res.status(400).json({ error: 'pin must be 4 to 10 digits' });
   }
-  // Adding a new user's PIN or changing an existing one requires the admin PIN;
-  // a user may instead change their OWN PIN with their current PIN.
-  const auth = authorizeSensitivePinOp(b, { allowCurrentPin: true, userId: b.user_id });
-  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+  const zwLocks0 = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  // One PIN per person, everywhere. Locks (Yale and others) and UniFi both reject
+  // a PIN already assigned to someone else, so refuse it up front with a clear
+  // message rather than half-writing and bouncing at the UniFi push.
+  const conflict = keypadUsers.findPinConflict(zwLocks0, config.unifi_pin_state, b.user_id, pin);
+  if (conflict) {
+    const who = conflict.name || conflict.user_id;
+    return res.status(409).json({
+      error: `That PIN is already in use by ${who}. PINs must be unique per person (locks and UniFi both reject duplicates); choose a different one.`,
+      conflict: { user_id: conflict.user_id, name: conflict.name },
+    });
+  }
+  // Setting a user's FIRST PIN needs no admin PIN (frictionless first-time setup).
+  // CHANGING an existing PIN still requires the admin PIN (or the user's own
+  // current PIN). The UniFi-portal auto-prune path stays exempt as before.
+  const isInitialSet = !keypadUsers.canonicalPins(zwLocks0).has(b.user_id);
+  let actor = 'initial-set';
+  if (!isInitialSet) {
+    const auth = authorizeSensitivePinOp(b, { allowCurrentPin: true, userId: b.user_id });
+    if (!auth.ok) return sendAuthDenied(res, auth);
+    actor = auth.actor;
+  }
   try {
     const capable = await codeCapableLocks();
     if (!capable.length) {
@@ -2795,14 +2890,14 @@ app.post('/api/deadbolt/keypad-users', async (req, res) => {
       });
     }
     safeAudit({
-      actor: auth.actor,
-      action: auth.actor === 'user' ? 'pin_changed_by_user' : 'pin_set',
+      actor,
+      action: actor === 'user' ? 'pin_changed_by_user' : (actor === 'initial-set' ? 'pin_set_initial' : 'pin_set'),
       target: name || b.user_id,
       detail: `${written.length}/${results.length} lock(s); UniFi ${unifi.success ? 'in sync' : 'push failed'}`,
     });
     broadcastEvent({
       type: 'deadbolt.user_code',
-      actor: auth.actor === 'user' ? 'User (self-service)' : 'GUI Admin',
+      actor: actor === 'user' ? 'User (self-service)' : 'GUI Admin',
       location: (written.length ? written : results).map((r) => lockLabel(r.lock_id)).join(', '),
       action: `PIN set for ${name || b.user_id} on ${written.length}/${results.length} lock(s)`
         + (revokedCount ? `; revoked on ${revokedCount} (no door access)` : '')
@@ -2831,7 +2926,7 @@ app.delete('/api/deadbolt/keypad-users/:user_id', async (req, res) => {
   // departed UniFi runs through reconcileAccessRevocations, NOT this endpoint,
   // so a portal-driven removal is never gated (that is the requested behavior).
   const auth = authorizeSensitivePinOp(req.body, { allowCurrentPin: false });
-  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+  if (!auth.ok) return sendAuthDenied(res, auth);
   try {
     const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
     const holdings = [];

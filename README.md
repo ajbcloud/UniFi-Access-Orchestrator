@@ -879,10 +879,14 @@ On a shared computer, the `admin_api_key` alone does not stop a technician at th
 machine from changing keypad PINs (the desktop app supplies that key
 automatically). A separate **admin PIN** gates the sensitive operations:
 
-- Adding or changing a user's keypad PIN requires the admin PIN. A user may
-  instead change their own PIN by entering their current one.
-- Manually deleting a user requires the admin PIN. A removal that originates in
-  the UniFi portal and syncs over is pruned automatically and is never gated.
+- Setting a user's PIN for the FIRST time needs no admin PIN, so first-time setup
+  stays quick. CHANGING an existing user's PIN requires the admin PIN (or that
+  user's own current PIN). Manually deleting a user requires the admin PIN. A
+  removal that originates in the UniFi portal and syncs over is pruned
+  automatically and is never gated.
+- One PIN per person: a PIN already held by another user (on any lock or in
+  UniFi) is refused up front with a clear message, since locks and UniFi both
+  reject duplicate PINs.
 - Set the admin PIN during first-run setup (a wizard step) or later under
   **Settings > Security**. It is stored only as a salted scrypt hash, never in
   cleartext, and repeated wrong guesses are rate-limited.
