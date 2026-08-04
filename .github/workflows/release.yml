@@ -1,12 +1,26 @@
 name: Build & Release
+
+# Release model: main is fully protected (every change lands via a reviewed PR).
+# Merging a PR to main auto-builds all platforms and publishes a GitHub Release
+# with the next version. The version lives in the git TAG, not in a commit to
+# main, so the workflow never has to push to the protected branch. package.json
+# is stamped with the release version at BUILD time (uncommitted) so installers
+# carry the right version; the tag is the source of truth.
+#
+# Triggers:
+#   - push to main  -> auto release (patch bump; put [minor] or [major] in the
+#                      merge commit message to bump those instead, or
+#                      [skip release] to skip a release for a trivial merge).
+#   - workflow_dispatch -> manual release with an explicit version or bump type.
+
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. v4.3.0). Leave blank to auto-bump patch.'
+        description: 'Exact version to release (e.g. v11.3.0). Leave blank to auto-bump.'
         required: false
         default: ''
       bump:
@@ -18,91 +32,102 @@ on:
           - patch
           - minor
           - major
+
 permissions:
   contents: write
-# Pin the Electron / electron-builder download caches to a workspace path so
-# one actions/cache entry works the same on every runner OS.
+
+# Serialize releases so two quick merges never race on the same computed tag.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
   ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+
 jobs:
-  version-bump:
-    if: github.event_name == 'workflow_dispatch'
+  prepare:
     runs-on: ubuntu-latest
     outputs:
+      release: ${{ steps.resolve.outputs.release }}
       tag: ${{ steps.resolve.outputs.tag }}
-      sha: ${{ steps.push.outputs.sha }}
+      sha: ${{ steps.resolve.outputs.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
       - name: Resolve version
         id: resolve
         run: |
+          set -euo pipefail
+          echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+          # Escape hatch: skip a release for a trivial merge.
+          MSG="$(git log -1 --pretty=%B)"
+          if [ "${{ github.event_name }}" = "push" ] && printf '%s' "$MSG" | grep -qiE '\[skip release\]'; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping release: [skip release] found in the commit message."
+            exit 0
+          fi
+
+          # Bump type: dispatch input wins; else read [major]/[minor] from the
+          # merge commit; default patch.
+          BUMP="${{ inputs.bump }}"
+          if [ -z "$BUMP" ]; then
+            if printf '%s' "$MSG" | grep -qiE '\[major\]'; then BUMP=major
+            elif printf '%s' "$MSG" | grep -qiE '\[minor\]'; then BUMP=minor
+            else BUMP=patch; fi
+          fi
+
+          # Explicit version (dispatch) wins; else bump the latest existing tag,
+          # so the version is monotonic and independent of package.json on main.
           if [ -n "${{ inputs.version }}" ]; then
             VER="${{ inputs.version }}"
-            [[ "$VER" != v* ]] && VER="v${VER}"
+            [ "${VER#v}" = "$VER" ] && VER="v${VER}"
           else
-            CURRENT=$(node -p "require('./package.json').version")
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-            case "${{ inputs.bump }}" in
+            LATEST="$(git tag -l 'v*' --sort=-v:refname | head -n1)"
+            BASE="${LATEST#v}"; BASE="${BASE%%-*}"; BASE="${BASE:-0.0.0}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
+            MAJOR="${MAJOR:-0}"; MINOR="${MINOR:-0}"; PATCH="${PATCH:-0}"
+            case "$BUMP" in
               major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
               minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-              patch) PATCH=$((PATCH + 1)) ;;
+              *)     PATCH=$((PATCH + 1)) ;;
             esac
             VER="v${MAJOR}.${MINOR}.${PATCH}"
           fi
+
           PLAIN="${VER#v}"
-          if ! echo "$PLAIN" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+          if ! printf '%s' "$PLAIN" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
             echo "::error::Invalid semver: ${VER}"
             exit 1
           fi
-          echo "tag=${VER}" >> $GITHUB_OUTPUT
-          echo "Resolved version: ${VER}"
-      - name: Check tag does not exist
-        run: |
-          TAG="${{ steps.resolve.outputs.tag }}"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "::error::Tag ${TAG} already exists. Choose a different version."
+          if git rev-parse "$VER" >/dev/null 2>&1; then
+            echo "::error::Tag ${VER} already exists. Pass an explicit version or bump differently."
             exit 1
           fi
-      - name: Bump package.json
-        run: |
-          TAG="${{ steps.resolve.outputs.tag }}"
-          PLAIN="${TAG#v}"
-          npm version "$PLAIN" --no-git-tag-version
-          echo "package.json version set to $PLAIN"
-      - name: Commit & tag
-        id: push
-        run: |
-          TAG="${{ steps.resolve.outputs.tag }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json 2>/dev/null || true
-          git commit -m "chore: bump version to ${TAG}" || echo "No changes to commit"
-          git tag -a "$TAG" -m "Release ${TAG}"
-          git push origin HEAD --follow-tags
-          echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "tag=${VER}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: ${VER} (bump: ${BUMP})"
 
   build-windows:
     runs-on: windows-latest
-    needs: [version-bump]
-    if: always() && (needs.version-bump.result == 'success' || needs.version-bump.result == 'skipped')
+    needs: [prepare]
+    if: needs.prepare.result == 'success' && needs.prepare.outputs.release == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ needs.version-bump.outputs.sha || github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
+      - name: Stamp release version
+        shell: bash
+        run: npm version "${{ needs.prepare.outputs.tag }}" --no-git-tag-version --allow-same-version
       - name: Cache Electron binaries
         uses: actions/cache@v5
         with:
@@ -130,18 +155,20 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
-    needs: [version-bump]
-    if: always() && (needs.version-bump.result == 'success' || needs.version-bump.result == 'skipped')
+    needs: [prepare]
+    if: needs.prepare.result == 'success' && needs.prepare.outputs.release == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ needs.version-bump.outputs.sha || github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
+      - name: Stamp release version
+        run: npm version "${{ needs.prepare.outputs.tag }}" --no-git-tag-version --allow-same-version
       - name: Cache Electron binaries
         uses: actions/cache@v5
         with:
@@ -167,18 +194,20 @@ jobs:
 
   build-linux-arm:
     runs-on: ubuntu-latest
-    needs: [version-bump]
-    if: always() && (needs.version-bump.result == 'success' || needs.version-bump.result == 'skipped')
+    needs: [prepare]
+    if: needs.prepare.result == 'success' && needs.prepare.outputs.release == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ needs.version-bump.outputs.sha || github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
+      - name: Stamp release version
+        run: npm version "${{ needs.prepare.outputs.tag }}" --no-git-tag-version --allow-same-version
       - name: Cache Electron binaries
         uses: actions/cache@v5
         with:
@@ -203,18 +232,20 @@ jobs:
 
   build-mac:
     runs-on: macos-latest
-    needs: [version-bump]
-    if: always() && (needs.version-bump.result == 'success' || needs.version-bump.result == 'skipped')
+    needs: [prepare]
+    if: needs.prepare.result == 'success' && needs.prepare.outputs.release == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ needs.version-bump.outputs.sha || github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
+      - name: Stamp release version
+        run: npm version "${{ needs.prepare.outputs.tag }}" --no-git-tag-version --allow-same-version
       - name: Cache Electron binaries
         uses: actions/cache@v5
         with:
@@ -254,30 +285,10 @@ jobs:
           retention-days: 5
 
   release:
-    needs: [version-bump, build-windows, build-linux, build-linux-arm, build-mac]
-    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    needs: [prepare, build-windows, build-linux, build-linux-arm, build-mac]
+    if: always() && needs.prepare.outputs.release == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.version-bump.outputs.sha || github.ref }}
-      - name: Resolve release tag
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            TAG="${{ github.ref_name }}"
-          elif [ -n "${{ needs.version-bump.outputs.tag }}" ]; then
-            TAG="${{ needs.version-bump.outputs.tag }}"
-          elif [ -n "${{ inputs.version }}" ]; then
-            TAG="${{ inputs.version }}"
-            [[ "$TAG" != v* ]] && TAG="v${TAG}"
-          else
-            PKG_VERSION=$(node -p "require('./package.json').version")
-            TAG="v${PKG_VERSION}"
-          fi
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "Release tag: ${TAG}"
       - name: Download all artifacts
         uses: actions/download-artifact@v6
         with:
@@ -285,10 +296,13 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f | sort
       - name: Create Release
+        # Creates the tag at the merge commit (target_commitish) and publishes.
+        # No push to main is needed, so the protected-branch rule is never hit.
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: UniFi Access Orchestrator ${{ steps.version.outputs.tag }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ needs.prepare.outputs.sha }}
+          name: UniFi Access Orchestrator ${{ needs.prepare.outputs.tag }}
           draft: false
           prerelease: false
           generate_release_notes: true
