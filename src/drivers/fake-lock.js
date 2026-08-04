@@ -18,10 +18,41 @@ class FakeLock extends LockDriver {
     this._online = false;
     this.calls = [];
     this.behavior = Object.assign({}, opts.behavior);
+    this._codes = {}; // in-memory keypad slots for dev/dry-run keypad testing
   }
 
   get capabilities() {
-    return new Set(['lock', 'unlock', 'state', 'battery']);
+    return new Set(['lock', 'unlock', 'state', 'battery', 'user_codes']);
+  }
+
+  // ---- Keypad codes (dev/dry-run only) ------------------------------------
+  // Mirrors ZwaveLock's user-code surface so the full Keypad Users flow can be
+  // exercised without a Z-Wave stick. Always "confirms"; drives no hardware.
+  userCodesCapability() {
+    return { supported: true, slots: 30, min_length: 4, max_length: 8, reserved_slots: [] };
+  }
+
+  async setUserCode(slot, code) {
+    this.calls.push({ action: 'set_user_code', slot });
+    this._codes[String(slot)] = String(code);
+    return { slot, confirmed: true };
+  }
+
+  async clearUserCode(slot) {
+    this.calls.push({ action: 'clear_user_code', slot });
+    delete this._codes[String(slot)];
+    return { slot, confirmed: true };
+  }
+
+  async rewriteUserCodes(saved) {
+    this._codes = {};
+    const results = [];
+    for (const [slot, e] of Object.entries(saved || {})) {
+      if (!e || !e.pin_code) continue;
+      this._codes[String(slot)] = String(e.pin_code);
+      results.push({ slot: Number(slot), ok: true });
+    }
+    return results;
   }
 
   async init() {

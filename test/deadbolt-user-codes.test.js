@@ -172,7 +172,10 @@ test('picker hides users who already have a keypad PIN, keeps the rest', () => {
   assert.match(out, /<option value="u-2"/, 'a user without a PIN stays selectable');
 });
 
-test('picker hides a user whose removal has not finished yet', () => {
+test('picker keeps a user whose removal has not finished yet selectable', () => {
+  // A removal that a lock never confirmed (removal_pending, pin_length 0) must
+  // stay in the picker, otherwise a stuck clear strands the user and they can
+  // never be re-added. Re-adding supersedes the pending marker server-side.
   const build = load();
   const out = build({
     locks: LOCKS,
@@ -183,7 +186,21 @@ test('picker hides a user whose removal has not finished yet', () => {
       locks: [{ lock_id: 'front_deadbolt', slot: null, status: 'missing', code_present: false, revoke_pending: true }],
     }],
   }, USERS, false);
-  assert.ok(!/<option value="u-1"/.test(out), 'a removal-in-progress user is not re-selectable until fully removed');
+  assert.ok(/<option value="u-1"/.test(out), 'a removal-in-progress user stays selectable so re-add is never blocked');
+});
+
+test('picker still hides a user who holds a live PIN', () => {
+  const build = load();
+  const out = build({
+    locks: LOCKS,
+    pin_rule: RULE,
+    available_users: [{ id: 'u-1', name: 'Alice' }],
+    users: [{
+      user_id: 'u-1', name: 'Alice', pin_length: 4, in_unifi: true,
+      locks: [{ lock_id: 'front_deadbolt', slot: 1, status: 'ok' }],
+    }],
+  }, USERS, false);
+  assert.ok(!/<option value="u-1"/.test(out), 'a user with a live PIN is not offered again (one PIN per user)');
 });
 
 test('picker hint when every synced user already has a PIN', () => {

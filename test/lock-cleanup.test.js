@@ -79,3 +79,55 @@ test('pruneGhostLocks tolerates empty configs', () => {
   assert.deepEqual(pruneGhostLocks({}), []);
   assert.deepEqual(pruneGhostLocks(cfgWith({}, {})), []);
 });
+
+// ---------------------------------------------------------------------------
+// removeLockEntry also cleans the CURRENT trigger-shaped door_flows (round 2).
+// The old code only understood the legacy flat flow.retract, so removing a lock
+// left dangling triggers[].actions.retract edges pointing at a lock that no
+// longer exists (which then skewed the active-lock resolution to a ghost id).
+// ---------------------------------------------------------------------------
+
+test('removeLockEntry strips trigger-shaped retract edges for the removed lock', () => {
+  const cfg = {
+    devices: { zwave: { locks: {
+      front_deadbolt: { node_id: 18, user_codes: { 1: { user_id: 'u1', pin_code: '1111' } } },
+      back_deadbolt: { node_id: 19, user_codes: {} },
+    } } },
+    door_flows: {
+      'Front Door': { door_id: 'd1', triggers: [
+        { type: 'entry', scope: null, actions: {
+          unlock: [{ doors: ['Inner'], delay_seconds: 0 }],
+          retract: [{ lock_id: 'front_deadbolt', after_unlock: 'relock' }, { lock_id: 'back_deadbolt', after_unlock: 'relock' }],
+        } },
+      ] },
+      'Garage Door': { door_id: 'd2', triggers: [
+        { type: 'entry', scope: null, actions: { unlock: [], retract: [{ lock_id: 'front_deadbolt' }] } },
+      ] },
+    },
+  };
+  const removed = removeLockEntry(cfg, 'front_deadbolt');
+  assert.strictEqual(removed, true);
+  // the lock entry (and its user_codes) is gone
+  assert.ok(!cfg.devices.zwave.locks.front_deadbolt, 'lock entry deleted');
+  assert.ok(cfg.devices.zwave.locks.back_deadbolt, 'the other lock survives');
+  // Front Door keeps its trigger (still unlocks + retracts back_deadbolt), but the
+  // front_deadbolt edge is gone.
+  const frontRetract = cfg.door_flows['Front Door'].triggers[0].actions.retract;
+  assert.deepStrictEqual(frontRetract.map((e) => e.lock_id), ['back_deadbolt'], 'only the removed lock edge is stripped');
+  assert.strictEqual(cfg.door_flows['Front Door'].triggers[0].actions.unlock.length, 1, 'unrelated unlock preserved');
+  // Garage Door's only trigger retracted just the removed lock and had no unlock,
+  // so the now-empty trigger is dropped and the door with it.
+  assert.ok(!cfg.door_flows['Garage Door'], 'a door left with no live trigger is dropped');
+});
+
+test('removeLockEntry keeps an unlock-only trigger that never referenced the lock', () => {
+  const cfg = {
+    devices: { zwave: { locks: { gone: { node_id: 5 } } } },
+    door_flows: { 'Lobby': { triggers: [
+      { type: 'entry', scope: null, actions: { unlock: [{ doors: ['Elevator'] }], retract: [] } },
+    ] } },
+  };
+  removeLockEntry(cfg, 'gone');
+  assert.ok(cfg.door_flows['Lobby'], 'an unlock-only door is untouched by removing an unrelated lock');
+  assert.strictEqual(cfg.door_flows['Lobby'].triggers.length, 1);
+});

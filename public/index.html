@@ -2506,7 +2506,7 @@ function confirmInApp(message, opts) {
 // buttons disabled forever.
 const API_TIMEOUT_MS = 45000;
 
-async function api(method, path, body, _retried) {
+async function api(method, path, body, _retried, _authRetried) {
   const headers = { 'Content-Type': 'application/json' };
   const key = getApiKey();
   if (key) headers['x-api-key'] = key;
@@ -2549,6 +2549,28 @@ async function api(method, path, body, _retried) {
       setApiKey(entered);
       return api(method, path, body, true);
     }
+  }
+  // A gated action returned 403 asking for the admin PIN and we have not prompted
+  // yet: pop the PIN prompt and retry once with it. This makes every admin-gated
+  // button (e.g. "Rewrite Codes to Lock") work instead of dead-ending on the
+  // "admin PIN required" flag. A 423 lockout is NOT auto-prompted (retry is
+  // pointless while locked); its error surfaces to the caller as usual.
+  if (res.status === 403 && !_authRetried) {
+    let body403 = null;
+    try { body403 = await res.json(); } catch (e) { body403 = null; }
+    if (body403 && body403.admin_pin_required) {
+      const authInput = await promptForAuthPin({
+        title: 'Admin PIN required',
+        message: 'This action needs the admin PIN.',
+        allowCurrentPin: !!body403.allow_current_pin,
+      });
+      if (authInput) {
+        const merged = Object.assign({}, body,
+          authInput.mode === 'current' ? { current_pin: authInput.pin } : { admin_pin: authInput.pin });
+        return api(method, path, merged, _retried, true);
+      }
+    }
+    return body403 !== null ? body403 : { error: 'Forbidden' };
   }
   return res.json();
 }
@@ -4188,11 +4210,14 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
   const sourceUsers = (Array.isArray(a.available_users) && a.available_users.length)
     ? a.available_users
     : (Array.isArray(users) ? users : []);
-  // One PIN per user: hide anyone who already has a keypad presence (a saved
-  // PIN, or a removal still finishing) from the picker, so they cannot be
-  // selected again until fully removed. Once removed their row disappears and
-  // they return here, re-addable. Applies to either picker source.
-  const takenIds = new Set((Array.isArray(a.users) ? a.users : []).map((u) => String(u.user_id)));
+  // One PIN per user: hide only users who actually HOLD a live PIN. A removal
+  // that is still finishing (removal_pending, pin_length 0) stays selectable so a
+  // clear that a lock never confirmed can never strand a user out of the picker.
+  // Re-adding such a user supersedes the pending marker (the server drops it on
+  // write), so re-add always works. Applies to either picker source.
+  const takenIds = new Set((Array.isArray(a.users) ? a.users : [])
+    .filter((u) => u.pin_length > 0)
+    .map((u) => String(u.user_id)));
   const pickerUsers = sourceUsers.filter((u) => !takenIds.has(String(u.id)));
   const userOpts = pickerUsers
     .map((u) => `<option value="${escapeHtml(u.id)}">${escapeHtml(u.name || u.id)}</option>`)
@@ -4232,6 +4257,12 @@ function buildKeypadUsersPanel(agg, users, pairingActive) {
 // user-initiated one (repaintOwned('keypad') after Save/Remove) forces
 // through, so the picker is usable again the moment a mutation lands - no
 // page reload needed.
+// User ids that currently HOLD a keypad PIN, refreshed on every panel render.
+// Used to decide whether a Save is a first-time set (no admin PIN needed) or a
+// change (prompt for the admin PIN). The server enforces the same rule; this is
+// the UX so a first-time set never prompts.
+let _keypadHasPin = new Set();
+
 async function renderKeypadUsers(force) {
   const el = document.getElementById('kuPanel');
   if (!el) return;
@@ -4250,6 +4281,8 @@ async function renderKeypadUsers(force) {
       el.innerHTML = `<div style="font-size:12px;color:var(--text-muted)">Keypad users unavailable: ${escapeHtml(agg.error)}</div>`;
       return;
     }
+    _keypadHasPin = new Set((agg && Array.isArray(agg.users) ? agg.users : [])
+      .filter((u) => u.pin_length > 0).map((u) => String(u.user_id)));
     const pairingActive = !!(devices && devices.zwave && devices.zwave.pairing_active);
     const html = buildKeypadUsersPanel(agg, usersData?.users || [], pairingActive);
     el.innerHTML = html
@@ -4269,13 +4302,19 @@ async function saveKeypadUser() {
   const pin = (pinEl.value || '').trim();
   if (!userId) { toast('Pick a user first.', 'error'); return; }
   if (!/^[0-9]{4,10}$/.test(pin)) { toast('The PIN must be 4 to 10 digits.', 'error'); return; }
-  // Authorize: admin PIN, or the user's own current PIN to change their own.
-  const authBody = await ensurePinAuthorization({
-    title: 'Authorize PIN change',
-    message: `Setting the keypad PIN for ${name || 'this user'}.`,
-    allowCurrentPin: true,
-  });
-  if (authBody === null) return; // cancelled
+  // A first-time set (the user holds no PIN yet) needs no admin PIN. Only a
+  // CHANGE prompts. The server enforces this too, and api() will auto-prompt on a
+  // 403 if this guess is ever wrong, so this is purely to avoid a needless prompt.
+  const isChange = _keypadHasPin.has(String(userId));
+  let authBody = {};
+  if (isChange) {
+    authBody = await ensurePinAuthorization({
+      title: 'Authorize PIN change',
+      message: `Changing the keypad PIN for ${name || 'this user'}.`,
+      allowCurrentPin: true,
+    });
+    if (authBody === null) return; // cancelled
+  }
   toast('Writing the PIN to the locks...', 'info');
   try {
     const r = await api('POST', '/api/deadbolt/keypad-users', Object.assign({ user_id: userId, name, pin }, authBody));

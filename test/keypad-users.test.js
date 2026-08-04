@@ -11,6 +11,7 @@ const assert = require('node:assert');
 const {
   canonicalPins,
   aggregateKeypadUsers,
+  findPinConflict,
   combinedLengthRule,
   planUserSave,
   planNewLockProvision,
@@ -348,4 +349,53 @@ test('planNewLockProvision: unsupported capability plans nothing', () => {
   const { assignments, skipped } = planNewLockProvision(locksCfg(), 'newlock', { supported: false }, null);
   assert.deepEqual(assignments, {});
   assert.deepEqual(skipped, []);
+});
+
+// ---------------------------------------------------------------------------
+// findPinConflict: one PIN per person, globally (round 2)
+// ---------------------------------------------------------------------------
+
+test('findPinConflict flags another user holding the PIN on any lock', () => {
+  const locks = {
+    front: { user_codes: { 1: { user_id: 'u-alice', name: 'Alice', pin_code: '1234' } } },
+    back: { user_codes: { 1: { user_id: 'u-bob', name: 'Bob', pin_code: '5678' } } },
+  };
+  const c = findPinConflict(locks, {}, 'u-carol', '5678');
+  assert.ok(c && c.user_id === 'u-bob', 'Carol cannot take Bob\'s PIN');
+  assert.strictEqual(c.source, 'lock');
+  assert.strictEqual(c.name, 'Bob');
+});
+
+test('findPinConflict is not tripped by the same user (re-add / re-save)', () => {
+  const locks = { front: { user_codes: { 1: { user_id: 'u-alice', pin_code: '1234' } } } };
+  assert.strictEqual(findPinConflict(locks, {}, 'u-alice', '1234'), null, 'own PIN is never a conflict');
+});
+
+test('findPinConflict catches a PIN still held in the durable UniFi record', () => {
+  // Alice was removed from the locks but her UniFi credential (and record) linger,
+  // so the PIN is genuinely still in use in UniFi; another user must be refused.
+  const c = findPinConflict({}, { 'u-alice': { pin_code: '4321' } }, 'u-bob', '4321');
+  assert.ok(c && c.user_id === 'u-alice' && c.source === 'unifi');
+  // ...but the same user re-adding it is fine.
+  assert.strictEqual(findPinConflict({}, { 'u-alice': { pin_code: '4321' } }, 'u-alice', '4321'), null);
+});
+
+test('findPinConflict returns null when the PIN is free', () => {
+  const locks = { front: { user_codes: { 1: { user_id: 'u-alice', pin_code: '1234' } } } };
+  assert.strictEqual(findPinConflict(locks, { 'u-alice': { pin_code: '1234' } }, 'u-new', '9999'), null);
+});
+
+// ---------------------------------------------------------------------------
+// aggregate in_unifi heal from unifi_pin_state (round 2)
+// ---------------------------------------------------------------------------
+
+test('aggregateKeypadUsers heals in_unifi from unifi_pin_state when the lock flag is stale', () => {
+  // pushed_to_unifi is false on the lock entry (the bookkeeping-bug case), but the
+  // durable record shows UniFi holds this exact PIN, so the row must read synced.
+  const locks = { front: { user_codes: { 1: { user_id: 'u-1', name: 'Al', pin_code: '2468', pushed_to_unifi: false, confirmed: true } } } };
+  const relevant = [{ lock_id: 'front', label: 'Front', gating_doors: [] }];
+  const withState = aggregateKeypadUsers(locks, relevant, undefined, { 'u-1': { pin_code: '2468' } });
+  assert.strictEqual(withState[0].in_unifi, true, 'healed from unifi_pin_state');
+  const withoutState = aggregateKeypadUsers(locks, relevant, undefined, {});
+  assert.strictEqual(withoutState[0].in_unifi, false, 'no record, stale flag stands');
 });

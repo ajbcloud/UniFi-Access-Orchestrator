@@ -65,9 +65,10 @@ function canonicalPins(locksCfg) {
  *   different PIN), 'missing' (no code on that lock), 'blocked' (UniFi access
  *   to the lock's door is denied).
  */
-function aggregateKeypadUsers(locksCfg, relevantLocks, verdicts) {
+function aggregateKeypadUsers(locksCfg, relevantLocks, verdicts, unifiPinState) {
   const canon = canonicalPins(locksCfg);
   const verdictMap = verdicts instanceof Map ? verdicts : new Map();
+  const pinState = (unifiPinState && typeof unifiPinState === 'object') ? unifiPinState : {};
   // A user whose code was revoked but not confirmed cleared has no user_codes
   // entry left, only a pending_clears marker. Keep them listed so the panel can
   // still show "removal pending" instead of the row silently vanishing.
@@ -116,7 +117,13 @@ function aggregateKeypadUsers(locksCfg, relevantLocks, verdicts) {
       name: c.name,
       pin_length: c.pin.length,
       updated_at: c.updated_at || null,
-      in_unifi: c.pushed_to_unifi,
+      // "In UniFi" is true when a lock entry recorded the push OR when the durable
+      // unifi_pin_state record still holds this exact PIN. The second source heals
+      // a stale pushed_to_unifi flag (e.g. a bookkeeping bug that persisted false)
+      // without re-pushing, since unifi_pin_state is the authoritative record of
+      // what UniFi was last known to hold for this user.
+      in_unifi: c.pushed_to_unifi
+        || !!(c.pin && pinState[userId] && String(pinState[userId].pin_code) === c.pin),
       // removal_pending: the user holds no code on any lock (already deleted)
       // and a clear is still queued on at least one. The row stays visible so
       // the operator can see the removal has not physically confirmed yet, but
@@ -127,6 +134,32 @@ function aggregateKeypadUsers(locksCfg, relevantLocks, verdicts) {
   }
   users.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
   return users;
+}
+
+/**
+ * Enforce one-PIN-per-person globally. Locks (Yale and others) and UniFi both
+ * reject a PIN already assigned to someone else, so a save must be refused up
+ * front if ANY OTHER user already holds this PIN on any lock or in the durable
+ * unifi_pin_state record. The same user re-using their own PIN is never a
+ * conflict (re-add after removal, or a no-op re-save). Pure: no I/O.
+ *
+ * @returns {{user_id, name, source} | null} the conflicting OTHER user, or null.
+ */
+function findPinConflict(locksCfg, unifiPinState, userId, pin) {
+  const wanted = String(pin);
+  for (const lock of Object.values(locksCfg || {})) {
+    for (const e of Object.values((lock && lock.user_codes) || {})) {
+      if (e && e.user_id && e.user_id !== userId && String(e.pin_code) === wanted) {
+        return { user_id: e.user_id, name: e.name || null, source: 'lock' };
+      }
+    }
+  }
+  for (const [uid, rec] of Object.entries(unifiPinState || {})) {
+    if (uid !== userId && rec && String(rec.pin_code) === wanted) {
+      return { user_id: uid, name: null, source: 'unifi' };
+    }
+  }
+  return null;
 }
 
 /**
@@ -373,6 +406,7 @@ function planDepartedUserPrune(locksCfg, unifiPinState, entitledIds) {
 module.exports = {
   canonicalPins,
   aggregateKeypadUsers,
+  findPinConflict,
   combinedLengthRule,
   planUserSave,
   planNewLockProvision,

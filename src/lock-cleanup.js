@@ -29,12 +29,39 @@ function removeLockEntry(cfg, lockId) {
   if (cfg.door_flows && typeof cfg.door_flows === 'object') {
     for (const door of Object.keys(cfg.door_flows)) {
       const flow = cfg.door_flows[door];
-      if (!flow || !Array.isArray(flow.retract)) continue;
-      const before = flow.retract.length;
-      flow.retract = flow.retract.filter((e) => !e || e.lock_id !== lockId);
-      if (flow.retract.length !== before) removed = true;
+      if (!flow || typeof flow !== 'object') continue;
+      // Legacy FLAT shape: retract edges sit directly on the flow.
+      if (Array.isArray(flow.retract)) {
+        const before = flow.retract.length;
+        flow.retract = flow.retract.filter((e) => !e || e.lock_id !== lockId);
+        if (flow.retract.length !== before) removed = true;
+      }
+      // CURRENT trigger shape: retract edges live under triggers[].actions.retract.
+      // The old code only handled the flat shape, so removing a lock left dangling
+      // trigger edges pointing at a lock that no longer exists (which then skewed
+      // automatedLockIdsFromFlows / the active-lock resolution to a ghost id).
+      if (Array.isArray(flow.triggers)) {
+        for (const t of flow.triggers) {
+          if (t && t.actions && Array.isArray(t.actions.retract)) {
+            const before = t.actions.retract.length;
+            t.actions.retract = t.actions.retract.filter((e) => !e || e.lock_id !== lockId);
+            if (t.actions.retract.length !== before) removed = true;
+          }
+        }
+        // Drop a trigger that now has neither an unlock nor a retract action, but
+        // KEEP one that still unlocks other doors (losing a deadbolt edge does not
+        // erase an unrelated unlock). Mirrors migrateToTriggers's own pruning.
+        flow.triggers = flow.triggers.filter((t) => {
+          const u = (t && t.actions && Array.isArray(t.actions.unlock)) ? t.actions.unlock : [];
+          const r = (t && t.actions && Array.isArray(t.actions.retract)) ? t.actions.retract : [];
+          return u.length > 0 || r.length > 0;
+        });
+      }
+      // Drop the door only when nothing is left in EITHER shape.
+      const hasTriggers = Array.isArray(flow.triggers) && flow.triggers.length > 0;
+      const hasFlatRetract = Array.isArray(flow.retract) && flow.retract.length > 0;
       const hasCascade = flow.cascade && Array.isArray(flow.cascade.unlock) && flow.cascade.unlock.length;
-      if (!flow.retract.length && !hasCascade) delete cfg.door_flows[door];
+      if (!hasTriggers && !hasFlatRetract && !hasCascade) delete cfg.door_flows[door];
     }
   }
   return removed;
