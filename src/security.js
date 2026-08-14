@@ -190,6 +190,19 @@ function validateConfigUpdates(updates) {
       if (!isPlainObject(zw)) return { ok: false, error: 'devices.zwave must be an object' };
       if (zw.enabled !== undefined && typeof zw.enabled !== 'boolean') return { ok: false, error: 'devices.zwave.enabled must be a boolean' };
       if (zw.serial_path !== undefined && typeof zw.serial_path !== 'string') return { ok: false, error: 'devices.zwave.serial_path must be a string' };
+      if (zw.serial_identity !== undefined && zw.serial_identity !== null) {
+        // Durable USB fingerprint of the stick, captured by the backend after a
+        // good driver start so a renumbered COM port can be re-found. All fields
+        // optional strings; the backend owns writes, but validate anything a
+        // client might round-trip through PUT /api/config.
+        const si = zw.serial_identity;
+        if (!isPlainObject(si)) return { ok: false, error: 'devices.zwave.serial_identity must be an object' };
+        for (const k of ['serial_number', 'vendor_id', 'product_id', 'last_path', 'updated_at']) {
+          if (si[k] !== undefined && si[k] !== null && typeof si[k] !== 'string') {
+            return { ok: false, error: `devices.zwave.serial_identity.${k} must be a string` };
+          }
+        }
+      }
       if (zw.locks !== undefined && !isPlainObject(zw.locks)) return { ok: false, error: 'devices.zwave.locks must be an object' };
       if (zw.security_keys !== undefined) {
         if (!isPlainObject(zw.security_keys)) return { ok: false, error: 'devices.zwave.security_keys must be an object' };
@@ -242,6 +255,26 @@ class ReplayGuard {
   }
 }
 
+// When an operator saves a DIFFERENT serial port than the one on disk, drop any
+// captured serial_identity from the merged config. Picking a port by hand is an
+// explicit decision, so a stale fingerprint of the old stick must not out-vote
+// it on the next resolve (which would reopen the old port). The backend
+// re-captures identity on the next good start. Mutates `merged` in place and
+// returns it. `prevZwave` is the devices.zwave block currently on disk.
+//
+// Guard: only act when the incoming update actually carries a serial_path, so a
+// PUT that edits an unrelated field (and echoes the whole zwave block) does not
+// clear identity just because serial_path happens to be present and equal.
+function clearIdentityOnPathChange(merged, prevZwave, incomingZwave) {
+  if (!isPlainObject(merged) || !isPlainObject(merged.devices) || !isPlainObject(merged.devices.zwave)) return merged;
+  if (!isPlainObject(incomingZwave) || incomingZwave.serial_path === undefined) return merged;
+  const prevPath = (isPlainObject(prevZwave) && prevZwave.serial_path) || '';
+  if (incomingZwave.serial_path !== prevPath) {
+    delete merged.devices.zwave.serial_identity;
+  }
+  return merged;
+}
+
 module.exports = {
   SECRET_KEY_RX,
   REDACTION_MARKER,
@@ -249,5 +282,6 @@ module.exports = {
   redactSecrets,
   stripRedactedPlaceholders,
   validateConfigUpdates,
+  clearIdentityOnPathChange,
   ReplayGuard,
 };

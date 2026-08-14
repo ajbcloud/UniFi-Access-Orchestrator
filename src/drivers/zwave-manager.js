@@ -18,15 +18,23 @@ const fs = require('fs');
  *   loadKeys      - () => { classic, longRange } security keys (Buffers).
  *
  * Events: 'driver-error' (err), 'driver-down' (err), 'driver-restarted',
- * 'stopped'.
+ * 'serial-resolved' ({requested, resolved, matched_by, changed}), 'stopped'.
  *
  * Self-healing: this box runs unattended in a network rack. A driver 'error'
  * used to only be logged, leaving a dead driver that still claimed to be
  * running until someone restarted the app. Now a driver error tears the
  * driver down and enters a capped-backoff restart loop that keeps retrying
- * forever (5s doubling to 60s), which also covers the stick being unplugged
- * and replugged: the loop simply fails until the serial path exists again.
- * An explicit stop() cancels the loop (an operator decision beats healing).
+ * forever (5s doubling to 60s).
+ *
+ * Serial resolution: the loop above only heals an unplug/replug when the OS
+ * hands the stick back the SAME name. On Windows a re-plug or reboot often
+ * renumbers COM3 to COM5, which used to be a permanent outage (every retry
+ * reopened the dead COM3). The optional deps.resolveSerial re-finds the stick
+ * by its USB identity before each start, so the loop reopens wherever the stick
+ * actually is. It fires 'serial-resolved' after every successful start (with
+ * changed=true when the port moved) so the app can persist the new path.
+ * Absent the dep, behavior is exactly as before. An explicit stop() cancels the
+ * loop (an operator decision beats healing).
  */
 class ZwaveManager extends EventEmitter {
   constructor(deps = {}) {
@@ -34,6 +42,13 @@ class ZwaveManager extends EventEmitter {
     this.logger = deps.logger || console;
     this._driverFactory = deps.driverFactory || null;
     this._loadKeys = deps.loadKeys || (() => ({ classic: {}, longRange: {} }));
+    // Optional: async ({serial_path}) => {path, matched_by, changed, ambiguous}.
+    // Re-finds the stick by USB identity so a renumbered port still opens. When
+    // absent, the requested path is used verbatim (original behavior).
+    this._resolveSerial = deps.resolveSerial || null;
+    // Edge-trigger for the "cannot pick between several sticks" warning so the
+    // restart loop does not log it on every retry during an outage.
+    this._lastResolveWarn = null;
     // When a log directory is provided, the zwave-js driver writes a rotating
     // debug log there (zwave-js_*.log). This captures the full S2 inclusion
     // handshake, which is the only way to diagnose a "secure join" failure.
@@ -141,20 +156,34 @@ class ZwaveManager extends EventEmitter {
   /**
    * Start (or reuse) the driver for serial_path. Idempotent: a running driver
    * on the same path resolves immediately; concurrent callers share one
-   * in-flight start. A different path while running is an error (stop first).
-   * On a failed start the driver is destroyed so the port is never left held.
+   * in-flight start. On a failed start the driver is destroyed so the port is
+   * never left held.
+   *
+   * serial_path is the CONFIGURED path; when a resolveSerial dep is present it
+   * is re-mapped to wherever the stick actually is before the driver opens it.
+   * That is why a "different path while running" is not automatically an error:
+   * a lock built from a stale config snapshot (index.js freezes serial_path per
+   * lock) can ask for the old COM port after an auto-heal moved us; if that
+   * request resolves back to the running port, hand back the live driver
+   * instead of throwing. Only a genuinely different stick is an error.
    */
   async ensureStarted({ serial_path, cache_dir } = {}) {
     if (!serial_path) throw new Error('No Z-Wave serial path configured');
     if (this._driver) {
-      if (this._serialPath !== serial_path) {
-        throw new Error(`Z-Wave controller already running on ${this._serialPath}; stop it before switching ports`);
-      }
-      return this._driver;
+      if (this._serialPath === serial_path) return this._driver;
+      // The request names a different path than the one we are open on. Resolve
+      // it: a stale-snapshot retry re-mapping to the running port is not a
+      // conflict. Resolving here (not blindly throwing) is what stops the
+      // init-retry loop from failing forever after a heal.
+      const resolved = await this._resolveRequested(serial_path);
+      if (resolved.path === this._serialPath) return this._driver;
+      throw new Error(`Z-Wave controller already running on ${this._serialPath}; stop it before switching ports`);
     }
     if (this._starting) return this._starting;
 
-    this._starting = this._start(serial_path, cache_dir);
+    // Assign _starting SYNCHRONOUSLY (before the first await inside
+    // _resolveThenStart) so concurrent callers still share one in-flight start.
+    this._starting = this._resolveThenStart(serial_path, cache_dir);
     try {
       return await this._starting;
     } finally {
@@ -162,7 +191,48 @@ class ZwaveManager extends EventEmitter {
     }
   }
 
-  async _start(serialPath, cacheDir) {
+  /**
+   * Map a requested serial path to where the stick actually is, using the
+   * injected resolver. ALWAYS returns {path, matched_by, changed}. Degrades to
+   * the requested path verbatim when there is no resolver, the resolver throws,
+   * or nothing matched, so error messages and the no-dep behavior are unchanged.
+   * Edge-triggers the "too many candidates" warning so an outage does not log it
+   * on every retry.
+   */
+  async _resolveRequested(requestedPath) {
+    const asIs = { path: requestedPath, matched_by: null, changed: false };
+    if (!this._resolveSerial) return asIs;
+    let r;
+    try {
+      r = await this._resolveSerial({ serial_path: requestedPath });
+    } catch (e) {
+      this.logger.warn && this.logger.warn(`Z-Wave: serial resolve failed; using ${requestedPath} as-is: ${e.message}`);
+      return asIs;
+    }
+    if (r && r.ambiguous && !r.path) {
+      const msg = `Z-Wave: cannot auto-pick the stick (${r.candidate_count || 'several'} candidate ports); leaving the saved port in place`;
+      if (this._lastResolveWarn !== msg) {
+        this.logger.warn && this.logger.warn(msg);
+        this._lastResolveWarn = msg;
+      }
+    } else {
+      this._lastResolveWarn = null;
+    }
+    return (r && r.path) ? { path: r.path, matched_by: r.matched_by || null, changed: !!r.changed } : asIs;
+  }
+
+  // Resolve the requested path, then start on wherever the stick resolved to.
+  // Kept separate from ensureStarted so the _starting assignment is synchronous.
+  async _resolveThenStart(requestedPath, cacheDir) {
+    const resolved = await this._resolveRequested(requestedPath);
+    return this._start(resolved.path, cacheDir, {
+      requested: requestedPath,
+      matched_by: resolved.matched_by,
+      changed: resolved.changed,
+    });
+  }
+
+  async _start(serialPath, cacheDir, resolution = null) {
     const factory = this._driverFactory || ((p, opts) => {
       // Electron's crypto lacks ciphers S2 needs (notably aes-128-ccm), which
       // made every secure join fail with "Unknown cipher". The shim swaps in
@@ -269,10 +339,23 @@ class ZwaveManager extends EventEmitter {
     // reset the loop: a successful start (from any caller) ends the outage.
     this._restartInfo = { serial_path: serialPath, cache_dir: cacheDir };
     this._restartAttempt = 0;
+    this._lastResolveWarn = null; // outage over: re-arm the ambiguity warning
     if (this._restartTimer) {
       clearTimeout(this._restartTimer);
       this._restartTimer = null;
     }
+    // Announce the port the driver actually opened, ONLY now that 'driver ready'
+    // has proved it really is the stick. Firing before this would let a wrong
+    // guess (e.g. another CP210x device) get persisted as the saved port and
+    // poison the config. The listener in index.js captures identity and, when
+    // changed, heals config.serial_path to here. changed=false still fires so
+    // the very first good start can capture identity for a legacy install.
+    this.emit('serial-resolved', {
+      requested: resolution ? resolution.requested : serialPath,
+      resolved: serialPath,
+      matched_by: resolution ? resolution.matched_by : null,
+      changed: !!(resolution && resolution.changed),
+    });
     return driver;
   }
 

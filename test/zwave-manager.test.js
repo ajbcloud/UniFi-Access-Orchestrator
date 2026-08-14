@@ -284,3 +284,125 @@ test('a broken legacy path never blocks the driver start', async () => {
   assert.strictEqual(made.length, 1);
   assert.strictEqual(manager.isRunning(), true);
 });
+
+// ---------------------------------------------------------------------------
+// Serial resolution (resolveSerial dep): heal a renumbered stick by re-mapping
+// the configured path to wherever the stick actually is, before each start.
+// ---------------------------------------------------------------------------
+
+// A manager whose driverFactory records the path it was asked to open, plus a
+// scripted resolver: resolveMap maps a requested path to a resolution verdict.
+function makeManagerWithResolver(resolveMap) {
+  const made = [];
+  const manager = new ZwaveManager({
+    logger: { warn() {}, info() {} },
+    restartBaseMs: 5,
+    restartMaxMs: 10,
+    resolveSerial: async ({ serial_path }) => resolveMap(serial_path),
+    driverFactory: (p, options) => {
+      const d = new MockDriver();
+      d.path = p; d.options = options; made.push(d);
+      return d;
+    },
+    loadKeys: () => ({ classic: {}, longRange: {} }),
+  });
+  return { manager, made };
+}
+
+test('resolveSerial re-maps the requested path before the driver opens it', async () => {
+  // Config still says COM3, but the resolver reports the stick is on COM5.
+  const { manager, made } = makeManagerWithResolver((p) => (
+    p === 'COM3' ? { path: 'COM5', matched_by: 'serial_number', changed: true } : { path: p }
+  ));
+  const events = [];
+  manager.on('serial-resolved', (e) => events.push(e));
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.strictEqual(made[0].path, 'COM5', 'driver opened the resolved port');
+  assert.strictEqual(manager.serialPath, 'COM5');
+  assert.deepStrictEqual(events, [{ requested: 'COM3', resolved: 'COM5', matched_by: 'serial_number', changed: true }]);
+  await manager.stop();
+});
+
+test('serial-resolved fires with changed=false on a first good start (identity capture)', async () => {
+  // No move: resolver returns the same path. The event still fires so index.js
+  // can capture identity for a legacy install on its next start.
+  const { manager } = makeManagerWithResolver((p) => ({ path: p, matched_by: 'path', changed: false }));
+  const events = [];
+  manager.on('serial-resolved', (e) => events.push(e));
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.strictEqual(events.length, 1);
+  assert.strictEqual(events[0].changed, false);
+  assert.strictEqual(events[0].resolved, 'COM3');
+  await manager.stop();
+});
+
+test('the restart loop re-resolves mid-outage: heals to the new port', async () => {
+  // The stick "moves" from COM3 to COM5 during the outage. COM3 fails to open,
+  // COM5 succeeds. The loop must land on COM5 without any operator action.
+  let current = 'COM3';
+  const made = [];
+  const manager = new ZwaveManager({
+    logger: { warn() {}, info() {} },
+    restartBaseMs: 5,
+    restartMaxMs: 10,
+    // Resolver always points at wherever the stick currently is.
+    resolveSerial: async () => ({ path: current, matched_by: 'serial_number', changed: current !== 'COM3' }),
+    driverFactory: (p) => {
+      const d = new MockDriver({ failStart: p !== current });
+      d.path = p; made.push(d);
+      return d;
+    },
+    loadKeys: () => ({ classic: {}, longRange: {} }),
+  });
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.strictEqual(manager.serialPath, 'COM3');
+  // Stick renumbers to COM5, then the live driver drops.
+  current = 'COM5';
+  made[made.length - 1].emit('error', new Error('serial gone (renumbered)'));
+  await new Promise((r) => setTimeout(r, 200));
+  assert.strictEqual(manager.isRunning(), true, 'healed onto the renumbered port');
+  assert.strictEqual(manager.serialPath, 'COM5');
+  await manager.stop();
+});
+
+test('a stale-snapshot retry for the old path returns the running driver, not a throw', async () => {
+  // After a heal to COM5, a lock built from a frozen COM3 snapshot re-inits.
+  // Its ensureStarted({serial_path:'COM3'}) must resolve back to COM5 and get
+  // the live driver, instead of throwing "already running on COM5".
+  const { manager, made } = makeManagerWithResolver(() => ({ path: 'COM5', matched_by: 'serial_number', changed: true }));
+  const d1 = await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.strictEqual(manager.serialPath, 'COM5');
+  const d2 = await manager.ensureStarted({ serial_path: 'COM3' }); // stale snapshot
+  assert.strictEqual(d1, d2, 'same live driver handed back');
+  assert.strictEqual(made.length, 1, 'no second driver started');
+  await manager.stop();
+});
+
+test('a genuinely different resolved port while running still throws', async () => {
+  // Requested COM4 resolves to COM9, which is not the running COM5: a real
+  // conflict, so the guard must still fire.
+  const { manager } = makeManagerWithResolver((p) => (
+    p === 'COM3' ? { path: 'COM5' } : { path: 'COM9' }
+  ));
+  await manager.ensureStarted({ serial_path: 'COM3' }); // -> COM5
+  await assert.rejects(
+    () => manager.ensureStarted({ serial_path: 'COM4' }), // -> COM9
+    /already running on COM5/,
+  );
+  await manager.stop();
+});
+
+test('a resolver that throws degrades to the requested path', async () => {
+  const { manager, made } = makeManagerWithResolver(() => { throw new Error('list failed'); });
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.strictEqual(made[0].path, 'COM3', 'fell back to the requested path');
+  assert.strictEqual(manager.isRunning(), true);
+  await manager.stop();
+});
+
+test('an ambiguous resolver (no path) degrades to the requested path', async () => {
+  const { manager, made } = makeManagerWithResolver(() => ({ path: null, ambiguous: true, candidate_count: 2 }));
+  await manager.ensureStarted({ serial_path: 'COM3' });
+  assert.strictEqual(made[0].path, 'COM3');
+  await manager.stop();
+});
