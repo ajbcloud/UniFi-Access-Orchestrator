@@ -7,6 +7,7 @@ const {
   redactSecrets,
   stripRedactedPlaceholders,
   validateConfigUpdates,
+  clearIdentityOnPathChange,
   ReplayGuard,
   REDACTION_MARKER,
 } = require('../src/security');
@@ -159,6 +160,46 @@ test('validateConfigUpdates rejects bad port, mode, and non-array rules', () => 
 test('validateConfigUpdates allows an empty object and unknown-but-safe keys', () => {
   assert.strictEqual(validateConfigUpdates({}).ok, true);
   assert.strictEqual(validateConfigUpdates({ logging: { level: 'debug' } }).ok, true);
+});
+
+test('validateConfigUpdates accepts a well-formed serial_identity (and null)', () => {
+  assert.strictEqual(validateConfigUpdates({
+    devices: { zwave: { serial_path: 'COM3', serial_identity: {
+      serial_number: 'ZST39ABCDEF', vendor_id: '10c4', product_id: 'ea60',
+      last_path: 'COM3', updated_at: '2026-08-13T00:00:00.000Z',
+    } } },
+  }).ok, true);
+  assert.strictEqual(validateConfigUpdates({ devices: { zwave: { serial_identity: null } } }).ok, true);
+});
+
+test('validateConfigUpdates rejects a malformed serial_identity', () => {
+  assert.strictEqual(validateConfigUpdates({ devices: { zwave: { serial_identity: 'COM3' } } }).ok, false);
+  assert.strictEqual(validateConfigUpdates({ devices: { zwave: { serial_identity: { vendor_id: 4130 } } } }).ok, false);
+});
+
+// ---------------------------------------------------------------------------
+// clearIdentityOnPathChange
+// ---------------------------------------------------------------------------
+
+test('clearIdentityOnPathChange drops identity when the operator picks a new port', () => {
+  const merged = { devices: { zwave: { serial_path: 'COM7', serial_identity: { serial_number: 'OLD' } } } };
+  clearIdentityOnPathChange(merged, { serial_path: 'COM3' }, { serial_path: 'COM7' });
+  assert.strictEqual(merged.devices.zwave.serial_identity, undefined);
+  assert.strictEqual(merged.devices.zwave.serial_path, 'COM7');
+});
+
+test('clearIdentityOnPathChange keeps identity when the port is unchanged', () => {
+  const merged = { devices: { zwave: { serial_path: 'COM3', serial_identity: { serial_number: 'KEEP' } } } };
+  clearIdentityOnPathChange(merged, { serial_path: 'COM3' }, { serial_path: 'COM3' });
+  assert.deepStrictEqual(merged.devices.zwave.serial_identity, { serial_number: 'KEEP' });
+});
+
+test('clearIdentityOnPathChange is a no-op when the update omits serial_path', () => {
+  // A PUT that only toggles `enabled` but echoes the whole zwave block must not
+  // wipe identity (serial_path present-and-equal is handled by the guard too).
+  const merged = { devices: { zwave: { enabled: false, serial_identity: { serial_number: 'KEEP' } } } };
+  clearIdentityOnPathChange(merged, { serial_path: 'COM3' }, { enabled: false });
+  assert.deepStrictEqual(merged.devices.zwave.serial_identity, { serial_number: 'KEEP' });
 });
 
 test('validateConfigUpdates rejects the security block (managed via /api/security only)', () => {

@@ -45,6 +45,14 @@ release containing in-app pairing).
       software is running.
 - [ ] Tick "Enable Z-Wave deadbolt", Save. Expect the saved toast; the
       Deadbolt block below now shows "No lock paired yet."
+- [ ] Note for later: once the driver connects, the app remembers this stick by
+      its USB identity. If the COM port changes after a reboot or a re-plug, the
+      app re-finds the stick and updates the saved port on its own (the log
+      shows `serial port auto-updated COMx -> COMy` and the Devices tab shows
+      "connected" on the new port). You do NOT need to redo this step for a
+      renumber. If the stick keeps dropping on its own WITHOUT moving, turn off
+      USB selective suspend for that port's USB Root Hub (Device Manager, Power
+      Management tab, untick "Allow the computer to turn off this device").
 
 ## 4. Pair the lock
 

@@ -5378,32 +5378,75 @@ function openDeadboltTab() {
 }
 window.openDeadboltTab = openDeadboltTab;
 
+// Pure: turn the /api/deadbolt/serial-ports response into the dropdown options
+// and a status line. No DOM and no escaping here so it is unit-tested, and it
+// trusts the SERVER's saved_path/driver_path (never the browser's configData,
+// which lags a silent auto-heal). Replaces the old bare "saved, not detected"
+// with honest states: connected, auto-updated, found-on-a-new-port, or missing.
+function describeSerialPorts(r) {
+  if (!r || !r.available) {
+    return { unavailable: true, options: [], status: 'This build does not include Z-Wave support.' };
+  }
+  const ports = r.ports || [];
+  const saved = r.saved_path || '';
+  const driverPath = r.driver_path || null;
+  const running = !!r.driver_running;
+  const resolvedPath = r.resolution && r.resolution.resolved_path;
+
+  const options = ports.map((p) => {
+    const tags = [];
+    if (p.is_active) tags.push('connected');
+    else if (p.matches_saved_identity) tags.push('your saved stick');
+    else if (p.likely_zwave) tags.push('likely Z-Wave stick');
+    if (p.manufacturer) tags.push(p.manufacturer);
+    return {
+      value: p.path,
+      label: p.path + (tags.length ? ' - ' + tags.join(', ') : ''),
+      // With a live driver, pre-select the port it actually opened; otherwise
+      // the saved port.
+      selected: running && driverPath ? p.is_active : (p.path === saved),
+    };
+  });
+
+  const savedPresent = ports.some((p) => p.path === saved) || driverPath === saved;
+  let status = '';
+  if (running && driverPath && saved && driverPath !== saved) {
+    // Driver healed onto a new port (config is auto-updated by the backend).
+    status = `Auto-updated: the Z-Wave stick is on ${driverPath} now (moved from ${saved}) and is connected.`;
+  } else if (running && driverPath) {
+    status = `Connected on ${driverPath}.`;
+  } else if (saved && !savedPresent && resolvedPath && resolvedPath !== saved) {
+    status = `Your saved stick appears to be on ${resolvedPath} now. Select it and Save.`;
+  } else if (saved && !savedPresent) {
+    status = `Saved port ${saved} not found. Check the USB cable, Device Manager (Windows) or dmesg (Linux), the CP210x driver, and USB selective suspend, then Refresh Ports.`;
+    // Keep the saved path selectable so the operator can re-Save it verbatim.
+    options.push({ value: saved, label: `${saved} (saved - stick not found)`, selected: true });
+  } else if (r.error) {
+    status = `Port scan warning: ${r.error}`;
+  }
+  return { unavailable: false, options, status };
+}
+
 async function loadSerialPorts() {
   const sel = document.getElementById('zwaveSerialPort');
   const status = document.getElementById('zwaveSetupStatus');
   if (!sel) return;
   try {
     const r = await api('GET', '/api/deadbolt/serial-ports');
-    const saved = configData?.devices?.zwave?.serial_path || '';
-    sel.innerHTML = '';
-    if (!r.available) {
-      sel.innerHTML = `<option value="">${escapeHtml(r.error || 'Z-Wave support not installed')}</option>`;
-      if (status) status.textContent = 'This build does not include Z-Wave support.';
+    const view = describeSerialPorts(r);
+    if (view.unavailable) {
+      sel.innerHTML = `<option value="">${escapeHtml((r && r.error) || 'Z-Wave support not installed')}</option>`;
+      if (status) status.textContent = view.status;
       return;
     }
-    const ports = r.ports || [];
-    if (ports.length === 0) {
+    if (!view.options.length) {
       sel.innerHTML = '<option value="">No serial ports found. Plug in the stick and refresh.</option>';
     } else {
-      sel.innerHTML = '<option value="">-- Select the Z-Wave stick port --</option>' + ports.map(p =>
-        `<option value="${escapeHtml(p.path)}" ${p.path === saved ? 'selected' : ''}>${escapeHtml(p.path)}${p.likely_zwave ? ' (likely Z-Wave stick)' : ''}${p.manufacturer ? ' - ' + escapeHtml(p.manufacturer) : ''}</option>`
+      sel.innerHTML = '<option value="">-- Select the Z-Wave stick port --</option>' + view.options.map((o) =>
+        `<option value="${escapeHtml(o.value)}"${o.selected ? ' selected' : ''}>${escapeHtml(o.label)}</option>`
       ).join('');
     }
-    // Keep a saved path selectable even if it is not currently plugged in.
-    if (saved && !ports.some(p => p.path === saved)) {
-      sel.innerHTML += `<option value="${escapeHtml(saved)}" selected>${escapeHtml(saved)} (saved, not detected)</option>`;
-    }
-    if (status) status.textContent = r.error ? `Port scan warning: ${r.error}` : '';
+    if (status) status.textContent = view.status || '';
   } catch (e) {
     sel.innerHTML = '<option value="">Port scan failed</option>';
     if (status) status.textContent = `Failed to list ports: ${e.message}`;

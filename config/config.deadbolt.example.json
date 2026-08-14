@@ -53,6 +53,7 @@
       "enabled": false,
       "dev_fake_lock": false,
       "serial_path": "/dev/serial/by-id/REPLACE-WITH-STABLE-PATH",
+      "serial_identity": null,
       "cache_dir": "",
       "security_keys": {},
       "locks": {

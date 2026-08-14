@@ -40,6 +40,7 @@ const { ZwaveLock } = require('./drivers/zwave-lock');
 const { ZwaveManager } = require('./drivers/zwave-manager');
 const lockCatalog = require('./drivers/lock-catalog');
 const { ZwavePairing } = require('./drivers/zwave-pairing');
+const serialResolver = require('./drivers/serial-resolver');
 const { loadSecurityKeys, ensureSecurityKeys } = require('./drivers/zwave-keys');
 const { SustainedFlagMonitor } = require('./alert-monitors');
 const { decideWatchdogAction } = require('./watchdog');
@@ -57,6 +58,7 @@ const {
   redactSecrets,
   stripRedactedPlaceholders,
   validateConfigUpdates,
+  clearIdentityOnPathChange,
   ReplayGuard,
 } = require('./security');
 const APP_VERSION = require('../package.json').version;
@@ -311,6 +313,70 @@ const zwaveManager = new ZwaveManager({
     const k = loadSecurityKeys(config.devices && config.devices.zwave);
     return { classic: k.classic, longRange: k.longRange };
   },
+  // Re-find the stick by its captured USB identity before each driver start, so
+  // a renumbered COM port (Windows) or ttyUSB shuffle (Linux) heals instead of
+  // stranding the driver. Reads live config identity; the manager stays
+  // identity-agnostic. Degrades to the requested path when nothing matches.
+  resolveSerial: async ({ serial_path }) => {
+    const zw = (config.devices && config.devices.zwave) || {};
+    const live = await serialResolver.resolveLive({ serial_path, serial_identity: zw.serial_identity });
+    if (!live.available || !live.verdict) return { path: serial_path, matched_by: null, changed: false };
+    const v = live.verdict;
+    return {
+      path: v.path,
+      matched_by: v.matched_by,
+      changed: v.changed,
+      ambiguous: !v.path && (v.candidates || []).length > 1,
+      candidate_count: (v.candidates || []).length,
+    };
+  },
+});
+
+// Persist the port the driver actually opened. Fires only after 'driver ready'
+// proved the port is really the stick, so a wrong guess is never saved. Two
+// jobs: (1) capture/refresh the USB identity (silent migration for existing
+// installs), and (2) when the resolved port differs from what config records,
+// heal serial_path to it and announce the move. persistZwaveMutation (never a
+// bare writeConfigFile) keeps ConfigSync from firing a spurious reload and
+// avoids clobbering a concurrent PUT /api/config.
+zwaveManager.on('serial-resolved', ({ resolved, matched_by }) => {
+  Promise.resolve()
+    .then(async () => {
+      const listed = await serialResolver.listPorts();
+      const ports = (listed && listed.ports) || [];
+      const port = ports.find((p) => p.path === resolved
+        || (p.pnp_id && resolved === `/dev/serial/by-id/${p.pnp_id}`)) || null;
+      const zw = (config.devices && config.devices.zwave) || {};
+      const prevPath = zw.serial_path || null;
+      const pathChanged = !!resolved && resolved !== prevPath;
+      const identity = serialResolver.identityFromPort(port, new Date().toISOString());
+      const identityChanged = !!identity && !serialResolver.identityMatchesPort(zw.serial_identity, port);
+      if (!pathChanged && !identityChanged) return; // nothing to write
+
+      persistZwaveMutation((cfg) => {
+        cfg.devices = cfg.devices || {};
+        const z = cfg.devices.zwave = cfg.devices.zwave || {};
+        if (pathChanged) z.serial_path = resolved;
+        if (identity) z.serial_identity = identity;
+      });
+
+      if (pathChanged) {
+        const how = matched_by === 'serial_number' ? 'matched by USB serial number'
+          : matched_by === 'vid_pid' ? 'matched by USB vendor/product id'
+            : 'matched by port path';
+        logger.info(`Z-Wave: serial port auto-updated ${prevPath || '(unset)'} -> ${resolved} (${how})`);
+        broadcastEvent({
+          type: 'zwave.serial_healed',
+          actor: 'Z-Wave',
+          location: resolved,
+          action: `Z-Wave stick auto-updated from ${prevPath || '(unset)'} to ${resolved}`,
+          success: true,
+        });
+      } else if (identityChanged && !zw.serial_identity) {
+        logger.info(`Z-Wave: captured USB identity for the stick on ${resolved} (enables auto-recovery if the port renumbers)`);
+      }
+    })
+    .catch((e) => logger.warn(`Z-Wave: could not persist serial resolution: ${e.message}`));
 });
 
 // Self-healing, layer 1: when the manager auto-restarts the driver after a
@@ -3095,34 +3161,46 @@ app.post('/api/deadbolt/reinterview', (req, res) => {
 });
 
 // Serial-port discovery so the dashboard can offer a COM-port picker for the
-// Z-Wave stick. serialport ships with the bundled zwave-js; lazy-require it so
-// an install without the optional dependency (or a failed native build)
-// degrades to available:false instead of breaking the API.
+// Z-Wave stick, plus enough live state for the UI to show an HONEST status
+// instead of a bare "saved, not detected": which port the driver is actually
+// running on, which port matches the saved stick's USB identity, and where the
+// resolver would send us. Read-only: this endpoint NEVER persists (so a disabled
+// transport, which runs no driver, can never trigger a config write here).
+// serialport ships with the bundled zwave-js; listPorts() degrades to
+// available:false when the optional dependency is absent.
 app.get('/api/deadbolt/serial-ports', async (req, res) => {
-  let SerialPort;
-  try {
-    ({ SerialPort } = require('serialport')); // eslint-disable-line global-require
-  } catch (err) {
-    return res.json({ available: false, ports: [], error: 'Z-Wave support is not installed in this build' });
+  const listed = await serialResolver.listPorts();
+  if (!listed.available) {
+    return res.json({ available: false, ports: [], error: listed.error });
   }
-  try {
-    const ports = await SerialPort.list();
-    res.json({
-      available: true,
-      ports: ports.map((p) => ({
-        path: p.path,
-        manufacturer: p.manufacturer || null,
-        serial_number: p.serialNumber || null,
-        pnp_id: p.pnpId || null,
-        vendor_id: p.vendorId || null,
-        product_id: p.productId || null,
-        // Zooz ZST39 LR enumerates as a Silicon Labs CP210x (VID 10c4).
-        likely_zwave: /10c4/i.test(p.vendorId || '') || /silicon|cp210/i.test(`${p.manufacturer || ''} ${p.pnpId || ''}`),
-      })),
-    });
-  } catch (err) {
-    res.json({ available: true, ports: [], error: err.message });
-  }
+  const zw = (config.devices && config.devices.zwave) || {};
+  const savedPath = zw.serial_path || null;
+  const driverPath = zwaveManager.serialPath || null;
+  const isActive = (p) => driverPath != null
+    && (p.path === driverPath || (p.pnp_id && driverPath === `/dev/serial/by-id/${p.pnp_id}`));
+  const verdict = serialResolver.resolve(
+    { serial_path: savedPath, serial_identity: zw.serial_identity },
+    listed.ports,
+    { savedRealpath: serialResolver.savedRealpath(savedPath) },
+  );
+  res.json({
+    available: true,
+    error: listed.error || undefined,
+    ports: listed.ports.map((p) => Object.assign({}, p, {
+      likely_zwave: serialResolver.isLikelyZwave(p),
+      is_active: isActive(p),
+      matches_saved_identity: serialResolver.identityMatchesPort(zw.serial_identity, p),
+    })),
+    saved_path: savedPath,
+    driver_running: zwaveManager.isRunning(),
+    driver_path: driverPath,
+    resolution: {
+      resolved_path: verdict.path,
+      matched_by: verdict.matched_by,
+      changed: verdict.changed,
+      candidate_count: (verdict.candidates || []).length,
+    },
+  });
 });
 
 // Labeled event capture: pin down undocumented payload shapes on-site.
@@ -3637,6 +3715,10 @@ app.put('/api/config', async (req, res) => {
     // Read current config (with real secrets)
     const current = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
 
+    // The serial port on disk BEFORE this save, so a deliberate port change can
+    // drop the now-stale USB identity after the merge below.
+    const prevZwavePath = current.devices && current.devices.zwave && current.devices.zwave.serial_path;
+
     // Drop any secret still carrying the redaction placeholder, so the UI
     // echoing a redacted GET back on save cannot clobber the real value.
     stripRedactedPlaceholders(updates);
@@ -3816,6 +3898,11 @@ app.put('/api/config', async (req, res) => {
     delete current.cascade_rules;
     delete current.unlock_rules;
     delete current.doorbell_rules;
+
+    // Choosing a different serial port by hand is explicit: drop the captured
+    // USB identity so it cannot out-vote that choice on the next resolve (which
+    // would reopen the old stick). Re-captured on the next good driver start.
+    clearIdentityOnPathChange(current, { serial_path: prevZwavePath }, updates.devices && updates.devices.zwave);
 
     writeConfigFile(current);
     logger.info('Config saved to disk');
