@@ -62,6 +62,12 @@ const {
   ReplayGuard,
 } = require('./security');
 const APP_VERSION = require('../package.json').version;
+const { UpdateChecker, HeadlessInstaller } = require('./update-checker');
+
+// Release check + in-app upgrade. Headless by default; electron/main.js swaps
+// in the electron-updater backend through setUpdateBackend() once packaged.
+// Constructed after `config` is loaded (see below) so it reads `updates`.
+let updateChecker = null;
 
 // ---------------------------------------------------------------------------
 // Process-level safety nets
@@ -1905,6 +1911,7 @@ app.get('/health', (req, res) => {
     deadbolt: deadboltHealthStatus(),
     capture: capture.status(),
     alerts: notifier.getStatus(),
+    update: updateChecker ? updateChecker.getState() : null,
     memory_mb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 10) / 10
   });
 });
@@ -3664,6 +3671,59 @@ app.post('/reload', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Software updates: what the dashboard's Upgrade banner talks to
+// ---------------------------------------------------------------------------
+
+app.get('/api/update/status', (req, res) => {
+  if (!updateChecker) return res.status(503).json({ error: 'Update checker not initialized' });
+  res.json(updateChecker.getState());
+});
+
+app.post('/api/update/check', async (req, res) => {
+  if (!updateChecker) return res.status(503).json({ error: 'Update checker not initialized' });
+  const state = await updateChecker.check({ force: true });
+  res.json(state);
+});
+
+app.post('/api/update/install', async (req, res) => {
+  if (!updateChecker) return res.status(503).json({ error: 'Update checker not initialized' });
+  const before = updateChecker.getState();
+  try {
+    const install = await updateChecker.install();
+    safeAudit({
+      actor: 'GUI Admin',
+      action: 'software.upgrade',
+      target: `v${before.latest_version}`,
+      detail: `from v${before.current_version} via ${before.install_method}`
+    });
+    broadcastEvent({
+      type: 'system.update',
+      actor: 'GUI Admin',
+      location: '-',
+      action: `Upgrade to v${before.latest_version} started`,
+      success: true
+    });
+    res.json({ status: 'started', install, update: updateChecker.getState() });
+  } catch (err) {
+    const code = err && err.code;
+    const http = code === 'NO_UPDATE' ? 409 : code === 'BUSY' ? 409 : code === 'MANUAL' ? 501 : 500;
+    if (code !== 'NO_UPDATE' && code !== 'BUSY') logger.error(`Upgrade failed to start: ${err.message}`);
+    res.status(http).json({
+      error: err.message,
+      code: code || 'ERROR',
+      instructions: err.instructions || null,
+      update: updateChecker.getState()
+    });
+  }
+});
+
+// The dashboard toasts "upgraded" once, then tells us it saw it.
+app.post('/api/update/acknowledge', (req, res) => {
+  if (updateChecker) updateChecker.acknowledgeUpgrade();
+  res.json({ status: 'ok' });
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/config
 // ---------------------------------------------------------------------------
 
@@ -4764,6 +4824,7 @@ async function reloadOrchestrator({
     return result;
   } finally {
     applyAutoSyncFromConfig();
+    if (updateChecker) updateChecker.configure(_pendingUpdateMode === 'dev' ? { enabled: false } : (config.updates || {}));
   }
 }
 
@@ -4884,6 +4945,12 @@ async function start() {
   ensureAdminApiKey();
   ensureAutoLockToken();
   warnOnWebhookExposure();
+
+  // Start looking for new releases (first check ~45s after boot, then on the
+  // configured interval). In the desktop app main.js attaches its backend
+  // before this runs, so the first check already goes through electron-updater.
+  initUpdateChecker();
+  updateChecker.start();
 
   // Rehydrate the Live Events feed from disk before the server accepts
   // requests, so GET /api/events/history is populated immediately on boot.
@@ -5035,7 +5102,48 @@ function applyAutoSyncFromConfig() {
 // Export for Electron (require as module) or run standalone
 // ---------------------------------------------------------------------------
 
-module.exports = { start, app, setWatchdogRestartCallback };
+function initUpdateChecker() {
+  if (updateChecker) return updateChecker;
+  const installer = new HeadlessInstaller({ appDir: path.resolve(__dirname, '..'), logger });
+  const cfg = Object.assign({}, config.updates || {});
+  if (_pendingUpdateMode === 'dev') cfg.enabled = false; // no feed for an unpackaged run
+  updateChecker = new UpdateChecker({
+    currentVersion: APP_VERSION,
+    config: cfg,
+    installer,
+    logger,
+    mode: _pendingUpdateMode || (_pendingUpdateBackend ? 'desktop' : 'headless')
+  });
+  if (_pendingUpdateBackend) updateChecker.setBackend(_pendingUpdateBackend);
+  updateChecker.onChange((st) => {
+    // Let an open dashboard react at once (banner state, progress) instead
+    // of waiting for its next /health poll.
+    try {
+      const payload = `data: ${JSON.stringify({ type: 'system.update_state', update: st })}\n\n`;
+      for (const client of sseClients) { try { client.write(payload); } catch (e) { /* dropped */ } }
+    } catch (e) { /* never let a UI push break the checker */ }
+  });
+  return updateChecker;
+}
+
+// Electron calls this (before or after start()) to route checks and installs
+// through electron-updater. `mode` lets it flag an unpackaged dev run, where
+// checks are pointless, without the server knowing about Electron.
+let _pendingUpdateBackend = null;
+let _pendingUpdateMode = null;
+function setUpdateBackend(backend, { mode } = {}) {
+  _pendingUpdateBackend = backend || null;
+  _pendingUpdateMode = mode || null;
+  if (updateChecker) {
+    updateChecker.setBackend(backend || null);
+    if (mode) updateChecker.state.mode = mode;
+    if (mode === 'dev') updateChecker.configure({ enabled: false });
+  }
+}
+
+function getUpdateChecker() { return updateChecker; }
+
+module.exports = { start, app, setWatchdogRestartCallback, setUpdateBackend, getUpdateChecker };
 
 // If run directly (node src/index.js), start immediately
 // If required by Electron, it will call start() when ready

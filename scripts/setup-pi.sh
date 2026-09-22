@@ -66,13 +66,24 @@ mkdir -p "$LOG_DIR"
 # Copy application files (assumes this script is run from the project root)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "${SCRIPT_DIR}/../package.json" ]; then
-  cp -r "${SCRIPT_DIR}/../package.json" "$APP_DIR/"
-  cp -r "${SCRIPT_DIR}/../src" "$APP_DIR/"
+  # Everything the headless service and its dashboard need. scripts/ carries
+  # upgrade.sh so the dashboard's Upgrade button can update this install later.
+  for item in package.json package-lock.json src public electron assets scripts LICENSE README.md; do
+    if [ -e "${SCRIPT_DIR}/../${item}" ]; then
+      rm -rf "$APP_DIR/${item}"
+      cp -r "${SCRIPT_DIR}/../${item}" "$APP_DIR/"
+    fi
+  done
   mkdir -p "$APP_DIR/config"
+  cp "${SCRIPT_DIR}"/../config/*.example.json "$APP_DIR/config/" 2>/dev/null || true
 
   # Only copy config if it doesn't already exist (preserve existing config)
   if [ ! -f "$APP_DIR/config/config.json" ]; then
-    cp "${SCRIPT_DIR}/../config/config.json" "$APP_DIR/config/"
+    if [ -f "${SCRIPT_DIR}/../config/config.json" ]; then
+      cp "${SCRIPT_DIR}/../config/config.json" "$APP_DIR/config/"
+    else
+      cp "${SCRIPT_DIR}/../config/config.example.json" "$APP_DIR/config/config.json"
+    fi
     echo "  Config copied (you still need to edit it with your API token and door IDs)"
   else
     echo "  Config already exists, not overwriting"
@@ -84,7 +95,7 @@ fi
 
 # Install dependencies
 cd "$APP_DIR"
-npm install --omit=dev
+ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install --omit=dev --no-audit --no-fund
 echo "  Dependencies installed"
 
 # Set ownership
@@ -127,6 +138,8 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/var/log/unifi-access-orchestrator
+# The dashboard saves config.json, backups and the Z-Wave key store here.
+ReadWritePaths=/opt/unifi-access-orchestrator/config
 ReadOnlyPaths=/opt/unifi-access-orchestrator
 
 [Install]
@@ -135,6 +148,17 @@ EOF
 
 systemctl daemon-reload
 echo "  Service created: unifi-access-orchestrator.service"
+
+# ---------------------------------------------------------------
+# 5b. Upgrade helper (lets the dashboard's Upgrade button update this install)
+# ---------------------------------------------------------------
+echo "[5/7] Installing the upgrade helper..."
+if [ -f "$APP_DIR/scripts/install-upgrade-helper.sh" ]; then
+  APP_DIR="$APP_DIR" APP_USER="$APP_USER" bash "$APP_DIR/scripts/install-upgrade-helper.sh" \
+    || echo "  WARNING: upgrade helper install failed; run it later with: sudo bash $APP_DIR/scripts/install-upgrade-helper.sh"
+else
+  echo "  scripts/install-upgrade-helper.sh not found, skipping (dashboard upgrades will show manual steps)"
+fi
 
 # ---------------------------------------------------------------
 # 6. Configure firewall (if ufw is active)
@@ -192,5 +216,9 @@ echo "    curl http://${CURRENT_IP}:3000/health"
 echo ""
 echo " 6. Configure Alarm Manager in UniFi Access:"
 echo "    Webhook URL: http://${CURRENT_IP}:3000/webhook"
+echo ""
+echo " Upgrades: when a new release is published, the dashboard shows an"
+echo " Upgrade banner. Click Upgrade and this install updates itself."
+echo " Manual alternative: sudo bash ${APP_DIR}/scripts/upgrade.sh latest"
 echo ""
 echo "============================================"

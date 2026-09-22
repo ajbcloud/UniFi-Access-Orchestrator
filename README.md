@@ -19,6 +19,7 @@ Beyond door-to-door unlocks it can also drive a Z-Wave smart deadbolt (retract o
 - [Option B: Linux / Raspberry Pi](#option-b-linux--raspberry-pi)
 - [Configuring Doors (the door flow)](#configuring-doors-the-door-flow)
 - [Upgrading from an earlier version](#upgrading-from-an-earlier-version)
+- [Keeping the app up to date](#keeping-the-app-up-to-date)
 - [Visual Designer](#visual-designer)
 - [Setting Up Alarm Manager Webhooks](#setting-up-alarm-manager-webhooks)
 - [Testing Your Setup](#testing-your-setup)
@@ -336,7 +337,7 @@ The default event source is a **WebSocket** to the controller, which needs no co
 | Restart after config changes | `sudo systemctl restart unifi-access-orchestrator` |
 | Stop the service | `sudo systemctl stop unifi-access-orchestrator` |
 | Check health via API | `curl http://localhost:3000/health` |
-| Update to latest version | `cd /opt/unifi-access-orchestrator && sudo git pull && sudo npm install && sudo systemctl restart unifi-access-orchestrator` |
+| Update to latest version | Click **Upgrade** on the dashboard banner, or run `sudo bash /opt/unifi-access-orchestrator/scripts/upgrade.sh latest` (see [Keeping the app up to date](#keeping-the-app-up-to-date)) |
 
 ---
 
@@ -424,6 +425,51 @@ The door flow is now the one place configuration lives, so the earlier separate 
 - `deadbolt_rules` and `cascade_rules` migrate into each door's retract and unlock actions, exactly as before.
 - Per edge after unlock now offers two deterministic choices, **stay unlocked** and **relock after** N seconds. The old "lock default" mode depended on the lock's own hardware timer, which the app now turns off so it owns relock in software. Any old edge converts to stay unlocked, or to relock after (using the lock's known timer or 30 seconds) if that lock's hardware auto-relock was on.
 - The migration is one way and idempotent. A backup of the pre-upgrade config is written to the `backups` folder before the first rewrite. For one release, `GET /api/config` still projects the old `unlock_rules`, `doorbell_rules`, `deadbolt_rules`, and `cascade_rules` shapes so any external reader keeps working; the file on disk carries `door_flows` only.
+
+## Keeping the app up to date
+
+Every merge to `main` publishes a GitHub Release, and every install watches for it. About 45 seconds after start, and every 6 hours after that, the app compares its own version to the latest release. When a newer one exists, an **Upgrade** banner is pinned to the top of the dashboard on every tab. It stays there until the new version is running. Click **Upgrade** and the app updates itself; door automations pause for about a minute while it restarts, and your configuration, backups, and Z-Wave keys are kept.
+
+What the button does depends on how the app is installed:
+
+| Install | What happens on Upgrade |
+|---------|-------------------------|
+| Windows installer, Linux AppImage or `.deb` | The new installer is downloaded in the background (the banner shows progress), then the app restarts into it. If you skip the button, the update is applied the next time you quit the app. |
+| macOS `.dmg` | The build is not code signed, so macOS will not let it replace itself. The banner shows a **Download** button that opens the release page; install the new `.dmg` over the old one. |
+| Headless service (Raspberry Pi, `setup-pi.sh`) | A small root helper swaps in the release, reinstalls dependencies, and restarts the service. The banner follows its progress and the page reloads when the new version is up. |
+
+**Help > Check for Updates...** in the desktop app runs a check right away and offers the same upgrade.
+
+### Headless installs: the upgrade helper
+
+The service runs unprivileged inside a systemd sandbox that mounts its own install directory read-only, so it cannot replace its files itself. `scripts/setup-pi.sh` installs a helper that can: the dashboard drops a request file in `/var/lib/unifi-access-orchestrator`, a root `unifi-access-orchestrator-upgrade.path` unit notices it and runs `scripts/upgrade.sh`, which downloads the tagged release, keeps a rollback copy, swaps `src/`, `public/`, `electron/`, `scripts/` and `package.json`, runs `npm ci --omit=dev`, verifies the result, and restarts the service. A failed step rolls back and the banner shows why.
+
+If your install predates the helper (the banner offers manual steps instead of upgrading), install it once:
+
+```bash
+sudo bash /opt/unifi-access-orchestrator/scripts/install-upgrade-helper.sh
+```
+
+Useful commands:
+
+| What | Command |
+|------|---------|
+| Upgrade from a shell | `sudo bash /opt/unifi-access-orchestrator/scripts/upgrade.sh latest` (or a specific tag, for example `v11.2.4`) |
+| Watch an upgrade run | `sudo journalctl -u unifi-access-orchestrator-upgrade -f` |
+| Confirm the helper is armed | `systemctl status unifi-access-orchestrator-upgrade.path` |
+
+If you run `node src/index.js` yourself without systemd and the directory is writable, the Upgrade button runs the same script directly and the process exits when it finishes; your supervisor (pm2, Docker restart policy, a wrapper loop) brings the new version up. A git checkout is never upgraded in place, so a development tree is safe.
+
+### Turning it off or changing the interval
+
+```json
+"updates": {
+  "enabled": true,
+  "check_interval_hours": 6
+}
+```
+
+Set `enabled` to `false` to stop checking (the banner never appears). The interval is clamped to at least one hour. Checks are a single anonymous request to the GitHub Releases API; nothing about your install is sent.
 
 ## Visual Designer
 
@@ -530,6 +576,8 @@ curl http://DEVICE_IP:3000/health
 ---
 
 ## Dashboard Guide
+
+When a newer release is available, an **Upgrade** banner is pinned above the content on every tab until the new version is running (see [Keeping the app up to date](#keeping-the-app-up-to-date)).
 
 The dashboard has eight tabs:
 
@@ -684,6 +732,7 @@ Most settings can be edited from the dashboard, but everything lives in `config.
 | `logging` | `level`, `file_path`, `max_files`, `max_size` |
 | `watchdog` | Monitors event-**source health**, not door activity, so a quiet-but-connected controller never triggers a restart. `inactivity_timeout_minutes` (0 disables): how long the source may stay unhealthy before a full app restart. `reconnect_after_minutes`: after this long unhealthy it first forces an in-process event-source reconnect (loses nothing), escalating to a restart only if that doesn't recover (defaults to half the timeout, capped at 5 min, if omitted). In webhook mode the window is arrival-based (re-register at the window, restart at twice the window). |
 | `auto_sync` | Background user-group sync: `enabled` and `interval_seconds` |
+| `updates` | Release checks behind the dashboard's Upgrade banner: `enabled` (default `true`) and `check_interval_hours` (default 6, minimum 1). See [Keeping the app up to date](#keeping-the-app-up-to-date). |
 | `self_trigger_prevention` | The marker the orchestrator stamps on its own unlocks so it never reacts to itself |
 
 Each entry under `devices.zwave.locks` accepts, in addition to `name`, `manufacturer`, and `model_key`: `verify_timeout_ms`, `verify_retries`, `retry_backoff_ms`, `early_verify_read_ms`, `poll_minutes` (periodic bolt and battery refresh), `low_battery_pct` (the threshold for the low-battery alert), and `auto_relock`.
@@ -810,11 +859,14 @@ The orchestrator exposes these HTTP endpoints on its configured port (default 30
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/webhook` | Receives events from Alarm Manager or API webhook |
-| GET | `/health` | Service status, door/user counts, event stats, memory usage |
+| GET | `/health` | Service status, door/user counts, event stats, memory usage, and the `update` block behind the Upgrade banner (authenticated callers only) |
 | GET | `/api/events/stream` | Server-Sent Events stream for the real-time event feed |
 | GET | `/api/events/history` | Recent events from memory |
 | POST | `/reload` | Reload config.json without restarting the service |
 | GET | `/api/diagnostics` | One-file support bundle: config (redacted), driver state, self-heal state, log tails |
+| GET | `/api/update/status` | Release check state: current and latest version, whether an update is available, install progress |
+| POST | `/api/update/check` | Check GitHub Releases now |
+| POST | `/api/update/install` | Start the upgrade the banner offers (`409` when nothing is newer or one is already running, `501` with manual steps when this install cannot upgrade itself) |
 
 **Config and automation**
 
@@ -948,8 +1000,13 @@ unifi-access-orchestrator/
     main.js                     Desktop app: window, tray, config paths, start-at-login
   public/
     index.html                  Dashboard UI + setup wizard (single file, no build step)
+  scripts/
+    setup-pi.sh                 Headless install on Raspberry Pi / Linux (systemd)
+    install-upgrade-helper.sh   Root helper so the dashboard's Upgrade button works headless
+    upgrade.sh                  Swaps in a tagged release, reinstalls deps, restarts
   src/
     index.js                    Express server, all API routes, SSE stream, wiring
+    update-checker.js           Release check, upgrade state machine, headless installer
     unifi-client.js             UniFi Access API client (REST + WebSocket)
     resolver.js                 Resolves user IDs to logical group names
     rules-engine.js             Processes events and decides which doors to unlock

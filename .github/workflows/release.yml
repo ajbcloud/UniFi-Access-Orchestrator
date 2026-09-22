@@ -148,9 +148,12 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: windows-build
+          # latest.yml is the electron-updater feed: without it the installed
+          # app's update check 404s and the dashboard never offers Upgrade.
           path: |
             dist/*.exe
             dist/*.exe.blockmap
+            dist/latest*.yml
           retention-days: 5
 
   build-linux:
@@ -190,6 +193,7 @@ jobs:
           path: |
             dist/*.AppImage
             dist/*amd64.deb
+            dist/latest-linux*.yml
           retention-days: 5
 
   build-linux-arm:
@@ -228,6 +232,7 @@ jobs:
           name: linux-arm-build
           path: |
             dist/*armv7l.deb
+            dist/latest-linux-armv7l*.yml
           retention-days: 5
 
   build-mac:

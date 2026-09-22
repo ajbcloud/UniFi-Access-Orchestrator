@@ -52,6 +52,10 @@
     "max_files": "30d",
     "max_size": "10m"
   },
+  "updates": {
+    "enabled": true,
+    "check_interval_hours": 6
+  },
   "watchdog": {
     "inactivity_timeout_minutes": 60,
     "reconnect_after_minutes": 5
