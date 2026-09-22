@@ -188,13 +188,25 @@ class UniFiClient {
   // Latch a rejected token so the UI can say "the controller refused our
   // credentials" instead of a generic connectivity error, and clear it as soon
   // as any call is accepted again.
-  _noteAuthStatus(status) {
-    if (status === 401 || status === 403) {
+  //
+  // Only a 401 latches by default. A 403 is routinely scope-specific rather
+  // than a bad token: a door/webhook-only token (this app's documented minimum)
+  // gets a 403 from assignUserPin while discovery and unlocks stay fully
+  // authorized. Latching on that would tell the operator to regenerate a
+  // perfectly good token, which is exactly the wrong advice to give while they
+  // are chasing an outage. Callers that know the refusal rejected the whole
+  // connection (the WebSocket handshake) pass connectionScoped to include 403.
+  _noteAuthStatus(status, { connectionScoped = false } = {}) {
+    const rejected = status === 401 || (connectionScoped && status === 403);
+    if (rejected) {
       if (!this.authRejectedAt) {
         logger.error(`UniFi Access rejected the API token (HTTP ${status}). Tokens are commonly reissued when the controller is upgraded or rebuilt. Regenerate the developer API token in UniFi Access and update this app's config.`);
       }
       this.authRejectedAt = this.authRejectedAt || new Date().toISOString();
       this.authRejectedStatus = status;
+    } else if (status === 403) {
+      // Worth a line so a scope problem is visible, but not a token verdict.
+      logger.warn(`UniFi Access refused a request (HTTP 403). This is usually a token scope limit for that specific operation, not an invalid token.`);
     } else if (status >= 200 && status < 300 && this.authRejectedAt) {
       logger.info('UniFi Access accepted the API token again');
       this.authRejectedAt = null;
@@ -844,15 +856,29 @@ class UniFiClient {
 
     // A non-101 handshake carries the real reason on the response. Without this
     // an expired token surfaces only as a generic "Unexpected server response"
-    // error and an endless reconnect loop that looks like a network problem.
+    // error with no status to act on.
+    //
+    // Registering this listener takes over cleanup: ws only calls its own
+    // abortHandshake when nothing is listening
+    // (`if (!websocket.emit('unexpected-response', ...)) abortHandshake(...)`),
+    // and abortHandshake is what emits 'close' and so drives scheduleReconnect.
+    // So this handler MUST terminate the socket and schedule the retry itself,
+    // or a single rejection leaves the socket stuck in CONNECTING and kills
+    // event ingestion until the watchdog or a config reload intervenes.
     this.ws.on('unexpected-response', (req, res) => {
       const status = (res && res.statusCode) || 0;
       this.wsHandshakeStatus = status;
-      this._noteAuthStatus(status);
+      // A rejected handshake refuses the whole connection, so unlike a
+      // per-operation REST 403 this really is the credentials being turned away.
+      this._noteAuthStatus(status, { connectionScoped: true });
       if (status !== 401 && status !== 403) {
         logger.error(`WebSocket handshake rejected: HTTP ${status} from ${wsUrl}`);
       }
       try { res.resume(); } catch (e) { /* drain so the socket can close */ }
+      if (this.wsPingInterval) { clearInterval(this.wsPingInterval); this.wsPingInterval = null; }
+      try { req.destroy(); } catch (e) { /* request already torn down */ }
+      try { this.ws && this.ws.terminate(); } catch (e) { /* socket already closing */ }
+      this.scheduleReconnect(onEvent, reconnectSeconds);
     });
 
     this.ws.on('open', () => {

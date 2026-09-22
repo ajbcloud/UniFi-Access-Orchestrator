@@ -4048,13 +4048,9 @@ function cleanDoorFlowTrigger(trig) {
       };
     });
   const out = { type, scope, actions: { unlock, retract } };
-  if (type === 'doorbell') {
-    const db = (trig && trig.doorbell) || {};
-    out.doorbell = {
-      reason_code: Number.isFinite(db.reason_code) ? db.reason_code : 107,
-      viewer_to_group: (db.viewer_to_group && typeof db.viewer_to_group === 'object') ? db.viewer_to_group : {},
-    };
-  }
+  // One canonicalizer, shared with the matching path, so a save cannot quietly
+  // drop a field the controller-side gate relies on (notably reason_codes).
+  if (type === 'doorbell') out.doorbell = doorFlows.canonicalizeDoorbell(trig && trig.doorbell);
   return out;
 }
 

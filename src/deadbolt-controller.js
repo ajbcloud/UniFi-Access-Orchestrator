@@ -44,7 +44,7 @@
  *     access.data.device.location_update_v2) with data.state.lock
  */
 
-const { scopeMatches } = require('./door-flows');
+const { scopeMatches, toReasonCode, doorbellCodes } = require('./door-flows');
 
 const REMOTE_PROVIDER = 'REMOTE_THROUGH_UAH';
 const DEFAULT_DOORBELL_REASON_CODE = 107;
@@ -53,15 +53,9 @@ function normName(s) {
   return typeof s === 'string' ? s.trim().toLowerCase() : '';
 }
 
-// Reason codes arrive as a number on some controller versions and a numeric
-// string on others. The gate is an equality test, so coerce once at the parse
-// boundary: a bare === against "107" silently ignored every doorbell.
-function toReasonCode(v) {
-  if (v == null || v === '') return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
+// toReasonCode / doorbellCodes come from door-flows so the persisted shape and
+// the runtime gate cannot drift: a save path that understood the config
+// differently from this matcher is exactly how a trigger goes quiet.
 class DeadboltController {
   constructor(config = {}, deps = {}) {
     this.log = deps.logger || console;
@@ -597,19 +591,10 @@ class DeadboltController {
     );
   }
 
-  // The reason codes a trigger accepts. `reason_codes` (array) is preferred;
-  // `reason_code` stays readable so existing configs keep working.
+  // The reason codes a trigger accepts, read through the same helper the save
+  // path uses.
   _doorbellCodesFor(spec) {
-    const db = spec && spec.doorbell;
-    if (db) {
-      if (Array.isArray(db.reason_codes)) {
-        const list = db.reason_codes.map(toReasonCode).filter((n) => n != null);
-        if (list.length) return list;
-      }
-      const one = toReasonCode(db.reason_code);
-      if (one != null) return [one];
-    }
-    return [DEFAULT_DOORBELL_REASON_CODE];
+    return doorbellCodes(spec && spec.doorbell);
   }
 
   _doorbellReasonOk(spec, reasonCode) {
