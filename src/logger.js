@@ -14,6 +14,9 @@ const fs = require('fs');
 
 const DEFAULT_LOG_DIR = process.env.LOG_DIR || path.join(process.cwd(), 'logs');
 const DEFAULT_LEVEL = 'info';
+// Local time, so it lines up with the timestamps the UniFi Access activity log
+// shows the operator. The rotating file transport keeps full ISO/UTC.
+const CONSOLE_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH:mm:ss';
 
 // Ensure log directory exists
 function ensureDir(dir) {
@@ -45,7 +48,11 @@ function buildLogger(logDir = DEFAULT_LOG_DIR, level = DEFAULT_LEVEL) {
       }),
       new winston.transports.Console({
         format: winston.format.combine(
-          winston.format.timestamp({ format: 'HH:mm:ss' }),
+          // Date included, not just the clock: these lines get read side by side
+          // with the UniFi Access activity log when tracing why a door did or did
+          // not open, and a bare HH:mm:ss cannot be correlated across days or
+          // against a rotated file.
+          winston.format.timestamp({ format: CONSOLE_TIMESTAMP_FORMAT }),
           winston.format.printf(({ timestamp, level, message }) => {
             return `${timestamp} [${level.toUpperCase()}] ${message}`;
           })
@@ -71,3 +78,4 @@ logger.configure_from_config = function(config) {
 };
 
 module.exports = logger;
+module.exports.CONSOLE_TIMESTAMP_FORMAT = CONSOLE_TIMESTAMP_FORMAT;

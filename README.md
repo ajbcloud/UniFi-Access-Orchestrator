@@ -718,6 +718,25 @@ Secrets (the UniFi token, webhook and alert secrets, the SMTP password, the auto
 - The orchestrator includes self-trigger prevention. If you're seeing loops, check that the `extra` field is being passed through in your firmware version.
 - Update your Access firmware to the latest version.
 
+**"A door stopped auto-unlocking after upgrading UniFi Access"**
+
+A controller upgrade can reissue the API token, rename an event, or change the reason code an answered doorbell carries. Any of those stops the automation without stopping the app, so work through it in this order.
+
+1. **Confirm the orchestrator is the one unlocking.** In the UniFi Access activity log, an unlock this app performs reads **"Access Orchestrator remotely unlocked &lt;door&gt;"**. If you only see "unlocked using a motion sensor" (that is a physical motion/REX device wired to the hub) or a tenant's viewer unlocking by hand, the orchestrator is not firing.
+2. **Check the token.** A rebuilt or upgraded controller usually invalidates the old developer API token. The dashboard shows **token rejected** and the log carries `UniFi Access rejected the API token (HTTP 401)`. Regenerate it in Access > Settings > General > Advanced and update the app config.
+3. **Check events are arriving.** Press **test unlock** on the Dashboard first: if that alone fails, the problem is the token or the REST path, not the event feed. Then have someone answer a doorbell call and watch the Dashboard counters. Events received not moving means the feed is down; moving without an unlock means a gate rejected the event.
+4. **Read the drop reason.** Every rejected doorbell now logs why, for example `doorbell at "Main Entrance" not actioned - reason_code 108 did not match the expected 107`. If the code changed, add it to the trigger:
+
+```json
+"doorbell": { "reason_codes": [107, 400], "viewer_to_group": { "Office Viewer": "office" } }
+```
+
+`reason_codes` accepts several values; the older single `reason_code` still works. Codes are also accepted as numeric strings.
+
+5. **Check for a renamed event.** An `access.*` event the app does not handle is counted on the Dashboard and logged once as `no handler for access event ...`. That name is what to add support for.
+
+Reference: [Configuring Door Unlock Methods in UniFi Access](https://help.ui.com/hc/en-us/articles/17459303874327-Configuring-Door-Unlock-Methods-in-UniFi-Access) explains the unlock methods the activity log distinguishes, including motion sensors.
+
 **Windows: "App won't start"**
 - Check Windows Defender or antivirus isn't blocking it
 - Try running as Administrator

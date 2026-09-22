@@ -53,6 +53,15 @@ function normName(s) {
   return typeof s === 'string' ? s.trim().toLowerCase() : '';
 }
 
+// Reason codes arrive as a number on some controller versions and a numeric
+// string on others. The gate is an equality test, so coerce once at the parse
+// boundary: a bare === against "107" silently ignored every doorbell.
+function toReasonCode(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 class DeadboltController {
   constructor(config = {}, deps = {}) {
     this.log = deps.logger || console;
@@ -106,6 +115,19 @@ class DeadboltController {
     this._bootFailsafeListener = null; // one-shot state-change listener for the boot relock backstop
     this._cascadeTimers = new Set(); // pending delayed cascade unlocks (cleared on destroy)
     this._destroyed = false;
+    this._unmatchedSeen = new Set(); // access.* shapes already reported once
+    // Why-didn't-it-fire counters. A controller upgrade can rename an event or
+    // change a reason code, and every gate below is a silent `return`; without
+    // these the only symptom is a door that never opens.
+    this.diag = {
+      doorbell_seen: 0,
+      doorbell_dropped: 0,
+      last_doorbell_drop: null,
+      self_skipped: 0,
+      last_self_skip: null,
+      unmatched_events: 0,
+      last_unmatched_type: null,
+    };
     this.stats = {
       retracts: 0,
       retracts_failed: 0,
@@ -188,6 +210,28 @@ class DeadboltController {
     if (bell) return this._onDoorbell(bell);
     const loc = this._parseLocationUpdate(raw);
     if (loc) return this._onLocationUpdate(loc);
+    this._noteUnmatched(raw);
+  }
+
+  // An access.* event that no parser claimed. After a controller upgrade this
+  // is where a renamed event type first shows up, so keep a count and the last
+  // shape for the dashboard. Reported once per distinct shape: a rename is
+  // worth one line, not one per doorbell press.
+  _noteUnmatched(raw) {
+    const top = raw.event || raw.type || '';
+    if (typeof top !== 'string' || !top.startsWith('access.')) return;
+    if (top === 'access.logs.insights.add') return; // deliberately ignored above
+    const src = raw.data && raw.data._source;
+    const inner = src && src.event && src.event.type ? src.event.type : null;
+    const key = inner ? `${top} -> ${inner}` : top;
+    this.diag.unmatched_events++;
+    this.diag.last_unmatched_type = key;
+    if (!this._unmatchedSeen.has(key)) {
+      this._unmatchedSeen.add(key);
+      this.log.info && this.log.info(
+        `deadbolt: no handler for access event ${key} (first time seen; if a door stopped auto-unlocking after a controller upgrade, this is the event to check)`
+      );
+    }
   }
 
   _parseAccessGrant(raw) {
@@ -310,7 +354,7 @@ class DeadboltController {
       const actor = data.actor || {};
       const dev = data.device || {};
       return {
-        reasonCode: obj.reason_code,
+        reasonCode: toReasonCode(obj.reason_code),
         doorName: loc.name || null,
         doorId: loc.id || null,
         actorId: actor.id || null,
@@ -330,7 +374,7 @@ class DeadboltController {
       }
       const actor = s.actor || {};
       return {
-        reasonCode: ev.reason_code,
+        reasonCode: toReasonCode(ev.reason_code),
         doorName,
         doorId,
         actorId: actor.id || actor.user_id || null,
@@ -342,7 +386,7 @@ class DeadboltController {
       const a = raw.alarm;
       const trg = (a.triggers && a.triggers[0]) || {};
       return {
-        reasonCode: (trg.reason_code != null ? trg.reason_code : DEFAULT_DOORBELL_REASON_CODE),
+        reasonCode: (trg.reason_code != null ? toReasonCode(trg.reason_code) : DEFAULT_DOORBELL_REASON_CODE),
         doorName: a.name || null,
         doorId: null,
         actorId: (trg.actor && trg.actor.id) || trg.user_id || null,
@@ -426,7 +470,20 @@ class DeadboltController {
 
   _onAccessGrant(g) {
     if (this._isSelfTriggered(g)) {
-      this.log.debug && this.log.debug('deadbolt: skipping self/remote-triggered event');
+      // Counted, not just dropped: every unlock this app issues lands here, but
+      // so would a tenant's in-call unlock from a viewer if the controller
+      // reports it through the same remote provider. A rising count with a
+      // tenant's name on it means this gate is eating real buzz-ins.
+      this.diag.self_skipped++;
+      this.diag.last_self_skip = {
+        door: g.doorName || null,
+        actor: g.actorName || null,
+        provider: g.credentialProvider || null,
+        at: new Date().toISOString(),
+      };
+      this.log.debug && this.log.debug(
+        `deadbolt: skipping self/remote-triggered event (actor=${g.actorName || 'unknown'}, provider=${g.credentialProvider || 'none'})`
+      );
       return;
     }
     // Exits are not credential-tracked; if a reader ever reports exit, do nothing.
@@ -479,33 +536,84 @@ class DeadboltController {
   }
 
   _onDoorbell(d) {
+    this.diag.doorbell_seen++;
     // A doorbell answer is admin-initiated; the reason code is the gate (no
     // self-trigger/exit gating, mirroring the retired rules engine).
-    if (d.reasonCode == null) return;
+    if (d.reasonCode == null) {
+      this._noteDoorbellDrop(d, 'event carried no reason_code');
+      return;
+    }
     const group = this._groupGetter(d);
 
+    let acted = 0;
     if (this.lockDriver) {
       const edge = this._matchRetractEdge('doorbell', d.doorName, d.doorId,
         (e) => this._doorbellReasonOk(e, d.reasonCode), group);
-      if (edge) this._retract(`doorbell: ${this._who(d, group())} at ${d.doorName}`, edge, { actor: this._who(d, group()), location: d.doorName });
+      if (edge) {
+        acted++;
+        this._retract(`doorbell: ${this._who(d, group())} at ${d.doorName}`, edge, { actor: this._who(d, group()), location: d.doorName });
+      }
     }
     const bellSpecificMatched = this._specificGroupMatchedGetter('doorbell', d, group,
       (r) => this._doorbellReasonOk(r, d.reasonCode));
+    // Remember the codes a door-matched rule wanted, so a drop can name the
+    // mismatch instead of just saying nothing happened.
+    let wanted = null;
     this.cascadeRules.forEach((rule, idx) => {
       if ((rule.type || 'entry') !== 'doorbell') return;
       if (!this._matchDoorSpec(d.doorName, d.doorId, rule.trigger_door, rule.trigger_door_id)) return;
-      if (!this._doorbellReasonOk(rule, d.reasonCode)) return;
+      if (!this._doorbellReasonOk(rule, d.reasonCode)) {
+        if (wanted == null) wanted = this._doorbellCodesFor(rule);
+        return;
+      }
       if (rule.scope && rule.scope.any_group && bellSpecificMatched()) return;
       if (!scopeMatches(rule.scope, group())) return;
       if (!this._debounceOk(rule, idx)) return;
+      acted++;
       this._fireCascade(rule, d, group());
     });
+
+    if (!acted) {
+      this._noteDoorbellDrop(d, wanted
+        ? `reason_code ${d.reasonCode} did not match the expected ${wanted.join(' or ')}`
+        : 'no doorbell trigger matched this door, scope or debounce window');
+    }
+  }
+
+  // A doorbell that reaches here is a visitor who did not get let in, so it is
+  // always worth a line. This is the fastest way to tell an event that never
+  // arrived from one that arrived and was rejected by a gate.
+  _noteDoorbellDrop(d, why) {
+    this.diag.doorbell_dropped++;
+    this.diag.last_doorbell_drop = {
+      door: d.doorName || null,
+      reason_code: d.reasonCode == null ? null : d.reasonCode,
+      actor: d.actorName || null,
+      why,
+      at: new Date().toISOString(),
+    };
+    this.log.info && this.log.info(
+      `deadbolt: doorbell at "${d.doorName || 'unknown'}" not actioned - ${why}`
+    );
+  }
+
+  // The reason codes a trigger accepts. `reason_codes` (array) is preferred;
+  // `reason_code` stays readable so existing configs keep working.
+  _doorbellCodesFor(spec) {
+    const db = spec && spec.doorbell;
+    if (db) {
+      if (Array.isArray(db.reason_codes)) {
+        const list = db.reason_codes.map(toReasonCode).filter((n) => n != null);
+        if (list.length) return list;
+      }
+      const one = toReasonCode(db.reason_code);
+      if (one != null) return [one];
+    }
+    return [DEFAULT_DOORBELL_REASON_CODE];
   }
 
   _doorbellReasonOk(spec, reasonCode) {
-    const want = (spec.doorbell && Number.isFinite(spec.doorbell.reason_code))
-      ? spec.doorbell.reason_code : DEFAULT_DOORBELL_REASON_CODE;
-    return reasonCode === want;
+    return this._doorbellCodesFor(spec).includes(reasonCode);
   }
 
   _onLocationUpdate(l) {
@@ -771,6 +879,7 @@ class DeadboltController {
         : null,
       lock: this.lockDriver ? this.lockDriver.snapshot ? this.lockDriver.snapshot() : null : null,
       stats: Object.assign({}, this.stats),
+      diag: Object.assign({}, this.diag),
     };
   }
 }
