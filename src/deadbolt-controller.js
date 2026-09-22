@@ -110,6 +110,7 @@ class DeadboltController {
     this._cascadeTimers = new Set(); // pending delayed cascade unlocks (cleared on destroy)
     this._destroyed = false;
     this._unmatchedSeen = new Set(); // access.* shapes already reported once
+    this._idMismatchSeen = new Set(); // doors whose id split was already reported
     // Why-didn't-it-fire counters. A controller upgrade can rename an event or
     // change a reason code, and every gate below is a silent `return`; without
     // these the only symptom is a door that never opens.
@@ -121,6 +122,7 @@ class DeadboltController {
       last_self_skip: null,
       unmatched_events: 0,
       last_unmatched_type: null,
+      door_id_mismatches: 0,
     };
     this.stats = {
       retracts: 0,
@@ -404,12 +406,29 @@ class DeadboltController {
     return normName(eventName) === normName(configName);
   }
 
-  // Prefer a door id match (survives a UniFi rename) when both the event and
-  // the rule carry an id; otherwise fall back to the name match, so behavior is
-  // unchanged until ids are backfilled onto the rules.
+  // A door id match is a fast path (it survives a UniFi rename). It is NOT a
+  // veto: the REST /doors api returns a uuid, which is what gets backfilled
+  // onto the rule, while the websocket event carries the hub's hardware door
+  // id, so the two ids for the same door never agree. Treating a
+  // present-but-different id as final silently killed every rule on every
+  // door. A mismatch now falls through to the name.
   _matchDoorSpec(eventName, eventId, ruleName, ruleId) {
-    if (ruleId && eventId) return String(ruleId) === String(eventId);
-    return this._matchDoor(eventName, ruleName);
+    if (ruleId && eventId && String(ruleId) === String(eventId)) return true;
+    const byName = this._matchDoor(eventName, ruleName);
+    if (byName && ruleId && eventId) this._noteIdMismatch(eventName, eventId, ruleId);
+    return byName;
+  }
+
+  // Report the id split once per door so it is visible in the log instead of
+  // silent, without a line per badge on a busy entrance.
+  _noteIdMismatch(doorName, eventId, ruleId) {
+    this.diag.door_id_mismatches++;
+    const key = normName(doorName);
+    if (this._idMismatchSeen.has(key)) return;
+    this._idMismatchSeen.add(key);
+    this.log.info && this.log.info(
+      `deadbolt: door "${doorName}" matched by name; its rule id ${ruleId} differs from the event id ${eventId} (REST uuid vs websocket hardware id). Name matching is authoritative.`
+    );
   }
 
   /** The first edge matching the event door, or null. Used by the door-state

@@ -130,6 +130,39 @@ test('falls back to the name match when the rule carries no door id', async () =
   assert.ok(lock.calls.some((c) => c.action === 'unlock'), 'name match still fires without an id');
 });
 
+test('a mismatched door id must not veto a matching name (REST uuid vs websocket hardware id)', async () => {
+  // Real shape from a live site: GET /doors hands back a uuid, which is what
+  // gets backfilled onto the rule, while the websocket event carries the hub's
+  // hardware door id. They never agree. Before the fix the id comparison was
+  // final and the name fallback was never reached, so every rule on every
+  // door went silent.
+  const { ctl, lock, unifi } = makeController({
+    deadbolt_rules: { trigger_door: 'Main Entrance', trigger_door_id: 'b55a6459-5e07-4562-9cc2-040d44d7d3d4' },
+    cascade_rules: {
+      rules: [{ trigger_door: 'Main Entrance', trigger_door_id: 'b55a6459-5e07-4562-9cc2-040d44d7d3d4', unlock: ['Double Doors'], debounce_seconds: 0 }],
+    },
+  });
+  await lock.init();
+  ctl.observe(entryGrant('Main Entrance', { doorId: '58d61f1d5c81' }));
+  await flush();
+  assert.ok(lock.calls.some((c) => c.action === 'unlock'), 'the name rescues the retract when the ids disagree');
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Double Doors'], 'the name rescues the cascade when the ids disagree');
+});
+
+test('a matching door id still wins even when the names differ', async () => {
+  // The id fast path must survive the change above: a rename is still
+  // recognised by id alone.
+  const { ctl, unifi } = makeController({
+    deadbolt_rules: { trigger_door: 'Front Door' },
+    cascade_rules: {
+      rules: [{ trigger_door: 'Old Name', trigger_door_id: 'door-1', unlock: ['Interior Door'], debounce_seconds: 0 }],
+    },
+  });
+  ctl.observe(entryGrant('Front Door', { doorId: 'door-1' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Interior Door'], 'id match fires despite the stale name');
+});
+
 test('self-triggered events are ignored (orchestrator actor and remote unlock)', async () => {
   const { ctl, lock, unifi } = makeController();
   await lock.init();
@@ -960,4 +993,31 @@ test('a self/remote-triggered grant is counted with its actor', async () => {
   assert.equal(ctl.diag.self_skipped, 1);
   assert.equal(ctl.diag.last_self_skip.actor, 'Tenant Viewer');
   assert.equal(ctl.diag.last_self_skip.provider, 'REMOTE_THROUGH_UAH');
+});
+
+test('the door id split is reported once per door, but counted every time', async () => {
+  // A busy entrance must not produce one log line per badge; the split is a
+  // property of the door, so one line is enough. The counter still climbs so
+  // the dashboard can show how often the name had to rescue the match.
+  const infos = [];
+  const unifi = makeUnifi();
+  const ctl = new DeadboltController(
+    {
+      cascade_rules: {
+        rules: [{ trigger_door: 'Main Entrance', trigger_door_id: 'b55a6459-5e07-4562-9cc2-040d44d7d3d4', unlock: ['Double Doors'], debounce_seconds: 0 }],
+      },
+    },
+    { unifiClient: unifi, logger: { debug() {}, info: (m) => infos.push(m) } }
+  );
+  ctl.observe(entryGrant('Main Entrance', { doorId: '58d61f1d5c81' }));
+  ctl.observe(entryGrant('Main Entrance', { doorId: '58d61f1d5c81' }));
+  ctl.observe(entryGrant('Main Entrance', { doorId: '58d61f1d5c81' }));
+  await flush();
+  const lines = infos.filter((m) => /matched by name/.test(m));
+  assert.equal(lines.length, 1, 'one log line for the door, not one per event');
+  assert.match(lines[0], /b55a6459-5e07-4562-9cc2-040d44d7d3d4/);
+  assert.match(lines[0], /58d61f1d5c81/);
+  assert.equal(ctl.diag.door_id_mismatches, 3, 'every rescued match is counted');
+  assert.equal(ctl.getStatus().diag.door_id_mismatches, 3, 'and exposed on status');
+  assert.equal(unifi.calls.length, 3, 'all three badges cascaded');
 });
