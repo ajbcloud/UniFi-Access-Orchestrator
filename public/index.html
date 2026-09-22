@@ -1794,7 +1794,7 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
       <div>
         <div class="sect"><span class="lbl">&raquo; RECENT ACTIVITY</span><span class="rule"></span><span class="live"><span class="status-dot" aria-hidden="true"></span>LIVE</span></div>
         <div class="utable">
-          <div class="thead" style="grid-template-columns:76px 1fr 62px"><span>TIME</span><span>ACTOR &middot; ACTION</span><span style="text-align:right">RESULT</span></div>
+          <div class="thead" style="grid-template-columns:122px 1fr 62px"><span>TIME</span><span>ACTOR &middot; ACTION</span><span style="text-align:right">RESULT</span></div>
           <div id="dashRecent"></div>
         </div>
         <div style="display:none"><span id="lastEvent"></span><span id="lastUnlock"></span></div>
@@ -3108,9 +3108,7 @@ function renderDashRecent() {
     return;
   }
   host.innerHTML = rows.map((evt) => {
-    const d = new Date(evt.timestamp);
-    const p = (n) => String(n).padStart(2, '0');
-    const time = isNaN(d.getTime()) ? '--:--:--' : `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    const time = fmtEventTime(evt.timestamp);
     const kind = classifyEventRow(evt);
     const res = kind === 'failed' ? 'FAIL' : kind === 'skipped' ? 'SKIP' : 'OK';
     const resCls = kind === 'failed' ? 'res-fail' : kind === 'skipped' ? 'res-skip' : 'res-ok';
@@ -3150,10 +3148,18 @@ function eventMatchesFilters(evt, f) {
 
 // ---- event feed rendering (DOM) -------------------------------------------
 
+// Date plus clock, not just the clock. These rows are read beside the UniFi
+// activity log, and a feed that spans a day boundary is unreadable without it.
+function fmtEventTime(ts) {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '--:--:--';
+  const p = (n) => String(n).padStart(2, '0');
+  const day = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return `${day} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 function eventRowHtml(evt) {
-  const _d = new Date(evt.timestamp);
-  const _p = (n) => String(n).padStart(2, '0');
-  const time = isNaN(_d.getTime()) ? '--:--:--' : `${_p(_d.getHours())}:${_p(_d.getMinutes())}:${_p(_d.getSeconds())}`;
+  const time = fmtEventTime(evt.timestamp);
   const kind = classifyEventRow(evt);
   const type = String(evt.type || '');
   const isDoorbell = type.includes('doorbell');
