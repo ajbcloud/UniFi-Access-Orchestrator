@@ -737,6 +737,26 @@ select:focus-visible, input:focus-visible { border-color: var(--accent); box-sha
 
 select { cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%236a7d72'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
 
+/* Upgrade banner: pinned to the top of the content area on every page while a
+   newer release exists, until it is installed. */
+.update-banner { position: sticky; top: 0; z-index: 30; display: none; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 14px; padding: 11px 14px; border-radius: var(--radius); background: var(--bg-card); border: 1px solid var(--accent); box-shadow: 0 6px 24px rgba(0,0,0,.18); font-size: 12.5px; color: var(--text-primary); }
+.update-banner.visible { display: flex; }
+.update-banner.failed { border-color: var(--red); }
+.update-banner.ready { border-color: var(--green); }
+.update-banner .ub-badge { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; background: var(--accent); color: var(--on-accent); white-space: nowrap; }
+.update-banner.failed .ub-badge { background: var(--red); color: var(--on-danger); }
+.update-banner.ready .ub-badge { background: var(--green); color: var(--on-success); }
+.update-banner .ub-text { flex: 1 1 240px; min-width: 0; line-height: 1.45; }
+.update-banner .ub-text strong { font-weight: 600; }
+.update-banner .ub-sub { color: var(--text-muted); font-size: 12px; }
+.update-banner .ub-sub a { color: var(--accent); }
+.update-banner .ub-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.update-banner .ub-progress { width: 160px; height: 6px; border-radius: 999px; background: var(--bg-input); overflow: hidden; }
+.update-banner .ub-progress > div { height: 100%; width: 0%; background: var(--accent); transition: width .4s ease; }
+.update-banner .ub-progress.indeterminate > div { width: 40%; animation: ub-slide 1.2s ease-in-out infinite alternate; }
+@keyframes ub-slide { from { margin-left: 0; } to { margin-left: 60%; } }
+.update-banner pre.ub-cmds { margin: 8px 0 0; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--bg-input); font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; flex-basis: 100%; }
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -1514,6 +1534,22 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
     </div>
 
     <div class="main">
+
+  <!-- Upgrade banner. Driven by /health `update` (and SSE system.update_state);
+       stays until the new version is running. See renderUpdateBanner(). -->
+  <div id="updateBanner" class="update-banner" role="status" aria-live="polite">
+    <span class="ub-badge" id="updateBannerBadge">Update</span>
+    <div class="ub-text">
+      <div id="updateBannerTitle"></div>
+      <div class="ub-sub" id="updateBannerSub"></div>
+    </div>
+    <div class="ub-actions">
+      <div class="ub-progress" id="updateBannerProgress" style="display:none"><div id="updateBannerProgressBar"></div></div>
+      <a class="btn btn-sm btn-secondary" id="updateBannerNotes" href="#" target="_blank" rel="noopener" style="display:none">Release notes</a>
+      <button class="btn btn-sm btn-primary" id="updateBannerBtn" onclick="onUpgradeClick()">Upgrade</button>
+    </div>
+    <pre class="ub-cmds" id="updateBannerCmds" style="display:none"></pre>
+  </div>
 
   <!-- Soft-rollout nag: shown only when no admin PIN is configured. Adding one
        gates keypad-PIN changes; until then the dashboard is open as before. -->
@@ -2679,6 +2715,191 @@ async function ensurePinAuthorization(opts) {
 }
 
 // ============================================================
+// Software update banner
+// ============================================================
+// Pure view model for the banner: state from the server in, what to show out.
+// Kept free of DOM access so test/update-banner.test.js can drive it directly.
+//   u: the `update` object from /health (see src/update-checker.js getState())
+// Returns { visible, tone, badge, title, sub, button: { label, disabled, action },
+//           progress: null | { percent | null }, notesUrl, commands }
+function renderUpdateBanner(u) {
+  const hidden = { visible: false, tone: 'info', badge: '', title: '', sub: '', button: null, progress: null, notesUrl: null, commands: null };
+  if (!u || u.enabled === false) return hidden;
+  const inst = u.install || { state: 'idle' };
+  const latest = u.latest_version ? `v${u.latest_version}` : 'a new version';
+  const current = u.current_version ? `v${u.current_version}` : 'the current version';
+  const notesUrl = u.release_url || null;
+  const method = u.install_method || 'manual';
+  const base = { visible: true, tone: 'info', badge: 'Update', title: '', sub: '', button: null, progress: null, notesUrl, commands: null };
+
+  if (inst.state === 'failed') {
+    return Object.assign(base, {
+      tone: 'failed', badge: 'Upgrade failed',
+      title: `The upgrade to ${latest} did not complete.`,
+      sub: (inst.error || 'Unknown error.') + ' You are still on ' + current + '.',
+      button: { label: 'Retry upgrade', disabled: false, action: 'install' }
+    });
+  }
+  if (inst.state === 'restarting') {
+    return Object.assign(base, {
+      tone: 'ready', badge: 'Restarting',
+      title: `${latest} is installed. Restarting the service...`,
+      sub: inst.detail || 'This page reloads on its own when the new version is up.',
+      button: { label: 'Restarting...', disabled: true, action: null },
+      progress: { percent: null }
+    });
+  }
+  if (inst.state === 'installing') {
+    return Object.assign(base, {
+      badge: 'Installing',
+      title: `Installing ${latest}...`,
+      sub: inst.detail || 'Hang tight. The service restarts when this finishes.',
+      button: { label: 'Installing...', disabled: true, action: null },
+      progress: { percent: typeof inst.progress === 'number' ? inst.progress : null }
+    });
+  }
+  if (inst.state === 'requested') {
+    return Object.assign(base, {
+      badge: 'Upgrading',
+      title: `Upgrade to ${latest} requested.`,
+      sub: inst.detail || 'Waiting for the upgrade helper to pick it up.',
+      button: { label: 'Upgrading...', disabled: true, action: null },
+      progress: { percent: null }
+    });
+  }
+  if (inst.state === 'downloading') {
+    const pct = typeof inst.progress === 'number' ? inst.progress : null;
+    return Object.assign(base, {
+      badge: 'Downloading',
+      title: `Downloading ${latest}${pct != null ? ` (${pct}%)` : ''}...`,
+      sub: inst.detail || 'The app restarts to install it as soon as the download finishes.',
+      button: { label: 'Downloading...', disabled: true, action: null },
+      progress: { percent: pct }
+    });
+  }
+  if (inst.state === 'ready') {
+    return Object.assign(base, {
+      tone: 'ready', badge: 'Ready',
+      title: `${latest} is downloaded and ready to install.`,
+      sub: 'Click Upgrade to restart into the new version. Your configuration is kept.',
+      button: { label: 'Upgrade', disabled: false, action: 'install' }
+    });
+  }
+  if (!u.update_available) return hidden;
+
+  // idle + update available
+  const when = u.published_at ? ` Released ${new Date(u.published_at).toLocaleDateString()}.` : '';
+  if (method === 'download') {
+    return Object.assign(base, {
+      title: `${latest} is available. You are running ${current}.`,
+      sub: `This build cannot update itself in place. Download the new version and install it over this one.${when}`,
+      button: { label: `Download ${latest}`, disabled: false, action: 'download' }
+    });
+  }
+  return Object.assign(base, {
+    title: `${latest} is available. You are running ${current}.`,
+    sub: `Click Upgrade to install it now. Door automations pause for about a minute while the service restarts.${when}`,
+    button: { label: 'Upgrade', disabled: false, action: 'install' }
+  });
+}
+
+let _updateState = null;
+let _updateBannerCmds = null;   // manual instructions shown after a 501
+let _restartWatch = null;
+let _upgradeToastShown = false; // the "upgraded" toast fires once per page load
+
+function applyUpdateBanner(u) {
+  _updateState = u || null;
+  const el = document.getElementById('updateBanner');
+  if (!el) return;
+  const vm = renderUpdateBanner(u);
+  if (u && u.just_upgraded_from && !_upgradeToastShown) {
+    _upgradeToastShown = true;
+    toast(`Upgraded to v${u.current_version} from ${u.just_upgraded_from}`, 'success');
+    api('POST', '/api/update/acknowledge').catch(() => {});
+  }
+  el.className = 'update-banner' + (vm.visible ? ' visible' : '') + (vm.tone !== 'info' ? ' ' + vm.tone : '');
+  if (!vm.visible) { _updateBannerCmds = null; return; }
+  document.getElementById('updateBannerBadge').textContent = vm.badge;
+  document.getElementById('updateBannerTitle').innerHTML = `<strong>${escapeHtml(vm.title)}</strong>`;
+  document.getElementById('updateBannerSub').textContent = vm.sub;
+  const notes = document.getElementById('updateBannerNotes');
+  if (vm.notesUrl && !vm.progress) { notes.href = vm.notesUrl; notes.style.display = ''; } else { notes.style.display = 'none'; }
+  const btn = document.getElementById('updateBannerBtn');
+  if (vm.button) {
+    btn.style.display = '';
+    btn.textContent = vm.button.label;
+    btn.disabled = !!vm.button.disabled;
+    btn.dataset.action = vm.button.action || '';
+  } else {
+    btn.style.display = 'none';
+  }
+  const prog = document.getElementById('updateBannerProgress');
+  if (vm.progress) {
+    prog.style.display = '';
+    const bar = document.getElementById('updateBannerProgressBar');
+    if (vm.progress.percent == null) { prog.classList.add('indeterminate'); bar.style.width = ''; }
+    else { prog.classList.remove('indeterminate'); bar.style.width = `${vm.progress.percent}%`; }
+  } else {
+    prog.style.display = 'none';
+  }
+  const cmds = document.getElementById('updateBannerCmds');
+  if (_updateBannerCmds && (u.install || {}).state !== 'restarting') { cmds.textContent = _updateBannerCmds; cmds.style.display = ''; }
+  else { cmds.style.display = 'none'; }
+  // Once the service is restarting, watch for the new version and reload.
+  if (u && u.install && u.install.state === 'restarting') startRestartWatch(u.current_version);
+}
+
+function startRestartWatch(oldVersion) {
+  if (_restartWatch) return;
+  _restartWatch = setInterval(async () => {
+    try {
+      const h = await api('GET', '/health');
+      if (h && h.version && h.version !== oldVersion) {
+        clearInterval(_restartWatch); _restartWatch = null;
+        location.reload();
+      }
+    } catch (e) { /* service is down mid-restart; keep polling */ }
+  }, 3000);
+}
+
+async function onUpgradeClick() {
+  const btn = document.getElementById('updateBannerBtn');
+  const action = btn && btn.dataset.action;
+  if (action === 'download') {
+    if (_updateState && _updateState.release_url) window.open(_updateState.release_url, '_blank', 'noopener');
+    return;
+  }
+  if (action !== 'install') return;
+  btn.disabled = true;
+  btn.textContent = 'Starting...';
+  try {
+    const res = await fetch('/api/update/install', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, getApiKey() ? { 'x-api-key': getApiKey() } : {}) });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      _updateBannerCmds = null;
+      applyUpdateBanner(body.update || _updateState);
+      toast('Upgrade started', 'success');
+      return;
+    }
+    if (body.code === 'MANUAL') {
+      _updateBannerCmds = body.instructions || body.error;
+      toast('This install needs a one-time helper setup. See the banner.', 'warning');
+    } else if (body.code === 'BUSY') {
+      toast('An upgrade is already running', 'info');
+    } else if (body.code === 'NO_UPDATE') {
+      toast('You are already on the latest version', 'success');
+    } else {
+      toast(`Upgrade failed to start: ${body.error || res.status}`, 'error');
+    }
+    applyUpdateBanner(body.update || _updateState);
+  } catch (e) {
+    toast(`Upgrade failed to start: ${e.message}`, 'error');
+    applyUpdateBanner(_updateState);
+  }
+}
+
+// ============================================================
 // Health polling
 // ============================================================
 async function fetchHealth() {
@@ -2687,6 +2908,7 @@ async function fetchHealth() {
     updateDashboard();
     updateStatus(true);
     updateAutoSyncPill();
+    if (healthData && Object.prototype.hasOwnProperty.call(healthData, 'update')) applyUpdateBanner(healthData.update);
     // Backstop for the focus-guarded section repaints: if one was skipped
     // and the user's focus has moved on, deliver it now.
     _devicesGate.kick(renderDeadboltDevices);
@@ -3053,6 +3275,7 @@ function connectSSE() {
   eventSource.onmessage = (e) => {
     const data = JSON.parse(e.data);
     if (data.type === 'connected') return;
+    if (data.type === 'system.update_state') { applyUpdateBanner(data.update); return; }
     addEventRow(data);
     // Auto-refresh Automations tab data when the background sync job
     // reloads or detects controller drift, so the user sees fresh

@@ -174,6 +174,14 @@ async function startOrchestrator() {
 
   try {
     const middleware = require(path.join(app.getAppPath(), 'src', 'index.js'));
+    // Route release checks and the dashboard's Upgrade button through
+    // electron-updater. Attached before start() so the service's first
+    // scheduled check already uses the desktop feed. No-op feed in dev.
+    updater.initAutoUpdater({
+      service: middleware,
+      getMainWindow: () => mainWindow,
+      setQuitting: () => { isQuitting = true; }
+    });
     if (middleware.setWatchdogRestartCallback) {
       middleware.setWatchdogRestartCallback(() => {
         console.log('Watchdog triggered app relaunch');
@@ -730,13 +738,6 @@ app.on('ready', async () => {
   createWindow();
   createTray();
   startHealthWatchdog();
-
-  // Check GitHub for a newer release and offer an in-app restart-to-install.
-  // No-op in an unpackaged dev run.
-  updater.initAutoUpdater({
-    getMainWindow: () => mainWindow,
-    setQuitting: () => { isQuitting = true; }
-  });
 
   if (!configExists) {
     console.log('First run detected. Config created at:', getConfigPath());
