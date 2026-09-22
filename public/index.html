@@ -1766,6 +1766,9 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
           <div class="dot-row" id="infoLastEvent" style="display:none"><span class="k">last event</span><span class="lead"></span><span class="v" id="infoLastEventAge">-</span></div>
           <div class="dot-row" id="infoLastRule" style="display:none"><span class="k">last rule</span><span class="lead"></span><span class="v" id="infoLastRuleText">-</span></div>
           <div class="dot-row" id="infoWsFilter" style="display:none"><span class="k">ws events</span><span class="lead"></span><span class="v" id="infoWsFilterStats">-</span></div>
+          <div class="dot-row" id="infoAuthRejected" style="display:none"><span class="k">api token</span><span class="lead"></span><span class="v" id="infoAuthRejectedText" style="color:var(--danger,#e5484d)">-</span></div>
+          <div class="dot-row" id="infoUnlockFails" style="display:none"><span class="k">unlocks</span><span class="lead"></span><span class="v" id="infoUnlockFailsText" style="color:var(--danger,#e5484d)">-</span></div>
+          <div class="dot-row" id="infoUnhandledEvents" style="display:none"><span class="k">unhandled</span><span class="lead"></span><span class="v" id="infoUnhandledEventsText">-</span></div>
         </div>
 
         <div id="deadboltSection" style="display:none">
@@ -1791,7 +1794,7 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
       <div>
         <div class="sect"><span class="lbl">&raquo; RECENT ACTIVITY</span><span class="rule"></span><span class="live"><span class="status-dot" aria-hidden="true"></span>LIVE</span></div>
         <div class="utable">
-          <div class="thead" style="grid-template-columns:76px 1fr 62px"><span>TIME</span><span>ACTOR &middot; ACTION</span><span style="text-align:right">RESULT</span></div>
+          <div class="thead" style="grid-template-columns:122px 1fr 62px"><span>TIME</span><span>ACTOR &middot; ACTION</span><span style="text-align:right">RESULT</span></div>
           <div id="dashRecent"></div>
         </div>
         <div style="display:none"><span id="lastEvent"></span><span id="lastUnlock"></span></div>
@@ -2809,6 +2812,47 @@ function updateDashboard() {
     wsFilterEl.style.display = 'none';
   }
 
+  // Controller-integration health. These stay hidden until something is
+  // actually wrong, so a healthy dashboard is unchanged, but a rejected token
+  // or a renamed event after a controller upgrade is visible here instead of
+  // only in the log.
+  const authRowEl = document.getElementById('infoAuthRejected');
+  if (authRowEl) {
+    if (u.auth_rejected_at) {
+      authRowEl.style.display = '';
+      document.getElementById('infoAuthRejectedText').textContent =
+        `rejected (HTTP ${u.auth_rejected_status || '?'}) - regenerate it in UniFi Access`;
+    } else {
+      authRowEl.style.display = 'none';
+    }
+  }
+
+  const unlockRowEl = document.getElementById('infoUnlockFails');
+  if (unlockRowEl) {
+    const ul = u.unlocks || {};
+    if (ul.consecutive_failures > 0) {
+      unlockRowEl.style.display = '';
+      const last = ul.last_error && ul.last_error.door ? ` (last: ${ul.last_error.door})` : '';
+      document.getElementById('infoUnlockFailsText').textContent =
+        `${ul.consecutive_failures} consecutive failure${ul.consecutive_failures === 1 ? '' : 's'}${last}`;
+    } else {
+      unlockRowEl.style.display = 'none';
+    }
+  }
+
+  const unhandledRowEl = document.getElementById('infoUnhandledEvents');
+  if (unhandledRowEl) {
+    const types = Object.keys(u.ws_unhandled_access_types || {});
+    if (types.length) {
+      unhandledRowEl.style.display = '';
+      const shown = types.slice(0, 2).join(', ');
+      document.getElementById('infoUnhandledEventsText').textContent =
+        types.length > 2 ? `${shown} +${types.length - 2} more` : shown;
+    } else {
+      unhandledRowEl.style.display = 'none';
+    }
+  }
+
   document.getElementById('infoMemory').textContent = `${h.memory_mb || '-'} MB`;
   document.getElementById('infoUptime').textContent = formatUptime(h.uptime_seconds || 0);
   document.getElementById('uptimeDisplay').textContent = formatUptime(h.uptime_seconds || 0);
@@ -3064,9 +3108,7 @@ function renderDashRecent() {
     return;
   }
   host.innerHTML = rows.map((evt) => {
-    const d = new Date(evt.timestamp);
-    const p = (n) => String(n).padStart(2, '0');
-    const time = isNaN(d.getTime()) ? '--:--:--' : `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    const time = fmtEventTime(evt.timestamp);
     const kind = classifyEventRow(evt);
     const res = kind === 'failed' ? 'FAIL' : kind === 'skipped' ? 'SKIP' : 'OK';
     const resCls = kind === 'failed' ? 'res-fail' : kind === 'skipped' ? 'res-skip' : 'res-ok';
@@ -3106,10 +3148,18 @@ function eventMatchesFilters(evt, f) {
 
 // ---- event feed rendering (DOM) -------------------------------------------
 
+// Date plus clock, not just the clock. These rows are read beside the UniFi
+// activity log, and a feed that spans a day boundary is unreadable without it.
+function fmtEventTime(ts) {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '--:--:--';
+  const p = (n) => String(n).padStart(2, '0');
+  const day = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return `${day} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 function eventRowHtml(evt) {
-  const _d = new Date(evt.timestamp);
-  const _p = (n) => String(n).padStart(2, '0');
-  const time = isNaN(_d.getTime()) ? '--:--:--' : `${_p(_d.getHours())}:${_p(_d.getMinutes())}:${_p(_d.getSeconds())}`;
+  const time = fmtEventTime(evt.timestamp);
   const kind = classifyEventRow(evt);
   const type = String(evt.type || '');
   const isDoorbell = type.includes('doorbell');

@@ -321,6 +321,16 @@ function sameScope(a, b) {
   return ga.length === gb.length && ga.every((x, i) => x === gb[i]);
 }
 
+// Coerce one reason code. Controller versions send it as a number or a numeric
+// string, so a bare === against "107" would ignore every doorbell. null/''/
+// undefined are NOT codes: Number(null) is 0, which would otherwise pass as a
+// perfectly valid-looking code 0.
+function toReasonCode(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 // The reason codes a doorbell trigger accepts. `reason_codes` (array) wins when
 // present; `reason_code` stays readable so existing configs are unchanged.
 // Controller versions differ on which code an answered call carries, so a
@@ -328,11 +338,11 @@ function sameScope(a, b) {
 function doorbellCodes(d) {
   if (isPlainObject(d)) {
     if (Array.isArray(d.reason_codes)) {
-      const list = d.reason_codes.map(Number).filter((n) => Number.isFinite(n));
+      const list = d.reason_codes.map(toReasonCode).filter((n) => n != null);
       if (list.length) return list;
     }
-    const one = Number(d.reason_code);
-    if (Number.isFinite(one)) return [one];
+    const one = toReasonCode(d.reason_code);
+    if (one != null) return [one];
   }
   return [DEFAULT_DOORBELL_REASON_CODE];
 }
@@ -343,6 +353,25 @@ function sameDoorbell(a, b) {
   const ca = doorbellCodes(a).slice().sort((x, y) => x - y);
   const cb = doorbellCodes(b).slice().sort((x, y) => x - y);
   return ca.length === cb.length && ca.every((x, i) => x === cb[i]);
+}
+
+/**
+ * The canonical persisted shape of a trigger's `doorbell` block. Kept here,
+ * beside doorbellCodes, so the save path and the matching path cannot drift:
+ * a canonicalizer that dropped `reason_codes` would silently revert a trigger
+ * to a single code on the next dashboard save.
+ */
+function canonicalizeDoorbell(db) {
+  const d = isPlainObject(db) ? db : {};
+  const out = {
+    reason_code: Number.isFinite(d.reason_code) ? d.reason_code : DEFAULT_DOORBELL_REASON_CODE,
+    viewer_to_group: isPlainObject(d.viewer_to_group) ? d.viewer_to_group : {},
+  };
+  if (Array.isArray(d.reason_codes)) {
+    const codes = d.reason_codes.map(toReasonCode).filter((n) => n != null);
+    if (codes.length) out.reason_codes = codes;
+  }
+  return out;
 }
 
 /** Convert a flat flow (or an already-trigger flow) to the trigger shape. Deep
@@ -884,6 +913,9 @@ module.exports = {
   DEFAULT_DOORBELL_REASON_CODE,
   normName,
   scopeMatches,
+  toReasonCode,
+  doorbellCodes,
+  canonicalizeDoorbell,
   triggersOf,
   unlockActionsOf,
   migrateToFlows,

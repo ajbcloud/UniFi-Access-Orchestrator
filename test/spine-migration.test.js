@@ -216,3 +216,36 @@ test('legacy projection round-trips the migrated config for external readers', (
   assert.equal(proj.doorbell_rules.rules[0].group, 'Staff');
   assert.deepEqual(proj.doorbell_rules.rules[0].unlock, ['Lobby']);
 });
+
+// ---------------------------------------------------------------------------
+// The persisted doorbell shape. The save path and the matching path share one
+// canonicalizer so a dashboard save cannot drop a field the controller gate
+// relies on.
+// ---------------------------------------------------------------------------
+
+test('canonicalizeDoorbell preserves reason_codes across a save', () => {
+  const out = doorFlows.canonicalizeDoorbell({ reason_codes: [107, 400], viewer_to_group: { 'Office Viewer': 'office' } });
+  assert.deepEqual(out.reason_codes, [107, 400], 'the multi-code form survives');
+  assert.deepEqual(out.viewer_to_group, { 'Office Viewer': 'office' });
+});
+
+test('canonicalizeDoorbell defaults to 107 and omits an absent reason_codes', () => {
+  const out = doorFlows.canonicalizeDoorbell(undefined);
+  assert.equal(out.reason_code, 107);
+  assert.deepEqual(out.viewer_to_group, {});
+  assert.ok(!('reason_codes' in out), 'no empty array is invented');
+});
+
+test('canonicalizeDoorbell drops non-numeric reason_codes entries', () => {
+  const out = doorFlows.canonicalizeDoorbell({ reason_codes: [107, 'nope', null] });
+  assert.deepEqual(out.reason_codes, [107]);
+  const allBad = doorFlows.canonicalizeDoorbell({ reason_codes: ['x'] });
+  assert.ok(!('reason_codes' in allBad), 'an all-invalid list falls back to the single code');
+});
+
+test('doorbellCodes reads reason_codes, then reason_code, then the default', () => {
+  assert.deepEqual(doorFlows.doorbellCodes({ reason_codes: [1, 2] }), [1, 2]);
+  assert.deepEqual(doorFlows.doorbellCodes({ reason_code: 55 }), [55]);
+  assert.deepEqual(doorFlows.doorbellCodes({}), [107]);
+  assert.deepEqual(doorFlows.doorbellCodes(null), [107]);
+});

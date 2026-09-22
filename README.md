@@ -735,6 +735,8 @@ A controller upgrade can reissue the API token, rename an event, or change the r
 
 5. **Check for a renamed event.** An `access.*` event the app does not handle is counted on the Dashboard and logged once as `no handler for access event ...`. That name is what to add support for.
 
+6. **Check the door id, if every rule went quiet at once.** Door ids come from two places that do not agree: `GET /doors` returns a uuid, which the editor backfills onto each rule, while the websocket event carries the hub's hardware door id (a short hex string such as `58d61f1d5c81`). Door matching therefore falls through to the door **name** whenever the ids differ, and the log records it once per door as `door "Main Entrance" matched by name; its rule id ... differs from the event id ...`. Keep door names identical between UniFi and the orchestrator; the id is only an accelerator. Earlier versions treated a differing id as a hard mismatch, which silenced every rule on every door with no error.
+
 Reference: [Configuring Door Unlock Methods in UniFi Access](https://help.ui.com/hc/en-us/articles/17459303874327-Configuring-Door-Unlock-Methods-in-UniFi-Access) explains the unlock methods the activity log distinguishes, including motion sensors.
 
 **Windows: "App won't start"**

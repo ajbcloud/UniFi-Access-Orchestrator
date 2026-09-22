@@ -153,3 +153,33 @@ test('unlockDoor still stamps the orchestrator as the actor', async () => {
     assert.equal(seen[0].method, 'PUT');
   });
 });
+
+test('a 403 does not latch the token-rejected state', async () => {
+  // A door/webhook-only token (the documented minimum) gets a 403 from
+  // assignUserPin while unlocks stay authorized. Latching there would tell the
+  // operator to regenerate a working token.
+  await withHttps(() => json(403, { code: 'CODE_FORBIDDEN', msg: 'no scope' }), async () => {
+    const client = makeClient();
+    await assert.rejects(() => client.request('PUT', '/users/u-1/pin_codes', { pin_code: '1234' }));
+    assert.equal(client.authRejectedAt, null, 'a scope-limited 403 is not a rejected token');
+    assert.equal(client.getStatus().auth_rejected_status, null);
+  });
+});
+
+test('a 403 on the WebSocket handshake does latch, since it refuses the connection', () => {
+  const client = makeClient();
+  client._noteAuthStatus(403, { connectionScoped: true });
+  assert.ok(client.authRejectedAt);
+  assert.equal(client.authRejectedStatus, 403);
+});
+
+test('assignUserPin still reports a 403 as permission_denied without latching', async () => {
+  await withHttps(() => json(403, { code: 'CODE_FORBIDDEN', msg: 'no scope' }), async () => {
+    const client = makeClient();
+    client.userNames.set('u-1', 'Divino');
+    const out = await client.assignUserPin('u-1', '1234');
+    assert.equal(out.success, false);
+    assert.equal(out.permission_denied, true, 'the caller still learns it is a scope problem');
+    assert.equal(client.authRejectedAt, null);
+  });
+});
