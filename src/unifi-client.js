@@ -69,6 +69,22 @@ class UniFiClient {
     this.wsPingInterval = null;
     this.lastWsInboundAt = 0; // ms epoch of the last inbound ws frame
 
+    // Auth + unlock health. A controller upgrade or rebuild usually reissues the
+    // developer token, and every REST/WS call here is Bearer-only, so a stale
+    // token turns the whole integration into a no-op. Track it explicitly
+    // instead of leaving 401s in the log for someone to find.
+    this.authRejectedAt = null;
+    this.authRejectedStatus = null;
+    this.wsHandshakeStatus = null;
+    this.unlockStats = {
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+      consecutive_failures: 0,
+      last_error: null,
+      last_success_at: null,
+    };
+
     // Connection state tracking
     this.connectionState = 'disconnected';
     this.healthMonitorInterval = null;
@@ -121,20 +137,39 @@ class UniFiClient {
         let data = '';
         res.on('data', chunk => data += chunk);
         res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.code === 'SUCCESS') {
-              resolve(parsed);
-            } else {
-              const err = new Error(`API error: ${parsed.code} - ${parsed.msg}`);
-              err.statusCode = res.statusCode;
-              reject(err);
-            }
-          } catch (e) {
-            const err = new Error(`Failed to parse response from ${method} ${path}: ${data.substring(0, 200)}`);
-            err.statusCode = res.statusCode;
+          const status = res.statusCode || 0;
+          const fail = (msg) => {
+            const err = new Error(msg);
+            err.statusCode = status;
+            this._noteAuthStatus(status);
             reject(err);
+          };
+
+          // A successful call that answers with no body (some writes do) is a
+          // success, not a parse failure.
+          const raw = data.trim();
+          if (!raw) {
+            if (status >= 200 && status < 300) return resolve({ code: 'SUCCESS', data: null });
+            return fail(`HTTP ${status} with empty body from ${method} ${path}`);
           }
+
+          let parsed;
+          try {
+            parsed = JSON.parse(raw);
+          } catch (e) {
+            return fail(`Failed to parse response from ${method} ${path}: ${raw.substring(0, 200)}`);
+          }
+
+          // Older controllers stamp every response {code:'SUCCESS'}. Rather than
+          // require that one token, accept it OR any 2xx whose body does not
+          // carry an explicit error code, so an envelope change across a
+          // controller upgrade does not turn working calls into failures.
+          const explicitError = typeof parsed.code === 'string' && parsed.code !== 'SUCCESS';
+          if (parsed.code === 'SUCCESS' || (status >= 200 && status < 300 && !explicitError)) {
+            this._noteAuthStatus(status);
+            return resolve(parsed);
+          }
+          return fail(`API error: ${parsed.code} - ${parsed.msg}`);
         });
       });
 
@@ -148,6 +183,23 @@ class UniFiClient {
       }
       req.end();
     });
+  }
+
+  // Latch a rejected token so the UI can say "the controller refused our
+  // credentials" instead of a generic connectivity error, and clear it as soon
+  // as any call is accepted again.
+  _noteAuthStatus(status) {
+    if (status === 401 || status === 403) {
+      if (!this.authRejectedAt) {
+        logger.error(`UniFi Access rejected the API token (HTTP ${status}). Tokens are commonly reissued when the controller is upgraded or rebuilt. Regenerate the developer API token in UniFi Access and update this app's config.`);
+      }
+      this.authRejectedAt = this.authRejectedAt || new Date().toISOString();
+      this.authRejectedStatus = status;
+    } else if (status >= 200 && status < 300 && this.authRejectedAt) {
+      logger.info('UniFi Access accepted the API token again');
+      this.authRejectedAt = null;
+      this.authRejectedStatus = null;
+    }
   }
 
   // Paginated GET helper. UniFi uses page_num + page_size.
@@ -294,13 +346,29 @@ class UniFiClient {
     body.extra.reason = reason;
     body.extra.timestamp = new Date().toISOString();
 
+    this.unlockStats.attempted++;
     try {
       await this.request('PUT', `/doors/${doorId}/unlock`, body);
+      this.unlockStats.succeeded++;
+      this.unlockStats.consecutive_failures = 0;
+      this.unlockStats.last_success_at = new Date().toISOString();
       logger.info(`Door unlocked successfully: "${doorName}"`);
       return { success: true, door: doorName, doorId };
     } catch (err) {
-      logger.error(`Failed to unlock door "${doorName}": ${err.message}`);
-      return { success: false, door: doorName, doorId, error: err.message, statusCode: err.statusCode || err.status || 0 };
+      const statusCode = err.statusCode || err.status || 0;
+      this.unlockStats.failed++;
+      this.unlockStats.consecutive_failures++;
+      this.unlockStats.last_error = {
+        door: doorName,
+        message: err.message,
+        statusCode,
+        at: new Date().toISOString(),
+      };
+      // An unlock is the whole point of this app; a failing one is not a debug
+      // detail. Repeated failures mean the automation is dead even though
+      // events are still arriving, which otherwise looks identical to silence.
+      logger.error(`Failed to unlock door "${doorName}": ${err.message}${this.unlockStats.consecutive_failures > 1 ? ` (${this.unlockStats.consecutive_failures} consecutive unlock failures)` : ''}`);
+      return { success: false, door: doorName, doorId, error: err.message, statusCode };
     }
   }
 
@@ -708,7 +776,15 @@ class UniFiClient {
     logger.info(`Connecting WebSocket: ${wsUrl}`);
 
     if (!this.wsStats) {
-      this.wsStats = { passed: 0, filtered: 0, lastFilteredType: null };
+      this.wsStats = {
+        passed: 0,
+        filtered: 0,
+        lastFilteredType: null,
+        // access.* types the whitelist dropped, tracked apart from the constant
+        // data.* telemetry noise: if the controller renames an event across an
+        // upgrade, the new name shows up here.
+        filteredAccessTypes: {},
+      };
     }
 
     const WS_EVENT_WHITELIST = new Set([
@@ -766,8 +842,22 @@ class UniFiClient {
       return;
     }
 
+    // A non-101 handshake carries the real reason on the response. Without this
+    // an expired token surfaces only as a generic "Unexpected server response"
+    // error and an endless reconnect loop that looks like a network problem.
+    this.ws.on('unexpected-response', (req, res) => {
+      const status = (res && res.statusCode) || 0;
+      this.wsHandshakeStatus = status;
+      this._noteAuthStatus(status);
+      if (status !== 401 && status !== 403) {
+        logger.error(`WebSocket handshake rejected: HTTP ${status} from ${wsUrl}`);
+      }
+      try { res.resume(); } catch (e) { /* drain so the socket can close */ }
+    });
+
     this.ws.on('open', () => {
       logger.info('WebSocket connected');
+      this.wsHandshakeStatus = 101;
       if (this.wsPingInterval) clearInterval(this.wsPingInterval);
       // Liveness = ANY inbound frame (message, ping, or pong). The old check
       // required a pong reply to OUR ping within one 30s tick, but some
@@ -811,6 +901,13 @@ class UniFiClient {
         } else {
           this.wsStats.filtered++;
           this.wsStats.lastFilteredType = eventType || 'unknown';
+          if (typeof eventType === 'string' && eventType.startsWith('access.')) {
+            const seen = this.wsStats.filteredAccessTypes;
+            seen[eventType] = (seen[eventType] || 0) + 1;
+            if (seen[eventType] === 1) {
+              logger.info(`WebSocket saw an unrecognized access event: ${eventType} (not in the handled set; worth checking after a controller upgrade)`);
+            }
+          }
           logger.debug(`WebSocket filtered: ${eventType || 'unknown'}`);
         }
       } catch (err) {
@@ -871,7 +968,14 @@ class UniFiClient {
       connection_state: this.connectionState,
       ws_events_passed: this.wsStats?.passed || 0,
       ws_events_filtered: this.wsStats?.filtered || 0,
-      ws_last_filtered_type: this.wsStats?.lastFilteredType || null
+      ws_last_filtered_type: this.wsStats?.lastFilteredType || null,
+      ws_handshake_status: this.wsHandshakeStatus,
+      // Unrecognized access.* events, so a renamed event after a controller
+      // upgrade is visible in the UI rather than only in a debug log.
+      ws_unhandled_access_types: Object.assign({}, this.wsStats?.filteredAccessTypes),
+      auth_rejected_at: this.authRejectedAt,
+      auth_rejected_status: this.authRejectedStatus,
+      unlocks: Object.assign({}, this.unlockStats),
     };
   }
 

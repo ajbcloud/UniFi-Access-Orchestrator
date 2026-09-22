@@ -875,3 +875,89 @@ test('readBoltState (base/FakeLock) returns the cached bolt state without actuat
   await lock.lock('x');
   assert.equal(await lock.readBoltState(), LockState.LOCKED);
 });
+
+// ---------------------------------------------------------------------------
+// Controller-upgrade resilience: a renamed event or a reshaped reason code used
+// to fail as a silent `return`, which on a live door is indistinguishable from
+// the event never arriving. These cover the tolerance and the diagnostics.
+// ---------------------------------------------------------------------------
+
+test('doorbell: a reason code sent as a numeric string still fires', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [{ trigger_door: 'Gate', type: 'doorbell', scope: null, doorbell: { reason_code: 107 }, unlock: ['Lobby'], debounce_seconds: 0 }],
+  });
+  ctl.observe(doorbellEvent('Gate', { reason: '107' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Lobby'], 'string "107" is coerced and matches');
+});
+
+test('doorbell: a trigger can accept several reason codes', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [{ trigger_door: 'Gate', type: 'doorbell', scope: null, doorbell: { reason_codes: [107, 400] }, unlock: ['Lobby'], debounce_seconds: 0 }],
+  });
+  ctl.observe(doorbellEvent('Gate', { reason: 400 })); // answered by another admin
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Lobby'], 'a listed alternate code fires');
+});
+
+test('doorbell: reason_codes takes precedence but reason_code still works', async () => {
+  const legacy = makeScopedController({
+    cascade: [{ trigger_door: 'Gate', type: 'doorbell', scope: null, doorbell: { reason_code: 106 }, unlock: ['Lobby'], debounce_seconds: 0 }],
+  });
+  legacy.ctl.observe(doorbellEvent('Gate', { reason: 106 }));
+  await flush();
+  assert.equal(legacy.unifi.calls.length, 1, 'a legacy single reason_code is still honored');
+
+  const listed = makeScopedController({
+    cascade: [{ trigger_door: 'Gate', type: 'doorbell', scope: null, doorbell: { reason_code: 106, reason_codes: [107] }, unlock: ['Lobby'], debounce_seconds: 0 }],
+  });
+  listed.ctl.observe(doorbellEvent('Gate', { reason: 106 }));
+  await flush();
+  assert.equal(listed.unifi.calls.length, 0, 'reason_codes wins over reason_code when both are set');
+});
+
+test('doorbell: a dropped event records why, naming the expected codes', async () => {
+  const { ctl, unifi } = makeScopedController({
+    cascade: [{ trigger_door: 'Gate', type: 'doorbell', scope: null, doorbell: { reason_code: 107 }, unlock: ['Lobby'], debounce_seconds: 0 }],
+  });
+  ctl.observe(doorbellEvent('Gate', { reason: 106 }));
+  await flush();
+  assert.equal(unifi.calls.length, 0, 'the wrong code still does not unlock');
+  assert.equal(ctl.diag.doorbell_seen, 1);
+  assert.equal(ctl.diag.doorbell_dropped, 1);
+  assert.equal(ctl.diag.last_doorbell_drop.door, 'Gate');
+  assert.equal(ctl.diag.last_doorbell_drop.reason_code, 106);
+  assert.match(ctl.diag.last_doorbell_drop.why, /did not match the expected 107/);
+});
+
+test('doorbell: an event with no reason code is recorded as such', async () => {
+  const { ctl } = makeScopedController({
+    cascade: [{ trigger_door: 'Gate', type: 'doorbell', scope: null, doorbell: { reason_code: 107 }, unlock: ['Lobby'], debounce_seconds: 0 }],
+  });
+  ctl.observe(doorbellEvent('Gate', { reason: null }));
+  await flush();
+  assert.equal(ctl.diag.doorbell_dropped, 1);
+  assert.match(ctl.diag.last_doorbell_drop.why, /no reason_code/);
+});
+
+test('an unhandled access.* event is counted with its shape', async () => {
+  const { ctl } = makeScopedController({
+    cascade: [{ trigger_door: 'Gate', type: 'doorbell', scope: null, unlock: ['Lobby'], debounce_seconds: 0 }],
+  });
+  ctl.observe({ event: 'access.doorbell.answered.v2', data: {} });
+  ctl.observe({ event: 'access.logs.add', data: { _source: { event: { type: 'access.door.something_new' } } } });
+  ctl.observe({ event: 'data.v2.device.update', data: {} }); // telemetry, not an access event
+  assert.equal(ctl.diag.unmatched_events, 2, 'only access.* events are counted');
+  assert.equal(ctl.diag.last_unmatched_type, 'access.logs.add -> access.door.something_new');
+});
+
+test('a self/remote-triggered grant is counted with its actor', async () => {
+  const { ctl } = makeScopedController({
+    cascade: [{ trigger_door: 'Main', type: 'entry', scope: null, unlock: ['Lobby'], debounce_seconds: 0 }],
+  });
+  ctl.observe(entryGrant('Main', { actor: 'Tenant Viewer', provider: 'REMOTE_THROUGH_UAH' }));
+  await flush();
+  assert.equal(ctl.diag.self_skipped, 1);
+  assert.equal(ctl.diag.last_self_skip.actor, 'Tenant Viewer');
+  assert.equal(ctl.diag.last_self_skip.provider, 'REMOTE_THROUGH_UAH');
+});

@@ -39,7 +39,9 @@
  *               relock_cooldown_seconds: 10,
  *             } ]
  *           },
- *           doorbell: { reason_code: 107, viewer_to_group: {...} } // doorbell only
+ *           // doorbell only. reason_codes (array) accepts more than one code,
+ *           // which controller versions differ on; reason_code still works.
+ *           doorbell: { reason_codes: [107], viewer_to_group: {...} }
  *         }
  *       ]
  *     }, ...
@@ -319,10 +321,28 @@ function sameScope(a, b) {
   return ga.length === gb.length && ga.every((x, i) => x === gb[i]);
 }
 
+// The reason codes a doorbell trigger accepts. `reason_codes` (array) wins when
+// present; `reason_code` stays readable so existing configs are unchanged.
+// Controller versions differ on which code an answered call carries, so a
+// trigger may legitimately need to accept more than one.
+function doorbellCodes(d) {
+  if (isPlainObject(d)) {
+    if (Array.isArray(d.reason_codes)) {
+      const list = d.reason_codes.map(Number).filter((n) => Number.isFinite(n));
+      if (list.length) return list;
+    }
+    const one = Number(d.reason_code);
+    if (Number.isFinite(one)) return [one];
+  }
+  return [DEFAULT_DOORBELL_REASON_CODE];
+}
+
 function sameDoorbell(a, b) {
   if (a == null && b == null) return true;
   if (a == null || b == null) return false;
-  return (a.reason_code || DEFAULT_DOORBELL_REASON_CODE) === (b.reason_code || DEFAULT_DOORBELL_REASON_CODE);
+  const ca = doorbellCodes(a).slice().sort((x, y) => x - y);
+  const cb = doorbellCodes(b).slice().sort((x, y) => x - y);
+  return ca.length === cb.length && ca.every((x, i) => x === cb[i]);
 }
 
 /** Convert a flat flow (or an already-trigger flow) to the trigger shape. Deep
