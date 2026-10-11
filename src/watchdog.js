@@ -18,8 +18,14 @@
 // Two-stage escalation, least-disruptive first:
 //   - 'reconnect': after reconnectAfterMs of an unhealthy source, force a fresh
 //     in-process event-source connection. Loses nothing in RAM.
-//   - 'restart': only after timeoutMs of continuous unhealth, fall back to the
-//     full process shutdown + relaunch/exit (the original fail-safe).
+//   - 'rebuild': after timeoutMs of continuous unhealth, rebuild the whole
+//     controller client in process (fresh HTTP agent, socket and sync state),
+//     and again every timeoutMs while it stays down. The app keeps running.
+//   - 'restart' replaces 'rebuild' only when allowRestart is set
+//     (watchdog.restart_on_outage). A full process restart never helped a
+//     controller that is down or unreachable: a two-day outage produced 45
+//     hourly restarts and every one hit the same timeout, while each restart
+//     cut the Z-Wave link and the live feed. Off by default.
 //
 // The function holds no state; the caller owns the "already tried a reconnect"
 // latch via reconnectAlreadyTried and the returned staleMs.
@@ -37,11 +43,13 @@
  * @param {string} [s.connectionState]     unifiClient.connectionState (informational)
  * @param {number} s.lastEventTime         last access event / webhook POST time
  * @param {boolean} s.reconnectAlreadyTried caller's latch: a reconnect was already issued this outage
- * @returns {{action: 'ok'|'reconnect'|'restart', reason: string, staleMs: number}}
+ * @param {boolean} [s.allowRestart]       hard stage restarts the process instead of rebuilding in place
+ * @returns {{action: 'ok'|'reconnect'|'rebuild'|'restart', reason: string, staleMs: number}}
  */
 function decideWatchdogAction(s) {
   if (!s.timeoutMs || s.timeoutMs <= 0) return { action: 'ok', reason: 'disabled', staleMs: 0 };
   if (!s.hasHost) return { action: 'ok', reason: 'no-controller', staleMs: 0 };
+  const hard = s.allowRestart ? 'restart' : 'rebuild';
 
   if (s.mode === 'websocket') {
     // Before the first connection lastWsInboundAt is 0; anchor the grace window
@@ -50,7 +58,7 @@ function decideWatchdogAction(s) {
     // escalates after the window (genuinely broken).
     const lastHealthy = s.lastWsInboundAt > 0 ? s.lastWsInboundAt : s.watchdogStartedAt;
     const staleMs = s.now - lastHealthy;
-    if (staleMs >= s.timeoutMs) return { action: 'restart', reason: 'ws-source-unhealthy', staleMs };
+    if (staleMs >= s.timeoutMs) return { action: hard, reason: 'ws-source-unhealthy', staleMs };
     if (staleMs >= s.reconnectAfterMs && !s.reconnectAlreadyTried) {
       return { action: 'reconnect', reason: 'ws-source-stale', staleMs };
     }
@@ -61,8 +69,11 @@ function decideWatchdogAction(s) {
     // No persistent socket to measure; inbound POST arrival is the only signal
     // we have. Keep the arrival-based window but still escalate gently: soft
     // re-register at the window, hard restart only at twice the window.
-    const silentMs = s.now - s.lastEventTime;
-    if (silentMs >= 2 * s.timeoutMs) return { action: 'restart', reason: 'webhook-silent-long', staleMs: silentMs };
+    // Measured from the later of the last POST and the last (re)arm: a rebuild
+    // re-arms the watchdog, so a quiet night gets one rebuild per window
+    // instead of one every tick (a restart used to reset both clocks).
+    const silentMs = s.now - Math.max(s.lastEventTime || 0, s.watchdogStartedAt || 0);
+    if (silentMs >= 2 * s.timeoutMs) return { action: hard, reason: 'webhook-silent-long', staleMs: silentMs };
     if (silentMs >= s.timeoutMs && !s.reconnectAlreadyTried) {
       return { action: 'reconnect', reason: 'webhook-silent', staleMs: silentMs };
     }

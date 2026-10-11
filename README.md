@@ -689,10 +689,18 @@ Every alert carries a plain-language `severity` so a receiver can route it witho
 | Severity | Types |
 |----------|-------|
 | critical | `deadbolt_retract_failed`, `deadbolt_lock_failed`, `deadbolt_jammed`, `deadbolt_no_transport` |
-| warning | `cascade_failed`, `deadbolt_lock_offline`, `deadbolt_low_battery`, `controller_disconnected` |
+| warning | `cascade_failed`, `deadbolt_lock_offline`, `deadbolt_low_battery`, `controller_disconnected`, `missed_triggers` |
 | info | `deadbolt_lock_online`, `controller_reconnected` |
 
-The offline and online pairs are edge triggered: the down alert fires once after the grace window, and the matching recovery alert fires when the lock or controller comes back.
+The offline and online pairs are edge triggered: the down alert fires once after the grace window, and the matching recovery alert fires when the lock or controller comes back. A controller outage is tracked from its real start even across an app restart: the recovery alert reports the whole outage, and an outage still running after a restart gets one "still down" alert with the real duration and start time.
+
+### Missed triggers
+
+While the controller connection is down, no access event reaches the app, so nothing at a trigger door can cascade. When the connection comes back (after a controller outage, a network problem, or this app having been closed or the PC restarted), the app reads the controller's own door log for the gap and records every granted entry at a trigger door that the automation never saw: who, which door, how they got in, when, and why it was missed (`the controller was unreachable from this computer (connect ETIMEDOUT ...)` versus `this app was not running`). Each one is written to the log as `MISSED TRIGGER` and shown in Live Events under **Failed**, and a single `missed_triggers` alert summarizes the gap. Nothing is unlocked after the fact; a cascade that fires an hour late opens interior doors for nobody.
+
+Denied credentials, motion sensor and exit button openings, and the app's own unlocks are not counted, and an entry the app answered at the edge of the gap is left out. Reading the door log needs the API token's System Log permission (`view:system_log`). Without it, the app still records the gap and its length, and says the list could not be read.
+
+The status pill in the header (and the window title) reads **Events down** when the controller's REST API answers but the WebSocket has been down for 30 seconds or more. In that state no access events reach the app, so no cascade, doorbell, or deadbolt rule can fire.
 
 ---
 
@@ -719,7 +727,7 @@ Most settings can be edited from the dashboard, but everything lives in `config.
 
 | Block | What it controls |
 |-------|------------------|
-| `server` | `port`, `host`, `admin_api_key`, and `start_at_login` (packaged app registers to start at login; default on, set `false` to opt out) |
+| `server` | `port`, `host`, `admin_api_key`, `start_at_login` (packaged app registers to start at login; default on, set `false` to opt out), and `prevent_sleep` (the desktop app keeps the PC from sleeping while it runs, since a sleeping PC misses every entry; the display can still turn off; default on, set `false` to opt out) |
 | `unifi` | Controller `host`, `port` (12445), `token`, `verify_ssl`, and `user_sync_interval_minutes` |
 | `event_source` | `mode` (`websocket` or `api_webhook`) and the settings for each: websocket reconnect interval, or the Alarm Manager webhook `endpoint_url`, `events`, `secret`, and `replay_window_seconds` |
 | `resolver` | `strategy_order`, `unifi_group_to_group` (map UniFi group names to short logical names), and `manual_overrides` |
@@ -730,7 +738,7 @@ Most settings can be edited from the dashboard, but everything lives in `config.
 | `auto_lock` | SIP phone buttons (see [SIP Phone Buttons](#sip-phone-buttons-auto-lock)) |
 | `backup` | `interval_days` and `max_backups` for automatic config backups |
 | `logging` | `level`, `file_path`, `max_files`, `max_size` |
-| `watchdog` | Monitors event-**source health**, not door activity, so a quiet-but-connected controller never triggers a restart. `inactivity_timeout_minutes` (0 disables): how long the source may stay unhealthy before a full app restart. `reconnect_after_minutes`: after this long unhealthy it first forces an in-process event-source reconnect (loses nothing), escalating to a restart only if that doesn't recover (defaults to half the timeout, capped at 5 min, if omitted). In webhook mode the window is arrival-based (re-register at the window, restart at twice the window). |
+| `watchdog` | Monitors event-**source health**, not door activity, so a quiet-but-connected controller never triggers anything. `reconnect_after_minutes`: after this long unhealthy it forces an in-process event-source reconnect (defaults to half the timeout, capped at 5 min). `inactivity_timeout_minutes` (0 disables): after this long unhealthy it rebuilds the whole controller connection in place, and again every window while the controller stays down. The app itself keeps running: restarting never fixes a controller that is down or unreachable, and it drops the Z-Wave link and the live feed. `restart_on_outage: true` restores the old full app restart at that point instead (off by default). In webhook mode the window is arrival-based (re-register at the window, rebuild at twice the window). |
 | `auto_sync` | Background user-group sync: `enabled` and `interval_seconds` |
 | `updates` | Release checks behind the dashboard's Upgrade banner: `enabled` (default `true`) and `check_interval_hours` (default 6, minimum 1). See [Keeping the app up to date](#keeping-the-app-up-to-date). |
 | `self_trigger_prevention` | The marker the orchestrator stamps on its own unlocks so it never reacts to itself |
@@ -863,7 +871,7 @@ The orchestrator exposes these HTTP endpoints on its configured port (default 30
 | GET | `/api/events/stream` | Server-Sent Events stream for the real-time event feed |
 | GET | `/api/events/history` | Recent events from memory |
 | POST | `/reload` | Reload config.json without restarting the service |
-| GET | `/api/diagnostics` | One-file support bundle: config (redacted), driver state, self-heal state, log tails |
+| GET | `/api/diagnostics` | One-file support bundle: config (redacted), full health status (WebSocket state, unlock and doorbell counters), driver state, self-heal state, log tails, and the connection, watchdog, doorbell, and warning lines from the last 5 days of logs |
 | GET | `/api/update/status` | Release check state: current and latest version, whether an update is available, install progress |
 | POST | `/api/update/check` | Check GitHub Releases now |
 | POST | `/api/update/install` | Start the upgrade the banner offers (`409` when nothing is newer or one is already running, `501` with manual steps when this install cannot upgrade itself) |

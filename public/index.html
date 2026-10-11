@@ -2955,8 +2955,17 @@ function updateStatus(online) {
   // electron/main.js): only a truly connected controller reads Online. An
   // unknown/undefined state (for example no controller configured yet) reads
   // Disconnected, so the pill and the window title never contradict.
-  const cs = healthData?.unifi?.connection_state;
-  if (cs === 'connected') {
+  // A working REST link is not enough in websocket mode: with the socket down
+  // no access events arrive and nothing cascades, so it must not read Online.
+  // A drop under 30s is a normal reconnect and reads Reconnecting.
+  const u = healthData?.unifi || {};
+  const cs = u.connection_state;
+  const eventsDown = healthData?.event_source === 'websocket' && u.websocket_connected === false;
+  if (cs === 'connected' && eventsDown) {
+    const longDown = (u.ws_down_seconds || 0) >= 30;
+    pill.className = longDown ? 'status-pill offline' : 'status-pill reconnecting';
+    pill.querySelector('span').textContent = longDown ? 'Events down' : 'Reconnecting';
+  } else if (cs === 'connected') {
     pill.className = 'status-pill online';
     pill.querySelector('span').textContent = 'Online';
   } else if (cs === 'reconnecting' || cs === 'connecting') {

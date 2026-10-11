@@ -8,6 +8,10 @@
  * "not applicable right now" (e.g. no lock is paired, or the event source is
  * not the WebSocket); that resets the monitor without alerting.
  *
+ * resumeDownSince continues an outage that began before a process restart:
+ * the duration counts from the original start and onDown receives
+ * { resumed: true }.
+ *
  * Fully injectable for tests: pass now/setIntervalFn/clearIntervalFn, or skip
  * start() entirely and drive _tick() by hand.
  */
@@ -23,6 +27,12 @@ class SustainedFlagMonitor {
     now = () => Date.now(),
     setIntervalFn = setInterval,
     clearIntervalFn = clearInterval,
+    // ms epoch of an outage carried over from before a process restart (the
+    // event-source watchdog restarts the app every hour while the socket stays
+    // down). Without it each restart started a fresh outage, so a two-day
+    // outage read as hourly "down for 60s" alerts and a recovery that only
+    // counted the last hour.
+    resumeDownSince = null,
   }) {
     this.name = name;
     this.check = check;
@@ -38,6 +48,17 @@ class SustainedFlagMonitor {
     this._timer = null;
     this._downSince = null;   // ms epoch of the first down reading, or null
     this._alerted = false;    // onDown fired for the current outage
+    this._resumed = false;    // the current outage began before this process
+    this._graceFrom = null;   // grace anchor for a resumed outage
+    if (Number.isFinite(resumeDownSince) && resumeDownSince > 0) {
+      this._downSince = resumeDownSince;
+      this._resumed = true;
+    }
+  }
+
+  // ms epoch the current outage began, or null when up.
+  get downSince() {
+    return this._downSince;
   }
 
   start() {
@@ -54,6 +75,8 @@ class SustainedFlagMonitor {
   _reset() {
     this._downSince = null;
     this._alerted = false;
+    this._resumed = false;
+    this._graceFrom = null;
   }
 
   _tick() {
@@ -73,7 +96,9 @@ class SustainedFlagMonitor {
 
     const t = this.now();
     if (up) {
-      if (this._alerted) {
+      // A resumed outage was already reported by the previous process, so its
+      // recovery is announced even if this process never re-alerted.
+      if (this._alerted || this._resumed) {
         const downSeconds = this._downSince ? Math.round((t - this._downSince) / 1000) : 0;
         this._safeFire(this.onUp, downSeconds);
       }
@@ -83,15 +108,20 @@ class SustainedFlagMonitor {
 
     // down
     if (this._downSince == null) this._downSince = t;
-    if (!this._alerted && t - this._downSince >= this.graceMs) {
+    // A resumed outage still gets a full grace window in this process, so a
+    // socket that reconnects right after the restart never re-alerts. The
+    // reported duration counts from the original start either way.
+    if (this._resumed && this._graceFrom == null) this._graceFrom = t;
+    const anchor = this._graceFrom != null ? this._graceFrom : this._downSince;
+    if (!this._alerted && t - anchor >= this.graceMs) {
       this._alerted = true;
-      this._safeFire(this.onDown, Math.round((t - this._downSince) / 1000));
+      this._safeFire(this.onDown, Math.round((t - this._downSince) / 1000), { resumed: this._resumed });
     }
   }
 
-  _safeFire(fn, downSeconds) {
+  _safeFire(fn, downSeconds, info = {}) {
     try {
-      fn(downSeconds);
+      fn(downSeconds, info);
     } catch (e) {
       this.logger.warn && this.logger.warn(`${this.name} monitor callback error: ${e.message}`);
     }
