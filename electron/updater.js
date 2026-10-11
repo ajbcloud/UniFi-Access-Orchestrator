@@ -5,10 +5,12 @@
  * The checker owns the schedule and the state the dashboard renders (the
  * Upgrade banner). This module only answers two questions for it on the
  * packaged desktop app: "is there a newer release on GitHub Releases?" (via
- * electron-updater's signed feed, latest*.yml) and "install it" (download in
- * the background, then quit and run the installer when the user clicks
- * Upgrade). Progress flows back through report() so the banner can show a
- * percentage and a Restart button.
+ * electron-updater's signed feed, latest*.yml) and "install it". Nothing is
+ * downloaded or installed until someone clicks Upgrade: this app runs a
+ * building's doors, so an update must never start, or apply on a quit or a
+ * restart, on its own. The click downloads the installer, then quits and runs
+ * it. Progress flows back through report() so the banner can show a
+ * percentage.
  *
  * Platform notes:
  *   - Windows (NSIS) and Linux (AppImage/deb) install in place.
@@ -76,18 +78,15 @@ function wireEvents() {
   if (wired || !autoUpdater) return;
   wired = true;
 
-  autoUpdater.autoDownload = true;          // fetch in the background once found
-  autoUpdater.autoInstallOnAppQuit = true;  // also install on a normal quit
+  // Check only. The download starts from install() (the Upgrade button), and
+  // a quit never applies an update on its own.
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.logger = console;
 
   autoUpdater.on('update-available', (info) => {
     pendingInfo = info || pendingInfo;
-    if (phase === 'idle') {
-      phase = 'downloading';
-      percent = 0;
-      report({ state: 'downloading', progress: 0, detail: `Downloading v${info && info.version} in the background...` });
-    }
-    console.log(`Update available: ${info && info.version}. Downloading in the background.`);
+    console.log(`Update available: ${info && info.version}. Waiting for Upgrade to be clicked.`);
   });
 
   autoUpdater.on('download-progress', (p) => {
@@ -109,7 +108,7 @@ function wireEvents() {
       restartToInstall();
       return;
     }
-    report({ state: 'ready', progress: 100, detail: `v${info && info.version} is downloaded. Click Upgrade to restart and install.` });
+    report({ state: 'ready', progress: 100, detail: `v${info && info.version} is downloaded. Click Upgrade to restart and install it.` });
   });
 
   autoUpdater.on('error', (err) => {
@@ -170,14 +169,20 @@ function createDesktopBackend() {
       if (phase === 'downloading') {
         return { state: 'downloading', progress: percent, detail: 'Download in progress. The app restarts to install as soon as it finishes.' };
       }
-      // Nothing in flight: kick a check (autoDownload starts the download).
+      // Nothing in flight: start the download now. downloadUpdate needs a
+      // check in this process first; re-check when none has run yet.
       phase = 'downloading';
       percent = 0;
-      u.checkForUpdates().catch((e) => {
-        phase = 'idle';
-        installRequested = false;
-        report({ state: 'failed', error: e.message });
-      });
+      report({ state: 'downloading', progress: 0, detail: `Downloading v${String(version).replace(/^v/, '')}...` });
+      (pendingInfo ? Promise.resolve() : u.checkForUpdates())
+        .then(() => u.downloadUpdate())
+        .catch((e) => {
+          // The 'error' event usually reports first; report only if it did not.
+          if (phase !== 'downloading') return;
+          phase = 'idle';
+          installRequested = false;
+          report({ state: 'failed', error: e && e.message ? e.message : String(e) });
+        });
       return { state: 'downloading', progress: 0, detail: `Downloading v${String(version).replace(/^v/, '')}...` };
     }
   };

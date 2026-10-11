@@ -434,7 +434,7 @@ What the button does depends on how the app is installed:
 
 | Install | What happens on Upgrade |
 |---------|-------------------------|
-| Windows installer, Linux AppImage or `.deb` | The new installer is downloaded in the background (the banner shows progress), then the app restarts into it. If you skip the button, the update is applied the next time you quit the app. |
+| Windows installer, Linux AppImage or `.deb` | Nothing downloads or installs on its own. When a newer release is out, the banner offers **Upgrade**; clicking it downloads the installer (the banner shows progress), then the app restarts into the new version. Quitting or restarting the app never applies an update. |
 | macOS `.dmg` | The build is not code signed, so macOS will not let it replace itself. The banner shows a **Download** button that opens the release page; install the new `.dmg` over the old one. |
 | Headless service (Raspberry Pi, `setup-pi.sh`) | A small root helper swaps in the release, reinstalls dependencies, and restarts the service. The banner follows its progress and the page reloads when the new version is up. |
 
