@@ -59,7 +59,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "deleteAppDataOnUninstall": true,
-      "uninstallDisplayName": "UniFi Access Orchestrator"
+      "uninstallDisplayName": "UniFi Access Orchestrator",
+      "artifactName": "UniFi-Access-Orchestrator-Setup-${version}.${ext}"
     },
     "linux": {
       "target": [
@@ -76,6 +77,12 @@
       ],
       "icon": "assets/icon-mac.png",
       "category": "public.app-category.utilities"
+    },
+    "appImage": {
+      "artifactName": "UniFi-Access-Orchestrator-${version}.${ext}"
+    },
+    "dmg": {
+      "artifactName": "UniFi-Access-Orchestrator-${version}-${arch}.${ext}"
     }
   },
   "keywords": [
