@@ -5,7 +5,7 @@
  * middleware lifecycle, and platform-specific behaviors.
  */
 
-const { app, BrowserWindow, Tray, Menu, dialog, shell, nativeImage, ipcMain } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, shell, nativeImage, ipcMain, powerSaveBlocker } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const updater = require('./updater');
@@ -736,6 +736,19 @@ app.on('ready', async () => {
     }
   } catch (e) {
     console.warn('Could not update start-at-login setting:', e.message);
+  }
+
+  // Layer 0b: a sleeping PC drops the controller connection and every badge-in
+  // until someone wakes it. Keep the system awake while the app runs (the
+  // display may still turn off). Set server.prevent_sleep=false to opt out.
+  try {
+    const cfg = readConfigSafe();
+    if (!(cfg && cfg.server && cfg.server.prevent_sleep === false)) {
+      powerSaveBlocker.start('prevent-app-suspension');
+      console.log('System sleep blocked while the orchestrator runs');
+    }
+  } catch (e) {
+    console.warn('Could not block system sleep:', e.message);
   }
 
   createAppMenu();

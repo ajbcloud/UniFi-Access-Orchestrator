@@ -44,6 +44,7 @@ const serialResolver = require('./drivers/serial-resolver');
 const { loadSecurityKeys, ensureSecurityKeys } = require('./drivers/zwave-keys');
 const { SustainedFlagMonitor } = require('./alert-monitors');
 const { decideWatchdogAction } = require('./watchdog');
+const { findMissedTriggers, triggerDoorsFromFlows } = require('./missed-triggers');
 const deadboltRules = require('./deadbolt-rules');
 const doorFlows = require('./door-flows');
 const { planUnifiPinPush, markStaleAfterPush, recordUnifiPin } = require('./user-code-sync');
@@ -581,6 +582,7 @@ const controllerLinkMonitor = new SustainedFlagMonitor({
     if (!unifiClient || typeof unifiClient.getStatus !== 'function') return null;
     const st = unifiClient.getStatus();
     if (!st || st.websocket_connected === undefined) return null;
+    if (st.websocket_connected) noteControllerConnected();
     return !!st.websocket_connected;
   },
   onDown: (s, info) => {
@@ -1633,6 +1635,144 @@ function wireUnifiClientCallbacks(client) {
   client.onAccessPoliciesChanged = ({ reason, changed }) => {
     if (changed) scheduleReconcile(reason || 'access_sync');
   };
+  client.onWsRecovered = (from, until, cause) => onControllerRecovered(from, until, cause);
+}
+
+// ---------------------------------------------------------------------------
+// Missed-trigger accounting
+//
+// While the socket is down no access event reaches the app, so nothing at a
+// trigger door can cascade. When the socket comes back, ask the controller's
+// own door log what happened in the gap and record every entry at a trigger
+// door that the automation never saw, with the reason it was missed. Nothing
+// is unlocked after the fact: a cascade that fires an hour after the badge-in
+// opens interior doors for nobody.
+//
+// The gap includes time this app was not running at all (closed, crashed, PC
+// rebooted): the last moment the socket was known up is persisted beside the
+// config while connected, so the first connection after a start covers it.
+// ---------------------------------------------------------------------------
+
+const APP_STARTED_AT = Date.now();
+const EVENT_COVERAGE_PATH = path.join(path.dirname(CONFIG_PATH), 'event-coverage.json');
+const MISSED_LOOKBACK_MAX_MS = 7 * 24 * 3600 * 1000;
+const MISSED_QUERY_DELAY_MS = 15 * 1000; // let the controller finish writing its log
+const MISSED_FEED_MAX = 50;
+let bootLastConnectedAt = (() => {
+  try {
+    const t = JSON.parse(fs.readFileSync(EVENT_COVERAGE_PATH, 'utf-8')).last_connected_at;
+    return Number.isFinite(t) && t > 0 && t <= APP_STARTED_AT ? t : null;
+  } catch (e) { return null; }
+})();
+let _coverageWrittenAt = 0;
+let _systemLogDeniedNoted = false;
+let lastMissedCheck = null; // summary of the most recent check, for /health
+
+// Called while the socket is open (monitor tick). Throttled to one small
+// write per 15s.
+function noteControllerConnected() {
+  const now = Date.now();
+  if (now - _coverageWrittenAt < 15000) return;
+  _coverageWrittenAt = now;
+  try { fs.writeFileSync(EVENT_COVERAGE_PATH, JSON.stringify({ last_connected_at: now })); } catch (e) {
+    logger.debug(`Could not record event coverage: ${e.message}`);
+  }
+}
+
+function describeMissCause(at, cause) {
+  if (at < APP_STARTED_AT) return 'this app was not running';
+  if (!cause) return 'the controller connection was down';
+  if (/ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ECONNREFUSED|timeout|socket hang up|ECONNRESET/i.test(cause)) {
+    return `the controller was unreachable from this computer (${cause})`;
+  }
+  return `the controller connection was down (${cause})`;
+}
+
+function onControllerRecovered(from, until, cause) {
+  if ((config.event_source?.mode || 'websocket') !== 'websocket') return;
+  // The first connection after a start also covers the time the app was not
+  // running, back to when the socket was last known up.
+  if (bootLastConnectedAt != null) {
+    from = Math.min(from, bootLastConnectedAt);
+    bootLastConnectedAt = null;
+  }
+  from = Math.max(from, until - MISSED_LOOKBACK_MAX_MS);
+  if (until - from < 2000) return; // a reconnect too short to have missed anything
+  const timer = setTimeout(() => {
+    checkMissedTriggers(from, until, cause).catch((e) => logger.warn(`Missed-trigger check failed: ${e.message}`));
+  }, MISSED_QUERY_DELAY_MS);
+  if (timer.unref) timer.unref();
+}
+
+async function checkMissedTriggers(from, until, cause) {
+  const gap = formatOutage((until - from) / 1000);
+  const window = `${outageStartLabel(from)} to ${outageStartLabel(until)}`;
+  const triggerDoors = triggerDoorsFromFlows(config.door_flows);
+  if (!triggerDoors.length) return;
+
+  let result;
+  try {
+    // Widen the query past the gap so an orchestrator unlock right after an
+    // edge entry proves it was handled.
+    result = await unifiClient.fetchDoorOpenings(from / 1000 - 5, until / 1000 + 60);
+  } catch (e) {
+    const denied = e.statusCode === 401 || e.statusCode === 403;
+    const why = denied
+      ? 'the API token does not have the System Log permission (view:system_log). Add it to the token in UniFi Access to get a list of missed entries'
+      : e.message;
+    lastMissedCheck = { from: new Date(from).toISOString(), until: new Date(until).toISOString(), error: why };
+    if (!denied || !_systemLogDeniedNoted) {
+      _systemLogDeniedNoted = _systemLogDeniedNoted || denied;
+      logger.warn(`Missed-trigger check: events were not received for ${gap} (${window}) but the controller log could not be read: ${why}`);
+    }
+    broadcastEvent({
+      type: 'alert.missed_triggers', actor: 'Monitor', location: '-', success: false,
+      action: `No events received for ${gap} (${window}); any entry at a trigger door in that window did not cascade. Could not list them: ${why}`,
+    });
+    return;
+  }
+
+  const missed = findMissedTriggers(result.hits, {
+    triggerDoors,
+    selfActorName: config.self_trigger_actor_name || 'Access Orchestrator',
+    from,
+    until,
+  });
+  lastMissedCheck = {
+    from: new Date(from).toISOString(),
+    until: new Date(until).toISOString(),
+    missed: missed.length,
+    truncated: !!result.truncated,
+    checked_at: new Date().toISOString(),
+  };
+
+  if (!missed.length) {
+    if (until - from >= 60000) {
+      logger.info(`Missed-trigger check: no entries at trigger doors during the ${gap} gap (${window})`);
+      broadcastEvent({
+        type: 'system.missed_triggers', actor: 'Monitor', location: '-', success: true,
+        action: `No events received for ${gap} (${window}); the controller log shows no entries at trigger doors, so nothing was missed`,
+      });
+    }
+    return;
+  }
+
+  for (const m of missed) {
+    logger.warn(`MISSED TRIGGER: ${m.actor || 'unknown'} at ${m.door} (${m.how}) at ${new Date(m.at).toLocaleString()}: no cascade ran because ${describeMissCause(m.at, cause)}`);
+  }
+  // Newest last in the feed so the summary sits on top.
+  for (const m of missed.slice(-MISSED_FEED_MAX)) {
+    broadcastEvent({
+      type: 'alert.missed_trigger',
+      actor: m.actor || 'unknown',
+      location: m.door,
+      success: false,
+      action: `Missed at ${new Date(m.at).toLocaleString()} (${m.how}): no cascade ran because ${describeMissCause(m.at, cause)}`,
+    });
+  }
+  const more = missed.length > MISSED_FEED_MAX ? ` The feed shows the latest ${MISSED_FEED_MAX}; all are in the log.` : '';
+  const trunc = result.truncated ? ' The controller log was too long to read in full, so there may be more.' : '';
+  monitorAlert('missed_triggers', `${missed.length} entr${missed.length === 1 ? 'y' : 'ies'} at trigger doors got no cascade during the ${gap} gap (${window}) because ${describeMissCause(missed[missed.length - 1].at, cause)}.${more}${trunc}`);
 }
 
 // Resolve each gating rule's trigger_door name to a stable door id once the
@@ -1960,6 +2100,7 @@ function fullHealthStatus() {
     uptime_seconds: Math.floor(process.uptime()),
     event_source: config.event_source?.mode || 'alarm_manager',
     unifi: unifiClient.getStatus(),
+    missed_triggers: lastMissedCheck,
     engine: rulesEngine.getStats(),
     auto_sync: configSync ? configSync.getState() : { enabled: false, interval_seconds: 0, last_run_at: null, last_change_detected_at: null, last_error: null },
     deadbolt: deadboltHealthStatus(),
@@ -4724,6 +4865,7 @@ let watchdogRestartCallback = null;
 // every tick between the reconnect and restart thresholds.
 let watchdogStartedAt = Date.now();
 let watchdogReconnectTried = false;
+let watchdogRebuildInFlight = false;
 
 function setWatchdogRestartCallback(fn) {
   watchdogRestartCallback = fn;
@@ -4769,6 +4911,7 @@ function startWatchdog() {
       connectionState: unifiClient?.connectionState,
       lastEventTime,
       reconnectAlreadyTried: watchdogReconnectTried,
+      allowRestart: config.watchdog?.restart_on_outage === true,
     });
 
     // Source recovered below the soft threshold -> re-arm the soft stage so a
@@ -4780,6 +4923,19 @@ function startWatchdog() {
       watchdogReconnectTried = true;
       try { unifiClient.cancelReconnect?.(); } catch (e) { /* best effort */ }
       startEventSource();
+    } else if (decision.action === 'rebuild') {
+      // The controller has been unreachable for the whole hard window. Rebuild
+      // the client in place (fresh HTTP agent, socket and sync state) and keep
+      // retrying; the app itself never goes down for an outage it cannot fix.
+      // reloadServices re-arms this watchdog, so the next rebuild is a full
+      // window away.
+      if (watchdogRebuildInFlight) return;
+      watchdogRebuildInFlight = true;
+      logger.warn(`Event-source watchdog: source unhealthy for ${Math.floor(decision.staleMs / 60000)} min; rebuilding the controller connection in place (the app keeps running and keeps retrying)`);
+      if (configSync) configSync.stop();
+      reloadServices(config, { force: true })
+        .catch((e) => logger.error(`Event-source watchdog: in-place rebuild failed: ${e.message}`))
+        .finally(() => { watchdogRebuildInFlight = false; applyAutoSyncFromConfig(); });
     } else if (decision.action === 'restart') {
       logger.error(`Event-source watchdog: source unhealthy for ${Math.floor(decision.staleMs / 60000)} min after reconnect attempt. Triggering restart.`);
       unifiClient.shutdown();
@@ -4791,7 +4947,7 @@ function startWatchdog() {
     }
   }, 60000);
 
-  logger.info(`Event-source watchdog started: reconnect after ${reconnectMin} min, restart after ${timeoutMin} min of unhealthy source`);
+  logger.info(`Event-source watchdog started: reconnect after ${reconnectMin} min, ${config.watchdog?.restart_on_outage === true ? 'restart the app' : 'rebuild the connection in place'} after ${timeoutMin} min of unhealthy source`);
 }
 
 // ---------------------------------------------------------------------------
@@ -4951,10 +5107,10 @@ async function maybeRebuildDeadboltRules(oldSig) {
   logger.info(`Deadbolt rules updated live (automated: ${deadboltControllers.size}, cascade rules: ${cascadeController ? cascadeController.cascadeRules.length : 0}); lock drivers untouched`);
 }
 
-async function reloadServices(newConfig) {
+async function reloadServices(newConfig, { force = false } = {}) {
   const settingsChanged = controllerOrSourceChanged(config, newConfig);
   const degraded = isEventSourceDegraded();
-  const fullReload = settingsChanged || degraded;
+  const fullReload = force || settingsChanged || degraded;
   const oldRulesSig = JSON.stringify(config.door_flows);
 
   if (degraded && !settingsChanged) {
@@ -4963,8 +5119,14 @@ async function reloadServices(newConfig) {
 
   if (fullReload) {
     logger.info('Reload: controller/event-source settings changed — rebuilding UniFi client');
+    // Carry the outage across the rebuild so the missed-trigger check on
+    // reconnect covers the whole gap, not just the time since this rebuild.
+    const prevDownSince = unifiClient.wsDownSince;
+    const prevWsError = unifiClient.wsLastError;
     unifiClient.shutdown();
     unifiClient = new UniFiClient(newConfig);
+    if (prevDownSince != null) unifiClient.wsDownSince = prevDownSince;
+    if (prevWsError) unifiClient.wsLastError = prevWsError;
     wireUnifiClientCallbacks(unifiClient);
     resolver = new Resolver(newConfig, unifiClient);
     rulesEngine = new RulesEngine(rulesEngineConfig(newConfig), unifiClient, resolver);

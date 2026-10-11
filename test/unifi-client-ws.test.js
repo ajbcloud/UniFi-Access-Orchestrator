@@ -144,3 +144,44 @@ test('a socket that never opened reports down time from client start', () => {
   assert.equal(st.websocket_connected, false);
   assert.ok(st.ws_down_seconds >= 90);
 });
+
+test('a shut-down client never reconnects its socket on its own', async () => {
+  // reloadServices replaces the client; the old socket's late 'close' used to
+  // schedule a reconnect on the discarded client, leaving a second live socket
+  // feeding the same observers.
+  const client = makeClient();
+  client.connectWebSocket(() => {}, 0);
+  const ws = FakeWebSocket.instances.at(-1);
+  ws.readyState = FakeWebSocket.OPEN;
+  ws.close = () => { ws.readyState = FakeWebSocket.CLOSED; };
+  ws.emit('open');
+  const before = FakeWebSocket.instances.length;
+  client.shutdown();
+  ws.emit('close', 1000, '');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(FakeWebSocket.instances.length, before, 'no new socket after shutdown');
+  assert.equal(client.wsReconnectTimer, null);
+});
+
+test('reopening after a gap reports the gap and its cause once', () => {
+  const client = makeClient();
+  client.scheduleReconnect = () => {};
+  const calls = [];
+  client.onWsRecovered = (from, until, cause) => calls.push({ from, until, cause });
+  client.connectWebSocket(() => {}, 5);
+  let ws = FakeWebSocket.instances.at(-1);
+  ws.readyState = FakeWebSocket.OPEN; ws.emit('open');
+  if (client.wsPingInterval) clearInterval(client.wsPingInterval);
+  calls.length = 0; // the boot connection
+  ws.emit('error', new Error('connect ETIMEDOUT 10.0.0.5:12445'));
+  ws.readyState = FakeWebSocket.CLOSED; ws.emit('close', 1006, '');
+  client.wsDownSince -= 3600 * 1000;
+  client.connectWebSocket(() => {}, 5);
+  ws = FakeWebSocket.instances.at(-1);
+  ws.readyState = FakeWebSocket.OPEN; ws.emit('open');
+  if (client.wsPingInterval) clearInterval(client.wsPingInterval);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].until - calls[0].from >= 3600 * 1000);
+  assert.match(calls[0].cause, /ETIMEDOUT/);
+  assert.equal(client.wsDownSince, null);
+});

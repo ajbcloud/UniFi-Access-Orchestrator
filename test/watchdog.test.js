@@ -59,21 +59,30 @@ test('websocket: same staleness but latch already set -> ok (no repeat every tic
   assert.strictEqual(d.action, 'ok');
 });
 
-test('websocket: stale past hard threshold -> restart (even if reconnect tried)', () => {
+test('websocket: stale past hard threshold -> in-process rebuild, never a restart by default', () => {
   const d = decideWatchdogAction(state({
     lastWsInboundAt: NOW - 61 * MIN,
     reconnectAlreadyTried: true,
   }));
-  assert.strictEqual(d.action, 'restart');
+  assert.strictEqual(d.action, 'rebuild');
   assert.strictEqual(d.reason, 'ws-source-unhealthy');
 });
 
-test('websocket: first boot, unreachable past hard threshold -> restart', () => {
+test('websocket: allowRestart opts back in to the process restart', () => {
+  const d = decideWatchdogAction(state({
+    lastWsInboundAt: NOW - 61 * MIN,
+    reconnectAlreadyTried: true,
+    allowRestart: true,
+  }));
+  assert.strictEqual(d.action, 'restart');
+});
+
+test('websocket: first boot, unreachable past hard threshold -> rebuild', () => {
   const d = decideWatchdogAction(state({
     lastWsInboundAt: 0,
     watchdogStartedAt: NOW - 61 * MIN, // configured but never connected for 61 min
   }));
-  assert.strictEqual(d.action, 'restart');
+  assert.strictEqual(d.action, 'rebuild');
 });
 
 test('websocket: recovery returns small staleMs so the caller re-arms the latch', () => {
@@ -95,7 +104,7 @@ test('no controller host -> ok/no-controller (fresh install waiting on setup)', 
 });
 
 test('api_webhook: silent past window -> reconnect; past 2x -> restart; fresh -> ok', () => {
-  const base = { mode: 'api_webhook' };
+  const base = { mode: 'api_webhook', watchdogStartedAt: NOW - 999 * MIN };
   const fresh = decideWatchdogAction(state(Object.assign({}, base, { lastEventTime: NOW - 1 * MIN })));
   assert.strictEqual(fresh.action, 'ok');
 
@@ -111,8 +120,18 @@ test('api_webhook: silent past window -> reconnect; past 2x -> restart; fresh ->
   const hard = decideWatchdogAction(state(Object.assign({}, base, {
     lastEventTime: NOW - 121 * MIN, reconnectAlreadyTried: true,
   })));
-  assert.strictEqual(hard.action, 'restart');
+  assert.strictEqual(hard.action, 'rebuild');
   assert.strictEqual(hard.reason, 'webhook-silent-long');
+});
+
+test('api_webhook: a rebuild re-arms the window instead of repeating every tick', () => {
+  const d = decideWatchdogAction(state({
+    mode: 'api_webhook',
+    lastEventTime: NOW - 300 * MIN,       // quiet for five hours
+    watchdogStartedAt: NOW - 1 * MIN,     // re-armed by a rebuild a minute ago
+    reconnectAlreadyTried: true,
+  }));
+  assert.strictEqual(d.action, 'ok');
 });
 
 test('alarm_manager / unknown mode is inert (no source to watch)', () => {
@@ -131,5 +150,5 @@ test('clamp: reconnectAfterMs >= timeoutMs still restarts at the hard threshold'
     reconnectAfterMs: 5 * MIN,
     lastWsInboundAt: NOW - 6 * MIN,
   }));
-  assert.strictEqual(d.action, 'restart');
+  assert.strictEqual(d.action, 'rebuild');
 });

@@ -39,6 +39,7 @@ const SEVERITY = Object.freeze({
   deadbolt_lock_offline: 'warning',
   deadbolt_low_battery: 'warning',
   controller_disconnected: 'warning',
+  missed_triggers: 'warning',
   deadbolt_lock_online: 'info',
   controller_reconnected: 'info',
 });
