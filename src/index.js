@@ -536,19 +536,67 @@ const lockLinkMonitor = new SustainedFlagMonitor({
   onDown: (s) => monitorAlert('deadbolt_lock_offline', `deadbolt link down for ${s}s (${offlineLockNames().join(', ') || 'lock'}: stick unplugged, lock unreachable, or driver error)`),
   onUp: (s) => monitorAlert('deadbolt_lock_online', `deadbolt link restored after ${s}s offline`),
 });
+// The WebSocket outage start survives a process restart. While the socket
+// stays down the event-source watchdog restarts the app every hour, and each
+// restart used to begin a fresh outage: a two-day outage showed up as hourly
+// "down for 60s" alerts and a recovery that counted only the final hour.
+const CONTROLLER_OUTAGE_PATH = path.join(path.dirname(CONFIG_PATH), 'controller-outage.json');
+function readControllerOutage() {
+  try {
+    const since = JSON.parse(fs.readFileSync(CONTROLLER_OUTAGE_PATH, 'utf-8')).since;
+    return Number.isFinite(since) && since > 0 && since <= Date.now() ? since : null;
+  } catch (e) { return null; }
+}
+function writeControllerOutage(since) {
+  try { fs.writeFileSync(CONTROLLER_OUTAGE_PATH, JSON.stringify({ since })); } catch (e) {
+    logger.debug(`Could not record the controller outage start: ${e.message}`);
+  }
+}
+function clearControllerOutage() {
+  try { fs.unlinkSync(CONTROLLER_OUTAGE_PATH); } catch (e) { /* already gone */ }
+}
+// "45h 12m" / "38m" / "50s": an outage measured in seconds is unreadable
+// once it runs past an hour.
+function formatOutage(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
+}
+function outageStartLabel(since) {
+  return since ? new Date(since).toLocaleString() : 'unknown';
+}
 const controllerLinkMonitor = new SustainedFlagMonitor({
   name: 'controller-link',
   logger,
   graceSeconds: (config.alerts && config.alerts.offline_grace_seconds) || 60,
+  resumeDownSince: readControllerOutage(),
   check: () => {
-    if ((config.event_source && config.event_source.mode) !== 'websocket') return null;
+    if ((config.event_source && config.event_source.mode) !== 'websocket') {
+      clearControllerOutage();
+      return null;
+    }
     if (!unifiClient || typeof unifiClient.getStatus !== 'function') return null;
     const st = unifiClient.getStatus();
     if (!st || st.websocket_connected === undefined) return null;
     return !!st.websocket_connected;
   },
-  onDown: (s) => monitorAlert('controller_disconnected', `UniFi WebSocket down for ${s}s: no access events are arriving, so the deadbolt will not react to entries`),
-  onUp: (s) => monitorAlert('controller_reconnected', `UniFi WebSocket restored after ${s}s down`),
+  onDown: (s, info) => {
+    const since = controllerLinkMonitor.downSince;
+    if (since) writeControllerOutage(since);
+    if (info && info.resumed) {
+      monitorAlert('controller_disconnected', `UniFi WebSocket still down after an automatic restart: down ${formatOutage(s)} (since ${outageStartLabel(since)}). No access events are arriving, so cascades and the deadbolt will not react to entries or doorbells`);
+    } else {
+      monitorAlert('controller_disconnected', `UniFi WebSocket down for ${formatOutage(s)}: no access events are arriving, so cascades and the deadbolt will not react to entries or doorbells`);
+    }
+  },
+  onUp: (s) => {
+    const since = controllerLinkMonitor.downSince;
+    clearControllerOutage();
+    monitorAlert('controller_reconnected', `UniFi WebSocket restored after ${formatOutage(s)} down (since ${outageStartLabel(since)})`);
+  },
 });
 
 // Friendly display label for a lock (its saved name, else its id).
@@ -1900,7 +1948,13 @@ app.get('/health', (req, res) => {
     });
   }
 
-  res.json({
+  res.json(fullHealthStatus());
+});
+
+// The authenticated /health payload, shared with the diagnostics export so a
+// support bundle carries the socket, unlock and doorbell-drop counters.
+function fullHealthStatus() {
+  return {
     status: 'running',
     version: APP_VERSION,
     uptime_seconds: Math.floor(process.uptime()),
@@ -1913,8 +1967,8 @@ app.get('/health', (req, res) => {
     alerts: notifier.getStatus(),
     update: updateChecker ? updateChecker.getState() : null,
     memory_mb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024 * 10) / 10
-  });
-});
+  };
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/debug/payloads - Raw event payload viewer
@@ -2045,6 +2099,40 @@ app.get('/api/diagnostics', (req, res) => {
   const appLog = newestMatching(logDir, 'access');
   const zwaveLog = newestMatching(logDir, 'zwave');
 
+  // The newest file's tail misses an outage that began days ago (the watchdog
+  // restarts the app hourly while the socket is down). Pull the connection,
+  // watchdog, doorbell and warning/error lines from the last several days of
+  // access logs so one export shows how an outage started and ended.
+  const HISTORY_DAYS = 5;
+  const HISTORY_LINES_PER_FILE = 3000;
+  const HIGHLIGHT = /websocket|watchdog|health monitor|handshake|doorbell|cascade|ALERT|"level":"(warn|error)"/i;
+  const logHistory = (() => {
+    try {
+      const cutoff = Date.now() - HISTORY_DAYS * 24 * 3600 * 1000;
+      return fs.readdirSync(logDir)
+        .filter((f) => f.startsWith('access') && f.includes('.log') && f !== path.basename(appLog || ''))
+        .map((f) => ({ f, m: fs.statSync(path.join(logDir, f)).mtimeMs }))
+        .filter((x) => x.m >= cutoff)
+        .sort((a, b) => a.m - b.m)
+        .map(({ f }) => {
+          const file = path.join(logDir, f);
+          try {
+            const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((l) => l && HIGHLIGHT.test(l));
+            return {
+              file,
+              matched_lines: lines.length,
+              truncated: lines.length > HISTORY_LINES_PER_FILE,
+              content: lines.slice(-HISTORY_LINES_PER_FILE).join('\n'),
+            };
+          } catch (e) {
+            return { file, error: e.message };
+          }
+        });
+    } catch (e) {
+      return [{ error: e.message }];
+    }
+  })();
+
   let pkgVersion = 'unknown';
   try { pkgVersion = require('../package.json').version; } catch (e) { /* packaged path differences */ }
 
@@ -2057,6 +2145,8 @@ app.get('/api/diagnostics', (req, res) => {
       connection_state: (unifiClient && unifiClient.connectionState) || 'unknown',
       doors_discovered: (unifiClient && unifiClient.doors && unifiClient.doors.size) || 0,
     },
+    health: (() => { try { return fullHealthStatus(); } catch (e) { return { error: e.message }; } })(),
+    controller_outage_since: (() => { const t = readControllerOutage(); return t ? new Date(t).toISOString() : null; })(),
     zwave: {
       driver_running: zwaveManager.isRunning(),
       serial_path: zwaveManager.serialPath || null,
@@ -2067,6 +2157,7 @@ app.get('/api/diagnostics', (req, res) => {
     },
     logs: {
       app: appLog ? tailFile(appLog, 256 * 1024) : { error: 'no access log found' },
+      app_history: logHistory,
       zwave: zwaveLog ? tailFile(zwaveLog, 512 * 1024) : { error: 'no zwave log found (the driver may never have started)' },
     },
   });

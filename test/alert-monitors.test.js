@@ -78,3 +78,47 @@ test('a callback error is contained', () => {
   monitor._tick(); // must not throw
   assert.ok(warnings.some((w) => w.includes('webhook exploded')));
 });
+
+test('a resumed outage counts from the original start and alerts as resumed', () => {
+  // The outage began at t=1s; this process starts two hours later.
+  const since = 1000;
+  const infos = [];
+  const { monitor, fired, setFlag, advance } = makeMonitor({
+    resumeDownSince: since,
+    onDown: (s, info) => { fired.down.push(s); infos.push(info); },
+  });
+  assert.strictEqual(monitor.downSince, since);
+  advance(2 * 3600);
+  setFlag(false);
+  monitor._tick();                 // first tick anchors this process's grace
+  advance(30); monitor._tick();    // 30s into the new process: still in grace
+  assert.deepStrictEqual(fired.down, []);
+  advance(31); monitor._tick();    // past grace -> alert with full duration
+  assert.strictEqual(fired.down.length, 1);
+  assert.ok(fired.down[0] >= 2 * 3600 + 59, `duration ${fired.down[0]} counts from the original start`);
+  assert.deepStrictEqual(infos[0], { resumed: true });
+  setFlag(true); advance(15); monitor._tick();
+  assert.strictEqual(fired.up.length, 1);
+  assert.ok(fired.up[0] >= 2 * 3600 + 74);
+  assert.strictEqual(monitor.downSince, null);
+});
+
+test('a resumed outage that recovers inside the grace window still reports recovery', () => {
+  const { monitor, fired, setFlag, advance } = makeMonitor({ resumeDownSince: 1000 });
+  advance(3600);
+  setFlag(true);
+  advance(5); monitor._tick();     // socket came back right after the restart
+  assert.deepStrictEqual(fired.down, []);
+  assert.strictEqual(fired.up.length, 1);
+  assert.ok(fired.up[0] >= 3600);
+  // the next outage is a fresh one with its own grace window
+  setFlag(false); monitor._tick(); advance(30); monitor._tick();
+  assert.deepStrictEqual(fired.down, []);
+});
+
+test('a fresh outage passes { resumed: false } to onDown', () => {
+  const infos = [];
+  const { monitor, setFlag, advance } = makeMonitor({ onDown: (s, info) => infos.push(info) });
+  setFlag(false); monitor._tick(); advance(61); monitor._tick();
+  assert.deepStrictEqual(infos, [{ resumed: false }]);
+});

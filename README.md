@@ -692,7 +692,9 @@ Every alert carries a plain-language `severity` so a receiver can route it witho
 | warning | `cascade_failed`, `deadbolt_lock_offline`, `deadbolt_low_battery`, `controller_disconnected` |
 | info | `deadbolt_lock_online`, `controller_reconnected` |
 
-The offline and online pairs are edge triggered: the down alert fires once after the grace window, and the matching recovery alert fires when the lock or controller comes back.
+The offline and online pairs are edge triggered: the down alert fires once after the grace window, and the matching recovery alert fires when the lock or controller comes back. A controller outage survives the watchdog's hourly restarts: after each restart you get one "still down" alert with the real duration and start time, and the recovery alert reports the whole outage rather than the last hour.
+
+The status pill in the header (and the window title) reads **Events down** when the controller's REST API answers but the WebSocket has been down for 30 seconds or more. In that state no access events reach the app, so no cascade, doorbell, or deadbolt rule can fire.
 
 ---
 
@@ -863,7 +865,7 @@ The orchestrator exposes these HTTP endpoints on its configured port (default 30
 | GET | `/api/events/stream` | Server-Sent Events stream for the real-time event feed |
 | GET | `/api/events/history` | Recent events from memory |
 | POST | `/reload` | Reload config.json without restarting the service |
-| GET | `/api/diagnostics` | One-file support bundle: config (redacted), driver state, self-heal state, log tails |
+| GET | `/api/diagnostics` | One-file support bundle: config (redacted), full health status (WebSocket state, unlock and doorbell counters), driver state, self-heal state, log tails, and the connection, watchdog, doorbell, and warning lines from the last 5 days of logs |
 | GET | `/api/update/status` | Release check state: current and latest version, whether an update is available, install progress |
 | POST | `/api/update/check` | Check GitHub Releases now |
 | POST | `/api/update/install` | Start the upgrade the banner offers (`409` when nothing is newer or one is already running, `501` with manual steps when this install cannot upgrade itself) |

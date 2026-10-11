@@ -155,6 +155,32 @@ test('updateStatus: only a connected controller reads Online', () => {
   assert.strictEqual(c.pill._span.textContent, 'Online');
 });
 
+test('updateStatus: a connected controller with the WebSocket down reads Events down', () => {
+  const c = loadUpdateStatus({ event_source: 'websocket', unifi: { connection_state: 'connected', websocket_connected: false, ws_down_seconds: 300 } });
+  c.updateStatus(true);
+  assert.ok(c.pill.className.includes('offline'));
+  assert.strictEqual(c.pill._span.textContent, 'Events down');
+});
+
+test('updateStatus: a brief WebSocket reconnect reads Reconnecting, not Events down', () => {
+  const c = loadUpdateStatus({ event_source: 'websocket', unifi: { connection_state: 'connected', websocket_connected: false, ws_down_seconds: 5 } });
+  c.updateStatus(true);
+  assert.ok(c.pill.className.includes('reconnecting'));
+  assert.strictEqual(c.pill._span.textContent, 'Reconnecting');
+});
+
+test('updateStatus: the socket state is ignored outside websocket mode', () => {
+  const c = loadUpdateStatus({ event_source: 'api_webhook', unifi: { connection_state: 'connected', websocket_connected: false, ws_down_seconds: 900 } });
+  c.updateStatus(true);
+  assert.strictEqual(c.pill._span.textContent, 'Online');
+});
+
+test('window title uses the same Events down mapping as the pill', () => {
+  const src = extractElectronFn('startHealthWatchdog');
+  assert.match(src, /h\.event_source === 'websocket' && u\.websocket_connected === false/);
+  assert.match(src, /ws_down_seconds \|\| 0\) >= 30 \? 'Events down'/);
+});
+
 test('updateStatus: connecting/reconnecting read Reconnecting', () => {
   for (const cs of ['reconnecting', 'connecting']) {
     const c = loadUpdateStatus({ unifi: { connection_state: cs } });

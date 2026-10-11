@@ -68,6 +68,10 @@ class UniFiClient {
     this.wsReconnectTimer = null;
     this.wsPingInterval = null;
     this.lastWsInboundAt = 0; // ms epoch of the last inbound ws frame
+    // ms epoch the socket last stopped being open (null while open). Lets the
+    // dashboard tell a 5s reconnect from an outage instead of reading Online
+    // while no events can arrive.
+    this.wsDownSince = Date.now();
 
     // Auth + unlock health. A controller upgrade or rebuild usually reissues the
     // developer token, and every REST/WS call here is Bearer-only, so a stale
@@ -884,6 +888,7 @@ class UniFiClient {
     this.ws.on('open', () => {
       logger.info('WebSocket connected');
       this.wsHandshakeStatus = 101;
+      this.wsDownSince = null;
       if (this.wsPingInterval) clearInterval(this.wsPingInterval);
       // Liveness = ANY inbound frame (message, ping, or pong). The old check
       // required a pong reply to OUR ping within one 30s tick, but some
@@ -943,6 +948,7 @@ class UniFiClient {
 
     this.ws.on('close', (code, reason) => {
       if (this.wsPingInterval) { clearInterval(this.wsPingInterval); this.wsPingInterval = null; }
+      if (this.wsDownSince == null) this.wsDownSince = Date.now();
       logger.warn(`WebSocket closed: code=${code} reason=${reason}`);
       this.scheduleReconnect(onEvent, reconnectSeconds);
     });
@@ -984,13 +990,22 @@ class UniFiClient {
   // ---------------------------------------------------------------------------
 
   getStatus() {
+    const wsOpen = this.ws?.readyState === WebSocket.OPEN;
+    // Any non-open state counts as down, including paths that never emit
+    // 'close' (a socket replaced while CONNECTING, a rejected handshake).
+    if (wsOpen) this.wsDownSince = null;
+    else if (this.wsDownSince == null) this.wsDownSince = Date.now();
     return {
       host: this.host,
       port: this.port,
       doors_discovered: this.doors.size,
       doors: Object.fromEntries(this.doors),
       users_mapped: this.userGroupMap.size,
-      websocket_connected: this.ws?.readyState === WebSocket.OPEN,
+      websocket_connected: wsOpen,
+      // Seconds the socket has been down (0 while open).
+      ws_down_seconds: wsOpen ? 0 : Math.max(0, Math.round((Date.now() - this.wsDownSince) / 1000)),
+      // Last inbound frame (message, ping or pong), for diagnostics.
+      ws_last_inbound_at: this.lastWsInboundAt ? new Date(this.lastWsInboundAt).toISOString() : null,
       connection_state: this.connectionState,
       ws_events_passed: this.wsStats?.passed || 0,
       ws_events_filtered: this.wsStats?.filtered || 0,

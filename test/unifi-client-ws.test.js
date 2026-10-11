@@ -113,3 +113,34 @@ test('unrecognized access.* events are counted, telemetry noise is not', () => {
   assert.ok(!('data.v2.device.update' in seen), 'telemetry noise is not flagged as a rename');
   if (client.wsPingInterval) clearInterval(client.wsPingInterval);
 });
+
+test('ws_down_seconds is 0 while open and grows from the drop', () => {
+  const client = makeClient();
+  client.scheduleReconnect = () => {};
+  client.connectWebSocket(() => {}, 5);
+  const ws = FakeWebSocket.instances.at(-1);
+  ws.readyState = FakeWebSocket.OPEN;
+  ws.emit('open');
+  if (client.wsPingInterval) clearInterval(client.wsPingInterval);
+  let st = client.getStatus();
+  assert.equal(st.websocket_connected, true);
+  assert.equal(st.ws_down_seconds, 0);
+  assert.ok(st.ws_last_inbound_at, 'open counts as inbound liveness');
+
+  ws.readyState = FakeWebSocket.CLOSED;
+  ws.emit('close', 1006, '');
+  client.wsDownSince -= 120 * 1000; // pretend the drop was two minutes ago
+  st = client.getStatus();
+  assert.equal(st.websocket_connected, false);
+  assert.ok(st.ws_down_seconds >= 120, `down ${st.ws_down_seconds}s`);
+});
+
+test('a socket that never opened reports down time from client start', () => {
+  const client = makeClient();
+  client.scheduleReconnect = () => {};
+  client.connectWebSocket(() => {}, 5);
+  client.wsDownSince -= 90 * 1000;
+  const st = client.getStatus();
+  assert.equal(st.websocket_connected, false);
+  assert.ok(st.ws_down_seconds >= 90);
+});
