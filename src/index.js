@@ -33,7 +33,7 @@ const { createBackup, listBackups, restoreBackup, pruneBackups } = require('./ba
 const ConfigSync = require('./config-sync');
 const CaptureSession = require('./capture');
 const EventFeedStore = require('./event-feed-store');
-const { ViewerCatalog } = require('./viewer-catalog');
+const { ViewerCatalog, upgradeNameOnlyViewers } = require('./viewer-catalog');
 const Notifier = require('./notifier');
 const DeadboltController = require('./deadbolt-controller');
 const FakeLock = require('./drivers/fake-lock');
@@ -280,6 +280,8 @@ const viewerCatalog = new ViewerCatalog({
   logger,
 });
 viewerCatalog.load();
+// A viewer learned from a live call may be one a trigger only names.
+viewerCatalog.onChange = () => upgradeTypedViewers();
 
 // ---------------------------------------------------------------------------
 // Smart-deadbolt add-on (Phase 2). Entirely inert unless deadbolt_rules or
@@ -769,6 +771,30 @@ function rebuildViewerMaps() {
   }
 }
 
+// Give typed-in (name-only) doorbell viewers their UniFi id once the catalog
+// knows the name, so they keep matching after a rename without anyone
+// re-picking them. Checked on a copy first so nothing is written unless a
+// viewer actually gains an id.
+function upgradeTypedViewers() {
+  try {
+    if (zwavePairing.isActive()) return;
+    if (!config.door_flows) return;
+    const probe = JSON.parse(JSON.stringify(config.door_flows));
+    if (!upgradeNameOnlyViewers(probe, viewerCatalog).length) return;
+    let upgraded = [];
+    persistZwaveMutation((cfg) => {
+      const done = cfg.door_flows ? upgradeNameOnlyViewers(cfg.door_flows, viewerCatalog) : [];
+      if (done.length) upgraded = done;
+    });
+    for (const u of upgraded) {
+      logger.info(`Doorbell viewer "${u.name}" on ${u.door} now matched by its UniFi id ${u.id} (rename-proof)`);
+    }
+    rebuildViewerMaps();
+  } catch (e) {
+    logger.warn(`Could not upgrade typed doorbell viewers: ${e.message}`);
+  }
+}
+
 // Refresh the viewer catalog from the controller: its device list and the
 // intercom answers in its system log. Either source may be unavailable (a
 // firmware without viewers in /devices, a token without System Log), so each
@@ -792,6 +818,7 @@ async function refreshViewerCatalog() {
     note('the system log', (e.statusCode === 401 || e.statusCode === 403)
       ? 'the API token lacks the System Log permission; viewers are still learned from live calls' : e.message);
   }
+  upgradeTypedViewers();
   return viewerCatalog.list();
 }
 
@@ -5295,6 +5322,9 @@ async function start() {
     logger.info('=== Orchestrator Ready ===');
   });
 
+  // Upgrade typed-in viewers from the saved viewer list right away; the
+  // controller refresh below repeats it with fresh data.
+  upgradeTypedViewers();
   const initialized = await unifiClient.initialize();
   if (initialized) {
     unifiClient.startHealthMonitor(onUnifiStateChange);

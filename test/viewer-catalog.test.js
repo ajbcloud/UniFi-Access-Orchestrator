@@ -87,3 +87,57 @@ test('allByName returns every id a viewer has been reported under', () => {
   c.note({ id: 'evt-1', name: 'answermd viewer', source: 'event' });
   assert.deepEqual(c.allByName('AnswerMD Viewer').map((e) => e.id).sort(), ['api-1', 'evt-1']);
 });
+
+// ---------------------------------------------------------------------------
+// Typed-in viewers gain their UniFi id automatically.
+// ---------------------------------------------------------------------------
+
+const { upgradeNameOnlyViewers } = require('../src/viewer-catalog');
+
+function bellFlows(doorbell) {
+  return {
+    'Main Entrance': {
+      door_id: 'd1',
+      triggers: [
+        { type: 'entry', scope: { groups: ['AnswerMD'] }, actions: { unlock: [], retract: [] } },
+        { type: 'doorbell', scope: { groups: ['AnswerMD'] }, doorbell: Object.assign({ reason_code: 107 }, doorbell), actions: { unlock: [], retract: [] } },
+      ],
+    },
+  };
+}
+
+test('a typed-in viewer name is upgraded to its UniFi id, keeping unknown names', () => {
+  const c = new ViewerCatalog();
+  c.note({ id: 'v1', name: 'AnswerMD Viewer', source: 'system_log' });
+  const flows = bellFlows({ viewer_to_group: { 'AnswerMD Viewer': 'AnswerMD', 'Unknown Viewer': 'AnswerMD' } });
+  const done = upgradeNameOnlyViewers(flows, c);
+  assert.deepEqual(done, [{ door: 'Main Entrance', name: 'AnswerMD Viewer', id: 'v1' }]);
+  assert.deepEqual(flows['Main Entrance'].triggers[1].doorbell.viewers, [
+    { id: 'v1', name: 'AnswerMD Viewer' },
+    { id: null, name: 'Unknown Viewer' },
+  ]);
+  assert.deepEqual(upgradeNameOnlyViewers(flows, c), [], 'idempotent');
+});
+
+test('nothing changes when the catalog does not know the name', () => {
+  const flows = bellFlows({ viewer_to_group: { 'AnswerMD Viewer': 'AnswerMD' } });
+  assert.deepEqual(upgradeNameOnlyViewers(flows, new ViewerCatalog()), []);
+  assert.equal('viewers' in flows['Main Entrance'].triggers[1].doorbell, false, 'legacy shape left alone');
+});
+
+test('a name-only entry in an existing viewers list gets its id, matching case-insensitively', () => {
+  const c = new ViewerCatalog();
+  c.note({ id: 'v1', name: 'AnswerMD Viewer', source: 'event' });
+  const flows = bellFlows({ viewers: [{ id: null, name: 'answermd viewer' }] });
+  upgradeNameOnlyViewers(flows, c);
+  assert.deepEqual(flows['Main Entrance'].triggers[1].doorbell.viewers, [{ id: 'v1', name: 'answermd viewer' }]);
+});
+
+test('when a name has two ids, the one live events carry wins', () => {
+  const c = new ViewerCatalog();
+  c.note({ id: 'api-1', name: 'AnswerMD Viewer', source: 'devices' });
+  c.note({ id: 'evt-1', name: 'AnswerMD Viewer', source: 'event' });
+  const flows = bellFlows({ viewer_to_group: { 'AnswerMD Viewer': 'AnswerMD' } });
+  upgradeNameOnlyViewers(flows, c);
+  assert.equal(flows['Main Entrance'].triggers[1].doorbell.viewers[0].id, 'evt-1');
+});

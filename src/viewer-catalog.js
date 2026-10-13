@@ -174,4 +174,57 @@ class ViewerCatalog {
   }
 }
 
-module.exports = { ViewerCatalog, viewersFromDevices, callActorFromSource };
+// When one name maps to several ids (the device list and live events can
+// disagree), prefer the id the events carry, since that is what a call is
+// matched on, then the most recently seen.
+const SOURCE_RANK = { event: 0, system_log: 1, devices: 2 };
+function bestIdFor(catalog, name) {
+  const hits = catalog.allByName(name).filter((e) => e.id);
+  if (!hits.length) return null;
+  hits.sort((a, b) => ((SOURCE_RANK[a.source] ?? 3) - (SOURCE_RANK[b.source] ?? 3))
+    || String(b.last_seen || '').localeCompare(String(a.last_seen || '')));
+  return hits[0].id;
+}
+
+/**
+ * Give viewers that were typed in by name their UniFi id, so they become
+ * rename-proof without anyone re-picking them. A doorbell trigger that only
+ * has the legacy viewer_to_group name map gets a viewers list built from it
+ * (every name kept, with an id where the catalog knows the name exactly); an
+ * existing name-only entry gets its id filled in. A name the catalog does not
+ * know is left as is and still matches by name.
+ *
+ * Mutates `flows` in place and returns [{ door, name, id }] for each viewer
+ * that gained an id. Idempotent.
+ */
+function upgradeNameOnlyViewers(flows, catalog) {
+  const { triggersOf, canonicalizeViewers } = require('./door-flows');
+  const upgraded = [];
+  for (const [door, flow] of Object.entries(flows || {})) {
+    for (const trig of triggersOf(flow)) {
+      if (!trig || trig.type !== 'doorbell' || !trig.doorbell) continue;
+      const db = trig.doorbell;
+      let list;
+      if (Array.isArray(db.viewers)) {
+        list = canonicalizeViewers(db.viewers);
+      } else {
+        const names = Object.keys(db.viewer_to_group || {});
+        if (!names.length) continue;
+        list = names.map((name) => ({ id: null, name }));
+      }
+      let changed = !Array.isArray(db.viewers) && list.some((v) => !v.id && bestIdFor(catalog, v.name));
+      for (const v of list) {
+        if (v.id || !v.name) continue;
+        const id = bestIdFor(catalog, v.name);
+        if (!id || list.some((o) => o.id === id)) continue;
+        v.id = id;
+        upgraded.push({ door, name: v.name, id });
+        changed = true;
+      }
+      if (changed) db.viewers = list;
+    }
+  }
+  return upgraded;
+}
+
+module.exports = { ViewerCatalog, viewersFromDevices, callActorFromSource, upgradeNameOnlyViewers };
