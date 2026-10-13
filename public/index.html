@@ -5194,6 +5194,16 @@ function buildTriggerBlock(door, tIdx, trigger, data, hasSameTypeSiblings) {
     ? `<div class="df-note"><span aria-hidden="true">&#8505;</span><span>This door has more than one ${type === 'doorbell' ? 'doorbell' : 'badge-in'} rule. Scope each to a group so the right one runs; an everyone rule always runs in addition.</span></div>`
     : '';
 
+  // Which UniFi viewer answers for this trigger's group. An intercom answer
+  // names the viewer, not a user, so a group-scoped doorbell trigger only fires
+  // when its viewer is listed here. Not needed for an anyone trigger.
+  let viewerRow = '';
+  const scopeGroups = trigger.scope && Array.isArray(trigger.scope.groups) ? trigger.scope.groups : [];
+  if (type === 'doorbell' && scopeGroups.length) {
+    const viewers = Object.keys((trigger.doorbell && trigger.doorbell.viewer_to_group) || {}).join(', ');
+    viewerRow = `<div style="margin-top:10px;font-size:11.5px;color:var(--text-secondary)"><label style="display:flex;align-items:center;gap:8px;flex-wrap:wrap" title="Enter the viewer name exactly as it appears in the UniFi access log. Separate several with commas.">answered from viewer <input type="text" id="dfViewers_${sfx2}" value="${escapeHtml(viewers)}" placeholder="e.g. ${escapeHtml(scopeGroups[0])} Viewer" style="flex:1;min-width:200px;font-size:11.5px;padding:4px 6px"></label>${viewers ? '' : `<div style="font-size:11px;margin-top:4px;color:var(--yellow)">No viewer listed, so an intercom answer can't be matched to ${escapeHtml(scopeGroups[0])} and this trigger won't fire.</div>`}</div>`;
+  }
+
   let doorbellAdvanced = '';
   if (type === 'doorbell') {
     const reason = (trigger.doorbell && Number.isFinite(trigger.doorbell.reason_code)) ? trigger.doorbell.reason_code : 107;
@@ -5216,6 +5226,7 @@ function buildTriggerBlock(door, tIdx, trigger, data, hasSameTypeSiblings) {
       </div>
     </div>
     ${scopeNote}
+    ${viewerRow}
     ${doorbellAdvanced}
   </div>`;
 }
@@ -5438,6 +5449,14 @@ function collectDoorFlowCard(door) {
       trig.doorbell = trig.doorbell || {};
       if (Number.isFinite(reason)) trig.doorbell.reason_code = reason;
       if (!trig.doorbell.viewer_to_group) trig.doorbell.viewer_to_group = {};
+      // Map each listed viewer to the trigger's (first) scoped group.
+      const viewersEl = document.getElementById(`dfViewers_${cssD}_${tIdx}`);
+      if (viewersEl) {
+        const grp = trig.scope && Array.isArray(trig.scope.groups) ? trig.scope.groups[0] : null;
+        const map = {};
+        if (grp) for (const n of viewersEl.value.split(',').map((v) => v.trim()).filter(Boolean)) map[n] = grp;
+        trig.doorbell.viewer_to_group = map;
+      }
     }
   });
 }

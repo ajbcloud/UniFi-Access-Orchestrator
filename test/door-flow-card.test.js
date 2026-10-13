@@ -229,3 +229,14 @@ test('door names are escaped everywhere in the card', () => {
   assert.ok(!out.includes('<img src=x>'));
   assert.match(out, /Evil &lt;img src=x&gt;/);
 });
+
+test('a group-scoped doorbell trigger shows its answering viewer, and warns when none is listed', () => {
+  const bell = (map) => flow({ triggers: [{ type: 'doorbell', scope: { groups: ['Staff'] }, doorbell: { reason_code: 107, viewer_to_group: map }, actions: { unlock: null, retract: [] } }] });
+  const listed = load(['Staff'])('Front Door', bell({ 'Staff Viewer': 'Staff' }), DATA);
+  assert.match(listed, /id="dfViewers_[^"]+" value="Staff Viewer"/, 'the mapped viewer is prefilled');
+  assert.doesNotMatch(listed, /No viewer listed/);
+  const empty = load(['Staff'])('Front Door', bell({}), DATA);
+  assert.match(empty, /No viewer listed/, 'an empty map warns that the trigger cannot fire');
+  const anyone = load(['Staff'])('Front Door', flow({ triggers: [{ type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: null, retract: [] } }] }), DATA);
+  assert.doesNotMatch(anyone, /dfViewers_/, 'an anyone trigger needs no viewer');
+});

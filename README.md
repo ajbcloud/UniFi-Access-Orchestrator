@@ -85,6 +85,8 @@ The screenshots use sample data for illustration.
 4. The orchestrator identifies which company answered
 5. Based on that company, the orchestrator unlocks the doors the visitor needs to reach them
 
+A G3 Intercom answered from a UniFi viewer doesn't identify a user, only the viewer. For a doorbell trigger scoped to a group, list that tenant's viewer under **answered from viewer** on the trigger card, using the name exactly as the UniFi access log shows it (for example `Rosemurgy Viewer`). Without it the trigger can't tell which tenant answered and won't fire.
+
 ---
 
 ## Prerequisites
@@ -792,7 +794,9 @@ A controller upgrade can reissue the API token, rename an event, or change the r
 
 5. **Check for a renamed event.** An `access.*` event the app does not handle is counted on the Dashboard and logged once as `no handler for access event ...`. That name is what to add support for.
 
-6. **Check the door id, if every rule went quiet at once.** Door ids come from two places that do not agree: `GET /doors` returns a uuid, which the editor backfills onto each rule, while the websocket event carries the hub's hardware door id (a short hex string such as `58d61f1d5c81`). Door matching therefore falls through to the door **name** whenever the ids differ, and the log records it once per door as `door "Main Entrance" matched by name; its rule id ... differs from the event id ...`. Keep door names identical between UniFi and the orchestrator; the id is only an accelerator. Earlier versions treated a differing id as a hard mismatch, which silenced every rule on every door with no error.
+6. **G3 Intercom answers.** The G3 Intercom never sends `access.doorbell.completed`. It logs `access.remotecall.request` and `access.remotecall.accepted`, then the unlock itself as `access.door.unlock` with the `CALL` credential and the viewer as the actor. At a door that has a doorbell trigger, the app treats that unlock as an answered doorbell (reason 107) and logs `intercom call answered at "Main Entrance" by "Rosemurgy Viewer"; routing to doorbell triggers`. If that line is followed by a `not actioned` drop, the viewer isn't listed on the trigger card. "Call Canceled" rows are ignored.
+
+7. **Check the door id, if every rule went quiet at once.** Door ids come from two places that do not agree: `GET /doors` returns a uuid, which the editor backfills onto each rule, while the websocket event carries the hub's hardware door id (a short hex string such as `58d61f1d5c81`). Door matching therefore falls through to the door **name** whenever the ids differ, and the log records it once per door as `door "Main Entrance" matched by name; its rule id ... differs from the event id ...`. Keep door names identical between UniFi and the orchestrator; the id is only an accelerator. Earlier versions treated a differing id as a hard mismatch, which silenced every rule on every door with no error.
 
 Reference: [Configuring Door Unlock Methods in UniFi Access](https://help.ui.com/hc/en-us/articles/17459303874327-Configuring-Door-Unlock-Methods-in-UniFi-Access) explains the unlock methods the activity log distinguishes, including motion sensors.
 
