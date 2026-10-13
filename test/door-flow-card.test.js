@@ -32,7 +32,7 @@ function load(groupNames) {
     + extractFn('escapeHtml') + '\n' + extractFn('cssId') + '\n' + extractFn('_dfGroups')
     + '\n' + extractFn('_scopeToValue')
     + '\n' + extractFn('buildRetractEdgeRow') + '\n' + extractFn('buildUnlockAction')
-    + '\n' + extractFn('buildTriggerBlock') + '\n' + extractFn('buildDoorFlowCard');
+    + '\n' + extractFn('_doorbellViewers') + '\n' + extractFn('buildTriggerBlock') + '\n' + extractFn('buildDoorFlowCard');
   return new Function(src + '; return buildDoorFlowCard;')();
 }
 
@@ -230,13 +230,27 @@ test('door names are escaped everywhere in the card', () => {
   assert.match(out, /Evil &lt;img src=x&gt;/);
 });
 
-test('a group-scoped doorbell trigger shows its answering viewer, and warns when none is listed', () => {
-  const bell = (map) => flow({ triggers: [{ type: 'doorbell', scope: { groups: ['Staff'] }, doorbell: { reason_code: 107, viewer_to_group: map }, actions: { unlock: null, retract: [] } }] });
-  const listed = load(['Staff'])('Front Door', bell({ 'Staff Viewer': 'Staff' }), DATA);
-  assert.match(listed, /id="dfViewers_[^"]+" value="Staff Viewer"/, 'the mapped viewer is prefilled');
-  assert.doesNotMatch(listed, /No viewer listed/);
-  const empty = load(['Staff'])('Front Door', bell({}), DATA);
-  assert.match(empty, /No viewer listed/, 'an empty map warns that the trigger cannot fire');
-  const anyone = load(['Staff'])('Front Door', flow({ triggers: [{ type: 'doorbell', scope: null, doorbell: { reason_code: 107, viewer_to_group: {} }, actions: { unlock: null, retract: [] } }] }), DATA);
-  assert.doesNotMatch(anyone, /dfViewers_/, 'an anyone trigger needs no viewer');
+test('a group-scoped doorbell trigger picks viewers from the controller list, by id', () => {
+  const bell = (doorbell) => flow({ triggers: [{ type: 'doorbell', scope: { groups: ['Staff'] }, doorbell: Object.assign({ reason_code: 107 }, doorbell), actions: { unlock: null, retract: [] } }] });
+  const data = Object.assign({}, DATA, { viewers: [{ id: 'v1', name: 'Staff Front Desk' }, { id: 'v2', name: 'Lobby Viewer' }] });
+
+  // A picked viewer shows its CURRENT controller name, not the stored one.
+  const renamed = load(['Staff'])('Front Door', bell({ viewers: [{ id: 'v1', name: 'Staff Viewer' }] }), data);
+  assert.match(renamed, /Staff Front Desk/, 'label follows the controller name for the id');
+  assert.doesNotMatch(renamed, />Staff Viewer</);
+  assert.match(renamed, /id="dfViewerSel_[^"]+"[^>]*><option value="id:v2">Lobby Viewer<\/option><\/select>/, 'only unpicked viewers are offered');
+  assert.doesNotMatch(renamed, /No viewer picked/);
+
+  const empty = load(['Staff'])('Front Door', bell({}), data);
+  assert.match(empty, /No viewer picked/, 'an empty trigger warns that it cannot fire');
+
+  const legacy = load(['Staff'])('Front Door', bell({ viewer_to_group: { 'Old Name': 'Staff' } }), data);
+  assert.match(legacy, /Old Name.*\(name only\)/, 'a legacy name-only mapping is shown and flagged');
+
+  const none = load(['Staff'])('Front Door', bell({}), DATA);
+  assert.match(none, /no viewers found yet/, 'an empty catalog says so');
+  assert.match(none, /refreshViewers\(/, 'and offers Refresh');
+
+  const anyone = load(['Staff'])('Front Door', flow({ triggers: [{ type: 'doorbell', scope: null, doorbell: { reason_code: 107 }, actions: { unlock: null, retract: [] } }] }), data);
+  assert.doesNotMatch(anyone, /dfViewerSel_|answered from viewer/, 'an anyone trigger needs no viewer');
 });

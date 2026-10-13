@@ -514,3 +514,13 @@ test('triggersOf: a flat flow yields one everyone entry trigger; a trigger flow 
   assert.equal(flat[0].scope, null);
   assert.equal(triggersOf(triggerFlows()['Main Entrance']).length, 3);
 });
+
+test('canonicalizeDoorbell keeps picked viewers (deduped) and drops junk', () => {
+  const df = require('../src/door-flows');
+  const out = df.canonicalizeDoorbell({
+    reason_code: 107,
+    viewers: [{ id: 'v1', name: 'A' }, { id: 'v1', name: 'A again' }, { id: null, name: 'Legacy' }, { name: '' }, 'x'],
+  });
+  assert.deepEqual(out.viewers, [{ id: 'v1', name: 'A' }, { id: null, name: 'Legacy' }]);
+  assert.equal('viewers' in df.canonicalizeDoorbell({ reason_code: 107 }), false, 'no viewers key when none are picked');
+});

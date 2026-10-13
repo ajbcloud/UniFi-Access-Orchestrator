@@ -33,6 +33,7 @@ const { createBackup, listBackups, restoreBackup, pruneBackups } = require('./ba
 const ConfigSync = require('./config-sync');
 const CaptureSession = require('./capture');
 const EventFeedStore = require('./event-feed-store');
+const { ViewerCatalog, upgradeNameOnlyViewers } = require('./viewer-catalog');
 const Notifier = require('./notifier');
 const DeadboltController = require('./deadbolt-controller');
 const FakeLock = require('./drivers/fake-lock');
@@ -268,6 +269,19 @@ let configSync = null;  // initialized in start() once Express + UniFi client ar
 // Case-insensitive viewer-device -> group map, merged from every doorbell
 // trigger, used to resolve the answering viewer when a doorbell has no actor id.
 let _viewerToGroupCI = {};
+// UniFi viewer id -> group, from the viewers picked on each doorbell trigger.
+// Matching on the id is what keeps a trigger working after the viewer is
+// renamed in the UniFi portal.
+let _viewerIdToGroup = {};
+// Every intercom viewer the controller has reported (device list, system log,
+// live call events), keyed by id. Feeds the trigger card's viewer dropdown.
+const viewerCatalog = new ViewerCatalog({
+  filePath: path.join(path.dirname(CONFIG_PATH), 'viewers.json'),
+  logger,
+});
+viewerCatalog.load();
+// A viewer learned from a live call may be one a trigger only names.
+viewerCatalog.onChange = () => upgradeTypedViewers();
 
 // ---------------------------------------------------------------------------
 // Smart-deadbolt add-on (Phase 2). Entirely inert unless deadbolt_rules or
@@ -717,12 +731,95 @@ function resolveGroupForEvent(info) {
     const r = resolver.resolve(i.actorId);
     group = (r && r.group) || null;
   }
+  if (!group && i.actorId) group = _viewerIdToGroup[String(i.actorId)] || null;
   if (!group) {
     const a = i.actorName ? String(i.actorName).trim().toLowerCase() : '';
     const d = i.deviceName ? String(i.deviceName).trim().toLowerCase() : '';
     group = (a && _viewerToGroupCI[a]) || (d && _viewerToGroupCI[d]) || null;
   }
+  // The event carried a name but no id we know: look the name up in the
+  // catalog, whose names follow renames on the controller, and match its id.
+  if (!group) {
+    for (const hit of [...viewerCatalog.allByName(i.actorName), ...viewerCatalog.allByName(i.deviceName)]) {
+      if (hit.id && _viewerIdToGroup[hit.id]) { group = _viewerIdToGroup[hit.id]; break; }
+    }
+  }
   return group;
+}
+
+// Rebuild the viewer -> group lookups from every doorbell trigger. A picked
+// viewer maps to the trigger's (first) scoped group; an anyone trigger needs
+// no mapping. The legacy name-keyed viewer_to_group still counts.
+function rebuildViewerMaps() {
+  _viewerToGroupCI = {};
+  _viewerIdToGroup = {};
+  for (const flow of Object.values(config.door_flows || {})) {
+    for (const trig of doorFlows.triggersOf(flow)) {
+      if (trig.type !== 'doorbell' || !trig.doorbell) continue;
+      if (trig.doorbell.viewer_to_group) {
+        for (const [k, v] of Object.entries(trig.doorbell.viewer_to_group)) {
+          if (typeof k === 'string' && v) _viewerToGroupCI[k.trim().toLowerCase()] = v;
+        }
+      }
+      const group = trig.scope && Array.isArray(trig.scope.groups) ? trig.scope.groups[0] : null;
+      if (!group) continue;
+      for (const v of doorFlows.canonicalizeViewers(trig.doorbell.viewers)) {
+        if (v.id) _viewerIdToGroup[v.id] = group;
+        if (v.name) _viewerToGroupCI[v.name.toLowerCase()] = group;
+      }
+    }
+  }
+}
+
+// Give typed-in (name-only) doorbell viewers their UniFi id once the catalog
+// knows the name, so they keep matching after a rename without anyone
+// re-picking them. Checked on a copy first so nothing is written unless a
+// viewer actually gains an id.
+function upgradeTypedViewers() {
+  try {
+    if (zwavePairing.isActive()) return;
+    if (!config.door_flows) return;
+    const probe = JSON.parse(JSON.stringify(config.door_flows));
+    if (!upgradeNameOnlyViewers(probe, viewerCatalog).length) return;
+    let upgraded = [];
+    persistZwaveMutation((cfg) => {
+      const done = cfg.door_flows ? upgradeNameOnlyViewers(cfg.door_flows, viewerCatalog) : [];
+      if (done.length) upgraded = done;
+    });
+    for (const u of upgraded) {
+      logger.info(`Doorbell viewer "${u.name}" on ${u.door} now matched by its UniFi id ${u.id} (rename-proof)`);
+    }
+    rebuildViewerMaps();
+  } catch (e) {
+    logger.warn(`Could not upgrade typed doorbell viewers: ${e.message}`);
+  }
+}
+
+// Refresh the viewer catalog from the controller: its device list and the
+// intercom answers in its system log. Either source may be unavailable (a
+// firmware without viewers in /devices, a token without System Log), so each
+// failure is logged and the other still runs.
+let _viewerRefreshNoted = {};
+async function refreshViewerCatalog() {
+  if (!unifiClient) return viewerCatalog.list();
+  const note = (src, msg) => {
+    if (_viewerRefreshNoted[src] === msg) return;
+    _viewerRefreshNoted[src] = msg;
+    logger.info(`Viewer list: could not read ${src} (${msg})`);
+  };
+  try {
+    viewerCatalog.noteDevices(await unifiClient.fetchDevices());
+  } catch (e) { note('the device list', e.message); }
+  try {
+    const now = Date.now() / 1000;
+    const r = await unifiClient.fetchDoorOpenings(now - 14 * 86400, now, { pageSize: 100, maxPages: 30 });
+    viewerCatalog.noteLogHits(r && r.hits);
+  } catch (e) {
+    note('the system log', (e.statusCode === 401 || e.statusCode === 403)
+      ? 'the API token lacks the System Log permission; viewers are still learned from live calls' : e.message);
+  }
+  upgradeTypedViewers();
+  return viewerCatalog.list();
 }
 
 function buildDeadboltControllers() {
@@ -730,16 +827,7 @@ function buildDeadboltControllers() {
   // Refresh the merged viewer->group map from EVERY doorbell trigger, including
   // retract-only ones (unlockRulesFromFlows drops triggers with no unlock, which
   // would lose the viewer map for a doorbell that only retracts a deadbolt).
-  _viewerToGroupCI = {};
-  for (const flow of Object.values(config.door_flows || {})) {
-    for (const trig of doorFlows.triggersOf(flow)) {
-      if (trig.type === 'doorbell' && trig.doorbell && trig.doorbell.viewer_to_group) {
-        for (const [k, v] of Object.entries(trig.doorbell.viewer_to_group)) {
-          if (typeof k === 'string' && v) _viewerToGroupCI[k.trim().toLowerCase()] = v;
-        }
-      }
-    }
-  }
+  rebuildViewerMaps();
   const deps = {
     getUnifiClient: () => unifiClient,
     broadcaster: broadcastEvent,
@@ -1139,6 +1227,7 @@ function applyEventTaps() {
   }
   unifiClient.setRawTap((e) => {
     capture.add(e); // no-op unless a capture session is active
+    try { viewerCatalog.observe(e); } catch (err) { logger.debug(`viewer catalog observe error: ${err.message}`); }
     for (const controller of deadboltObservers()) {
       try { controller.observe(e); } catch (err) { logger.warn(`deadbolt observe error: ${err.message}`); }
     }
@@ -3911,6 +4000,16 @@ app.get('/api/update/status', (req, res) => {
   res.json(updateChecker.getState());
 });
 
+// Re-read the intercom viewers from the controller (the trigger card's
+// Refresh button). Returns the catalog the dropdown is built from.
+app.post('/api/viewers/refresh', async (req, res) => {
+  try {
+    res.json({ viewers: await refreshViewerCatalog() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/update/check', async (req, res) => {
   if (!updateChecker) return res.status(503).json({ error: 'Update checker not initialized' });
   const state = await updateChecker.check({ force: true });
@@ -4288,6 +4387,7 @@ app.get('/api/door-flows', (req, res) => {
         hardware_auto_relock: !lc || lc.auto_relock == null ? null : !!lc.auto_relock,
       })),
       warnings: doorFlowWarnings(flows),
+      viewers: viewerCatalog.list(),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -5222,17 +5322,25 @@ async function start() {
     logger.info('=== Orchestrator Ready ===');
   });
 
+  // Upgrade typed-in viewers from the saved viewer list right away; the
+  // controller refresh below repeats it with fresh data.
+  upgradeTypedViewers();
   const initialized = await unifiClient.initialize();
   if (initialized) {
     unifiClient.startHealthMonitor(onUnifiStateChange);
     backfillTriggerDoorIds();
+    refreshViewerCatalog().catch(() => {});
   } else {
     logger.warn('Initial connection failed. Retrying in background...');
     unifiClient.initializeWithRetry().then(() => {
       unifiClient.startHealthMonitor(onUnifiStateChange);
       backfillTriggerDoorIds();
+      refreshViewerCatalog().catch(() => {});
     });
   }
+  // Pick up viewers added or renamed on the controller without a restart.
+  const viewerTimer = setInterval(() => { refreshViewerCatalog().catch(() => {}); }, 6 * 60 * 60 * 1000);
+  if (viewerTimer.unref) viewerTimer.unref();
 
   // Start periodic config backup — check daily, create if overdue.
   // Also runs once shortly after startup so desktop/Electron sessions
