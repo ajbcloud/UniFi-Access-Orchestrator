@@ -47,6 +47,11 @@
 const { scopeMatches, toReasonCode, doorbellCodes } = require('./door-flows');
 
 const REMOTE_PROVIDER = 'REMOTE_THROUGH_UAH';
+// A G3 Intercom answered from a UniFi viewer never sends
+// access.doorbell.completed. The controller logs access.remotecall.request /
+// .accepted and then the door unlock itself as an access.door.unlock whose
+// credential provider is CALL and whose actor is the viewer that answered.
+const CALL_PROVIDER = 'call';
 const DEFAULT_DOORBELL_REASON_CODE = 107;
 
 function normName(s) {
@@ -201,7 +206,10 @@ class DeadboltController {
   observe(raw) {
     if (!this.enabled || this._destroyed || !raw || typeof raw !== 'object') return;
     const grant = this._parseAccessGrant(raw);
-    if (grant) return this._onAccessGrant(grant);
+    if (grant) {
+      if (this._isIntercomAnswer(grant)) return this._onIntercomAnswer(grant);
+      return this._onAccessGrant(grant);
+    }
     const bell = this._parseDoorbell(raw);
     if (bell) return this._onDoorbell(bell);
     const loc = this._parseLocationUpdate(raw);
@@ -591,6 +599,37 @@ class DeadboltController {
         ? `reason_code ${d.reasonCode} did not match the expected ${wanted.join(' or ')}`
         : 'no doorbell trigger matched this door, scope or debounce window');
     }
+  }
+
+  // An intercom call answered and unlocked from a viewer, at a door that has a
+  // doorbell trigger. Only the unlock itself counts (result ACCESS): the
+  // controller also logs "Call Canceled" rows with the same provider, which
+  // must never fire anything. A door with no doorbell trigger keeps the old
+  // behavior and goes through the entry path.
+  _isIntercomAnswer(g) {
+    if (normName(g.credentialProvider) !== CALL_PROVIDER) return false;
+    if (g.result !== 'ACCESS') return false;
+    const isBell = (spec) => (spec.type || 'entry') === 'doorbell';
+    const atDoor = (spec, door, id) => this._matchDoorSpec(g.doorName, g.doorId, door, id);
+    return this.edges.some((e) => isBell(e) && atDoor(e, e.trigger_door, e.trigger_door_id))
+      || this.cascadeRules.some((r) => isBell(r) && atDoor(r, r.trigger_door, r.trigger_door_id));
+  }
+
+  // Hand the call unlock to the doorbell path as an admin-unlocked answer
+  // (reason 107). The viewer that answered is the actor, so it is passed as
+  // both actor and device name for the viewer_to_group lookup.
+  _onIntercomAnswer(g) {
+    this.log.info && this.log.info(
+      `deadbolt: intercom call answered at "${g.doorName || 'unknown'}" by "${g.actorName || 'unknown'}"; routing to doorbell triggers`
+    );
+    return this._onDoorbell({
+      reasonCode: DEFAULT_DOORBELL_REASON_CODE,
+      doorName: g.doorName,
+      doorId: g.doorId,
+      actorId: g.actorId,
+      actorName: g.actorName,
+      deviceName: g.actorName,
+    });
   }
 
   // A doorbell that reaches here is a visitor who did not get let in, so it is

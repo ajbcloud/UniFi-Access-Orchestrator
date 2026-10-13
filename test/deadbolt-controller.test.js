@@ -1021,3 +1021,82 @@ test('the door id split is reported once per door, but counted every time', asyn
   assert.equal(ctl.getStatus().diag.door_id_mismatches, 3, 'and exposed on status');
   assert.equal(unifi.calls.length, 3, 'all three badges cascaded');
 });
+
+// ---------------------------------------------------------------------------
+// G3 Intercom: an answered call arrives as access.door.unlock with credential
+// provider CALL and the answering viewer as the actor (no doorbell.completed).
+// ---------------------------------------------------------------------------
+
+function callUnlock(door, opts = {}) {
+  const { viewer = 'Rosemurgy Viewer', result = 'ACCESS' } = opts;
+  return entryGrant(door, { actor: viewer, provider: 'CALL', result, direction: 'entry' });
+}
+
+function makeViewerController(cascade, viewerMap) {
+  const unifi = makeUnifi();
+  const ctl = new DeadboltController(
+    { edges: [], cascade_rules: { rules: cascade } },
+    {
+      unifiClient: unifi,
+      now: () => 0,
+      logger: { debug() {}, info() {} },
+      resolveGroup: ({ actorName, deviceName }) =>
+        viewerMap[String(actorName || '').toLowerCase()] || viewerMap[String(deviceName || '').toLowerCase()] || null,
+    }
+  );
+  return { ctl, unifi };
+}
+
+const INTERCOM_FLOWS = [
+  { trigger_door: 'Main Entrance', type: 'entry', scope: { groups: ['Rosemurgy'] }, unlock: ['Badge Door'], debounce_seconds: 8 },
+  { trigger_door: 'Main Entrance', type: 'doorbell', scope: { groups: ['Rosemurgy'] }, doorbell: { reason_code: 107 }, unlock: ['Elevator'], debounce_seconds: 8 },
+  { trigger_door: 'Main Entrance', type: 'doorbell', scope: { groups: ['AnswerMD'] }, doorbell: { reason_code: 107 }, unlock: ['Double Doors'], debounce_seconds: 8 },
+];
+const VIEWERS = { 'rosemurgy viewer': 'Rosemurgy', 'answermd viewer': 'AnswerMD' };
+
+test('intercom: a call unlock fires the doorbell trigger for the answering viewer, not the entry trigger', async () => {
+  const { ctl, unifi } = makeViewerController(INTERCOM_FLOWS, VIEWERS);
+  ctl.observe(callUnlock('Main Entrance', { viewer: 'Rosemurgy Viewer' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Elevator']);
+  assert.equal(ctl.diag.doorbell_seen, 1);
+});
+
+test('intercom: each viewer gets its own tenant trigger', async () => {
+  const { ctl, unifi } = makeViewerController(INTERCOM_FLOWS, VIEWERS);
+  ctl.observe(callUnlock('Main Entrance', { viewer: 'AnswerMD Viewer' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Double Doors']);
+});
+
+test('intercom: a canceled call fires nothing', async () => {
+  const { ctl, unifi } = makeViewerController(INTERCOM_FLOWS, VIEWERS);
+  ctl.observe(callUnlock('Main Entrance', { viewer: 'Rosemurgy Viewer', result: 'SUCCESS' }));
+  await flush();
+  assert.equal(unifi.calls.length, 0);
+});
+
+test('intercom: the burst of unlock rows from one answer fires once', async () => {
+  const { ctl, unifi } = makeViewerController(INTERCOM_FLOWS, VIEWERS);
+  for (let i = 0; i < 4; i++) ctl.observe(callUnlock('Main Entrance', { viewer: 'Rosemurgy Viewer' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Elevator']);
+});
+
+test('intercom: an unmapped viewer is recorded as a doorbell drop', async () => {
+  const { ctl, unifi } = makeViewerController(INTERCOM_FLOWS, VIEWERS);
+  ctl.observe(callUnlock('Main Entrance', { viewer: 'Some Other Viewer' }));
+  await flush();
+  assert.equal(unifi.calls.length, 0);
+  assert.equal(ctl.diag.doorbell_dropped, 1);
+  assert.equal(ctl.diag.last_doorbell_drop.actor, 'Some Other Viewer');
+});
+
+test('intercom: a call unlock at a door with no doorbell trigger keeps the entry path', async () => {
+  const entryOnly = INTERCOM_FLOWS.filter((r) => r.type === 'entry');
+  const { ctl, unifi } = makeViewerController(entryOnly, VIEWERS);
+  ctl.observe(callUnlock('Main Entrance', { viewer: 'Rosemurgy Viewer' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Badge Door']);
+  assert.equal(ctl.diag.doorbell_seen, 0);
+});
