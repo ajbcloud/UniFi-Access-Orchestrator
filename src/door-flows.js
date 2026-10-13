@@ -371,6 +371,28 @@ function canonicalizeDoorbell(db) {
     const codes = d.reason_codes.map(toReasonCode).filter((n) => n != null);
     if (codes.length) out.reason_codes = codes;
   }
+  const viewers = canonicalizeViewers(d.viewers);
+  if (viewers.length) out.viewers = viewers;
+  return out;
+}
+
+// The viewers picked on a doorbell trigger: [{ id, name }]. The id is the
+// UniFi id the match runs on (it survives a rename in the portal); the name is
+// the label last seen, kept for display and as a fallback for an entry that
+// has no id yet. Duplicates (same id, or same name with no id) are dropped.
+function canonicalizeViewers(list) {
+  const out = [];
+  const seen = new Set();
+  for (const v of Array.isArray(list) ? list : []) {
+    if (!isPlainObject(v)) continue;
+    const id = typeof v.id === 'string' && v.id.trim() ? v.id.trim() : null;
+    const name = typeof v.name === 'string' && v.name.trim() ? v.name.trim() : null;
+    if (!id && !name) continue;
+    const key = id ? `id:${id}` : `name:${name.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ id, name });
+  }
   return out;
 }
 
@@ -916,6 +938,7 @@ module.exports = {
   toReasonCode,
   doorbellCodes,
   canonicalizeDoorbell,
+  canonicalizeViewers,
   triggersOf,
   unlockActionsOf,
   migrateToFlows,

@@ -5194,14 +5194,33 @@ function buildTriggerBlock(door, tIdx, trigger, data, hasSameTypeSiblings) {
     ? `<div class="df-note"><span aria-hidden="true">&#8505;</span><span>This door has more than one ${type === 'doorbell' ? 'doorbell' : 'badge-in'} rule. Scope each to a group so the right one runs; an everyone rule always runs in addition.</span></div>`
     : '';
 
-  // Which UniFi viewer answers for this trigger's group. An intercom answer
+  // Which UniFi viewers answer for this trigger's group. An intercom answer
   // names the viewer, not a user, so a group-scoped doorbell trigger only fires
-  // when its viewer is listed here. Not needed for an anyone trigger.
+  // for a viewer picked here. Picked from the controller's own list and stored
+  // by id, so a rename in the UniFi portal never breaks the match. Not needed
+  // for an anyone trigger.
   let viewerRow = '';
   const scopeGroups = trigger.scope && Array.isArray(trigger.scope.groups) ? trigger.scope.groups : [];
   if (type === 'doorbell' && scopeGroups.length) {
-    const viewers = Object.keys((trigger.doorbell && trigger.doorbell.viewer_to_group) || {}).join(', ');
-    viewerRow = `<div style="margin-top:10px;font-size:11.5px;color:var(--text-secondary)"><label style="display:flex;align-items:center;gap:8px;flex-wrap:wrap" title="Enter the viewer name exactly as it appears in the UniFi access log. Separate several with commas.">answered from viewer <input type="text" id="dfViewers_${sfx2}" value="${escapeHtml(viewers)}" placeholder="e.g. ${escapeHtml(scopeGroups[0])} Viewer" style="flex:1;min-width:200px;font-size:11.5px;padding:4px 6px"></label>${viewers ? '' : `<div style="font-size:11px;margin-top:4px;color:var(--yellow)">No viewer listed, so an intercom answer can't be matched to ${escapeHtml(scopeGroups[0])} and this trigger won't fire.</div>`}</div>`;
+    const catalog = (data && Array.isArray(data.viewers)) ? data.viewers : [];
+    const picked = _doorbellViewers(trigger, catalog);
+    const chips = picked.map((v, vIdx) => {
+      const live = v.id ? catalog.find((c) => c.id === v.id) : null;
+      const label = (live && live.name) || v.name || v.id;
+      const note = !v.id
+        ? ' <span style="color:var(--yellow)" title="Saved by name only. Pick it from the list to match by its UniFi id.">(name only)</span>'
+        : (live ? '' : ' <span style="color:var(--yellow)" title="The controller has not reported this viewer recently.">(not seen)</span>');
+      return `<span class="df-chip">${escapeHtml(label)}${note}<button type="button" class="df-chip-x" title="Remove" onclick="removeViewer(${doorArg}, ${tIdx}, ${vIdx})">&times;</button></span>`;
+    }).join('');
+    const pickedIds = new Set(picked.map((v) => v.id).filter(Boolean));
+    const free = catalog.filter((c) => !(c.id ? pickedIds.has(c.id) : picked.some((v) => !v.id && v.name && v.name.toLowerCase() === c.name.toLowerCase())));
+    const picker = free.length
+      ? `<select id="dfViewerSel_${sfx2}" style="width:auto;min-width:180px;font-size:11.5px;padding:4px 28px 4px 8px">${free.map((c) => `<option value="${escapeHtml(c.id ? 'id:' + c.id : 'name:' + c.name)}">${escapeHtml(c.name)}</option>`).join('')}</select><button class="btn btn-sm btn-secondary" onclick="addViewer(${doorArg}, ${tIdx})">Add</button>`
+      : `<select style="width:auto;min-width:180px;font-size:11.5px;padding:4px 28px 4px 8px" disabled><option>${catalog.length ? 'every viewer already added' : 'no viewers found yet'}</option></select>`;
+    const refresh = `<button class="btn btn-sm btn-secondary" title="Re-read the viewer list from the UniFi controller" onclick="refreshViewers(${doorArg})">Refresh</button>`;
+    const warn = picked.length ? '' : `<div style="font-size:11px;margin-top:4px;color:var(--yellow)">No viewer picked, so an intercom answer can't be matched to ${escapeHtml(scopeGroups[0])} and this trigger won't fire.</div>`;
+    const empty = catalog.length ? '' : `<div style="font-size:11px;margin-top:4px;color:var(--text-muted)">Viewers come from the controller. If none show up, answer one intercom call from the viewer, then press Refresh.</div>`;
+    viewerRow = `<div style="margin-top:10px;font-size:11.5px;color:var(--text-secondary)"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span>answered from viewer</span>${chips}${picker}${refresh}</div>${warn}${empty}</div>`;
   }
 
   let doorbellAdvanced = '';
@@ -5449,12 +5468,20 @@ function collectDoorFlowCard(door) {
       trig.doorbell = trig.doorbell || {};
       if (Number.isFinite(reason)) trig.doorbell.reason_code = reason;
       if (!trig.doorbell.viewer_to_group) trig.doorbell.viewer_to_group = {};
-      // Map each listed viewer to the trigger's (first) scoped group.
-      const viewersEl = document.getElementById(`dfViewers_${cssD}_${tIdx}`);
-      if (viewersEl) {
+      // The picked viewers are edited in place (addViewer/removeViewer); keep
+      // the legacy name map in step for older readers and the preflight.
+      if (Array.isArray(trig.doorbell.viewers)) {
         const grp = trig.scope && Array.isArray(trig.scope.groups) ? trig.scope.groups[0] : null;
+        const catalog = (doorFlowsData && Array.isArray(doorFlowsData.viewers)) ? doorFlowsData.viewers : [];
         const map = {};
-        if (grp) for (const n of viewersEl.value.split(',').map((v) => v.trim()).filter(Boolean)) map[n] = grp;
+        if (grp) {
+          for (const v of trig.doorbell.viewers) {
+            const live = v.id ? catalog.find((c) => c.id === v.id) : null;
+            const name = (live && live.name) || v.name;
+            if (name) map[name] = grp;
+            if (live && live.name) v.name = live.name; // follow a rename
+          }
+        }
         trig.doorbell.viewer_to_group = map;
       }
     }
@@ -5595,6 +5622,62 @@ function addUnlockAction(door, tIdx) {
   collectDoorFlowCard(door);
   _unlockList(trig).push({ doors: [target], debounce_seconds: 8, delay_seconds: 0 });
   repaintDoorFlowCard(door);
+}
+
+// The viewers picked on a doorbell trigger. A trigger saved before viewers
+// were picked by id carries only the legacy name map; those names are shown
+// (and matched to a catalog id when the controller knows the name).
+function _doorbellViewers(trig, catalog) {
+  const db = (trig && trig.doorbell) || {};
+  if (Array.isArray(db.viewers)) return db.viewers;
+  return Object.keys(db.viewer_to_group || {}).map((name) => {
+    const hit = (catalog || []).find((c) => c.name.toLowerCase() === name.toLowerCase());
+    return { id: hit && hit.id ? hit.id : null, name };
+  });
+}
+
+function addViewer(door, tIdx) {
+  const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
+  const trig = _triggersOf(flow)[tIdx];
+  if (!trig) return;
+  const sel = document.getElementById(`dfViewerSel_${cssId(door)}_${tIdx}`);
+  const val = sel && sel.value;
+  if (!val) { toast('Pick a viewer first.', 'error'); return; }
+  collectDoorFlowCard(door);
+  const catalog = (doorFlowsData && doorFlowsData.viewers) || [];
+  const hit = catalog.find((c) => (c.id ? 'id:' + c.id : 'name:' + c.name) === val);
+  if (!hit) return;
+  trig.doorbell = trig.doorbell || {};
+  const list = _doorbellViewers(trig, catalog).slice();
+  // A name-only entry for this same viewer is replaced by the id-backed one.
+  const rest = list.filter((v) => !(!v.id && v.name && v.name.toLowerCase() === hit.name.toLowerCase()));
+  rest.push({ id: hit.id || null, name: hit.name });
+  trig.doorbell.viewers = rest;
+  repaintDoorFlowCard(door);
+}
+
+function removeViewer(door, tIdx, vIdx) {
+  const flow = doorFlowsData && doorFlowsData.flows && doorFlowsData.flows[door];
+  const trig = _triggersOf(flow)[tIdx];
+  if (!trig) return;
+  collectDoorFlowCard(door);
+  trig.doorbell = trig.doorbell || {};
+  const list = _doorbellViewers(trig, (doorFlowsData && doorFlowsData.viewers) || []).slice();
+  list.splice(vIdx, 1);
+  trig.doorbell.viewers = list;
+  repaintDoorFlowCard(door);
+}
+
+async function refreshViewers(door) {
+  try {
+    collectDoorFlowCard(door);
+    const r = await api('POST', '/api/viewers/refresh');
+    if (r && Array.isArray(r.viewers) && doorFlowsData) doorFlowsData.viewers = r.viewers;
+    repaintDoorFlowCard(door);
+    toast(`Viewer list refreshed (${(doorFlowsData && doorFlowsData.viewers || []).length} found)`, 'success');
+  } catch (e) {
+    toast(`Could not refresh viewers: ${e.message}`, 'error');
+  }
 }
 
 // Remove ONE "unlock other doors" action from a trigger.

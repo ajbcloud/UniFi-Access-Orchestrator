@@ -998,6 +998,13 @@ class UniFiClient {
     return { hits, truncated: true };
   }
 
+  // The controller's device list (GET /devices). Shape varies by firmware: a
+  // flat array or one array per hub, so callers flatten it.
+  async fetchDevices() {
+    const result = await this.request('GET', '/devices');
+    return result && result.data != null ? result.data : [];
+  }
+
   // Clear a pending reconnect timer. The watchdog's soft stage calls this
   // before forcing a fresh startEventSource() so a queued scheduleReconnect and
   // the forced connect cannot fire two parallel sockets. connectWebSocket
