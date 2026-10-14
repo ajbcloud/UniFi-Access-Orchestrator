@@ -1100,3 +1100,109 @@ test('intercom: a call unlock at a door with no doorbell trigger keeps the entry
   assert.deepEqual(unifi.calls.map((c) => c.name), ['Badge Door']);
   assert.equal(ctl.diag.doorbell_seen, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Forwarded calls answered on a phone, and remote unlocks by a named user.
+// ---------------------------------------------------------------------------
+
+function remoteUnlock(door, { actor, actorId, provider = 'REMOTE_THROUGH_UAH', result = 'ACCESS' } = {}) {
+  const g = entryGrant(door, { actor, provider, result, direction: 'entry' });
+  if (actorId) g.data._source.actor.id = actorId;
+  return g;
+}
+
+function makePhoneController(cascade, { phones = {}, users = {} } = {}) {
+  const { normalizePhone } = require('../src/door-flows');
+  const unifi = makeUnifi();
+  const ctl = new DeadboltController(
+    { edges: [], cascade_rules: { rules: cascade } },
+    {
+      unifiClient: unifi,
+      now: () => 0,
+      logger: { debug() {}, info() {} },
+      resolveGroup: ({ actorId, actorName }) => users[actorId] || phones[normalizePhone(actorName)] || null,
+    }
+  );
+  return { ctl, unifi };
+}
+
+test('a call answered on a forwarded phone fires that phone\'s tenant doorbell trigger', async () => {
+  const { ctl, unifi } = makePhoneController(INTERCOM_FLOWS, { phones: { '+19542630008': 'AnswerMD' } });
+  ctl.observe(remoteUnlock('Main Entrance', { actor: '+1 (954) 263-0008' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Double Doors']);
+});
+
+test('a phone answer is routed whatever provider the unlock carries', async () => {
+  const { ctl, unifi } = makePhoneController(INTERCOM_FLOWS, { phones: { '+19542630008': 'AnswerMD' } });
+  ctl.observe(remoteUnlock('Main Entrance', { actor: '+19542630008', provider: 'CALL' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Double Doors']);
+});
+
+test('a remote unlock by a named user follows that user\'s group', async () => {
+  const { ctl, unifi } = makePhoneController(INTERCOM_FLOWS, { users: { 'u-nicole': 'AnswerMD' } });
+  ctl.observe(remoteUnlock('Main Entrance', { actor: 'Nicole Linn', actorId: 'u-nicole' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Double Doors']);
+});
+
+test('this app\'s own remote unlocks are never routed, by name or by id', async () => {
+  const { ctl, unifi } = makePhoneController(INTERCOM_FLOWS, { users: { 'unifi-access-orchestrator': 'AnswerMD' } });
+  ctl.observe(remoteUnlock('Main Entrance', { actor: 'Access Orchestrator', actorId: 'unifi-access-orchestrator' }));
+  ctl.observe(remoteUnlock('Main Entrance', { actor: 'Renamed Label', actorId: 'unifi-access-orchestrator' }));
+  ctl.observe(remoteUnlock('Main Entrance', { actor: null })); // no actor at all
+  await flush();
+  assert.equal(unifi.calls.length, 0);
+  assert.equal(ctl.diag.doorbell_seen, 0);
+});
+
+test('a remote user unlock at a door with no doorbell trigger stays skipped', async () => {
+  const entryOnly = INTERCOM_FLOWS.filter((r) => r.type === 'entry');
+  const { ctl, unifi } = makePhoneController(entryOnly, { users: { 'u-nicole': 'Rosemurgy' } });
+  ctl.observe(remoteUnlock('Main Entrance', { actor: 'Nicole Linn', actorId: 'u-nicole' }));
+  await flush();
+  assert.equal(unifi.calls.length, 0);
+  assert.equal(ctl.diag.self_skipped, 1);
+});
+
+// ---------------------------------------------------------------------------
+// A viewer shared by two tenants runs both tenants' doorbell triggers.
+// ---------------------------------------------------------------------------
+
+function makeSharedController(cascade, groups) {
+  const unifi = makeUnifi();
+  const ctl = new DeadboltController(
+    { edges: [], cascade_rules: { rules: cascade } },
+    { unifiClient: unifi, now: () => 0, logger: { debug() {}, info() {} }, resolveGroup: () => groups }
+  );
+  return { ctl, unifi };
+}
+
+test('a shared viewer runs every tenant trigger it is picked on', async () => {
+  const { ctl, unifi } = makeSharedController([
+    { trigger_door: 'Main Entrance', type: 'doorbell', scope: { groups: ['Rosemurgy'] }, doorbell: { reason_code: 107 }, unlock: ['Fourth Floor'], debounce_seconds: 8 },
+    { trigger_door: 'Main Entrance', type: 'doorbell', scope: { groups: ['Lane'] }, doorbell: { reason_code: 107 }, unlock: ['Third Floor'], debounce_seconds: 8 },
+    { trigger_door: 'Main Entrance', type: 'doorbell', scope: { groups: ['AnswerMD'] }, doorbell: { reason_code: 107 }, unlock: ['Double Doors'], debounce_seconds: 8 },
+  ], ['Rosemurgy', 'Lane']);
+  ctl.observe(callUnlock('Main Entrance', { viewer: 'Rosemurgy Viewer' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name).sort(), ['Fourth Floor', 'Third Floor']);
+});
+
+test('a door two shared tenants both unlock on the same delay gets one command', async () => {
+  const { ctl, unifi } = makeSharedController([
+    { trigger_door: 'Main Entrance', type: 'doorbell', scope: { groups: ['Rosemurgy'] }, doorbell: { reason_code: 107 }, unlock: ['Stairwell Interior'], debounce_seconds: 8 },
+    { trigger_door: 'Main Entrance', type: 'doorbell', scope: { groups: ['Lane'] }, doorbell: { reason_code: 107 }, unlock: ['Stairwell Interior', 'Lane Suite'], debounce_seconds: 8 },
+  ], ['Rosemurgy', 'Lane']);
+  ctl.observe(callUnlock('Main Entrance', { viewer: 'Rosemurgy Viewer' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name).sort(), ['Lane Suite', 'Stairwell Interior']);
+});
+
+test('a one-entry group list behaves exactly like a single group', async () => {
+  const { ctl, unifi } = makeSharedController(INTERCOM_FLOWS, ['AnswerMD']);
+  ctl.observe(callUnlock('Main Entrance', { viewer: 'AnswerMD Viewer' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Double Doors']);
+});

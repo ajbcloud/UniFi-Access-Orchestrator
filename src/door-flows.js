@@ -152,13 +152,17 @@ function normalizeScope(scope) {
  *   scope { groups: [...] }-> only these groups (case-insensitive)
  * @param {string|null} resolvedGroup null means the user resolved to no group.
  */
+// resolvedGroup is one group name, or a list when one actor answers for
+// several groups (a viewer shared by two tenants): the scope matches if any of
+// them does.
 function scopeMatches(scope, resolvedGroup) {
   const s = normalizeScope(scope);
   if (s == null) return true;
-  if (s.any_group === true) return !!resolvedGroup;
-  if (!resolvedGroup) return false;
-  const g = normName(resolvedGroup);
-  return s.groups.some((x) => normName(x) === g);
+  const list = (Array.isArray(resolvedGroup) ? resolvedGroup : [resolvedGroup]).filter(Boolean);
+  if (s.any_group === true) return list.length > 0;
+  if (!list.length) return false;
+  const wanted = new Set(s.groups.map(normName));
+  return list.some((g) => wanted.has(normName(g)));
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +380,24 @@ function canonicalizeDoorbell(db) {
   return out;
 }
 
+// A phone number in E.164 (+15551234567), or null. When an intercom call is
+// forwarded to a phone and answered there, UniFi names the phone number as the
+// actor, in whatever format it chose; typed numbers arrive formatted by hand.
+// Both normalize here so they compare equal. A bare 10-digit number (or 11
+// with a leading 1) is taken as North American; anything else needs a +.
+function normalizePhone(v) {
+  if (typeof v !== 'string') return null;
+  const raw = v.trim();
+  if (!/^\+?[\d\s().-]+$/.test(raw)) return null;
+  const digits = raw.replace(/\D/g, '');
+  if (!raw.startsWith('+')) {
+    if (digits.length === 10) return '+1' + digits;
+    if (digits.length === 11 && digits[0] === '1') return '+' + digits;
+    return null;
+  }
+  return digits.length >= 8 && digits.length <= 15 ? '+' + digits : null;
+}
+
 // The viewers picked on a doorbell trigger: [{ id, name }]. The id is the
 // UniFi id the match runs on (it survives a rename in the portal); the name is
 // the label last seen, kept for display and as a fallback for an entry that
@@ -385,6 +407,16 @@ function canonicalizeViewers(list) {
   const seen = new Set();
   for (const v of Array.isArray(list) ? list : []) {
     if (!isPlainObject(v)) continue;
+    // A phone number that answers forwarded calls is matched by the number
+    // itself, so it carries no UniFi id.
+    const phone = normalizePhone(v.phone);
+    if (phone) {
+      const key = `phone:${phone}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ id: null, name: phone, phone });
+      continue;
+    }
     const id = typeof v.id === 'string' && v.id.trim() ? v.id.trim() : null;
     const name = typeof v.name === 'string' && v.name.trim() ? v.name.trim() : null;
     if (!id && !name) continue;
@@ -939,6 +971,7 @@ module.exports = {
   doorbellCodes,
   canonicalizeDoorbell,
   canonicalizeViewers,
+  normalizePhone,
   triggersOf,
   unlockActionsOf,
   migrateToFlows,
