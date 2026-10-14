@@ -524,3 +524,18 @@ test('canonicalizeDoorbell keeps picked viewers (deduped) and drops junk', () =>
   assert.deepEqual(out.viewers, [{ id: 'v1', name: 'A' }, { id: null, name: 'Legacy' }]);
   assert.equal('viewers' in df.canonicalizeDoorbell({ reason_code: 107 }), false, 'no viewers key when none are picked');
 });
+
+test('normalizePhone accepts common formats and rejects names and short numbers', () => {
+  const { normalizePhone } = require('../src/door-flows');
+  for (const v of ['+19542630008', '(954) 263-0008', '954-263-0008', '954.263.0008', '19542630008', '+1 954 263 0008']) {
+    assert.equal(normalizePhone(v), '+19542630008', v);
+  }
+  assert.equal(normalizePhone('+44 20 7946 0958'), '+442079460958');
+  for (const v of ['12345', 'AnswerMD Viewer', '', null, '+12']) assert.equal(normalizePhone(v), null, String(v));
+});
+
+test('canonicalizeViewers keeps phone entries keyed by the normalized number', () => {
+  const df = require('../src/door-flows');
+  assert.deepEqual(df.canonicalizeViewers([{ phone: '(954) 263-0008' }, { phone: '+19542630008' }, { phone: 'nope' }]),
+    [{ id: null, name: '+19542630008', phone: '+19542630008' }]);
+});

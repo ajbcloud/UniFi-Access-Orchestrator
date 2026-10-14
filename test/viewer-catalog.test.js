@@ -25,10 +25,10 @@ test('an answered call (CALL unlock or remotecall.accepted) yields the viewer', 
   assert.deepEqual(callActorFromSource(callSource({ type: 'access.remotecall.accepted', provider: null, result: null })), { id: 'v1', name: 'AnswerMD Viewer' });
 });
 
-test('canceled calls, badge-ins and phone-forwarded answers are not viewers', () => {
+test('canceled calls and badge-ins are not answers; a phone answer is returned as a phone', () => {
   assert.equal(callActorFromSource(callSource({ result: 'SUCCESS' })), null, 'Call Canceled');
   assert.equal(callActorFromSource(callSource({ provider: 'NFC' })), null, 'a badge-in');
-  assert.equal(callActorFromSource(callSource({ name: '+13059891040' })), null, 'a phone number');
+  assert.deepEqual(callActorFromSource(callSource({ name: '+13059891040' })), { id: null, name: '+13059891040', phone: '+13059891040' });
 });
 
 test('the device list is flattened and filtered to viewers', () => {
@@ -140,4 +140,18 @@ test('when a name has two ids, the one live events carry wins', () => {
   const flows = bellFlows({ viewer_to_group: { 'AnswerMD Viewer': 'AnswerMD' } });
   upgradeNameOnlyViewers(flows, c);
   assert.equal(flows['Main Entrance'].triggers[1].doorbell.viewers[0].id, 'evt-1');
+});
+
+test('a phone that answered a forwarded call is learned, normalized', () => {
+  const c = new ViewerCatalog();
+  c.noteLogHits([{ _source: callSource({ id: 'x', name: '+1 (954) 263-0008', provider: 'REMOTE_THROUGH_UAH' }) }]);
+  c.noteLogHits([{ _source: callSource({ name: '+19542630008', type: 'access.remotecall.accepted', provider: null, result: null }) }]);
+  assert.deepEqual(c.list().map((e) => [e.id, e.name, e.phone]), [[null, '+19542630008', '+19542630008']]);
+});
+
+test('a phone entry is never given a UniFi id by the upgrade', () => {
+  const c = new ViewerCatalog();
+  c.note({ phone: '+19542630008', source: 'event' });
+  const flows = bellFlows({ viewers: [{ id: null, name: '+19542630008', phone: '+19542630008' }] });
+  assert.deepEqual(upgradeNameOnlyViewers(flows, c), []);
 });

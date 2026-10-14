@@ -44,9 +44,11 @@
  *     access.data.device.location_update_v2) with data.state.lock
  */
 
-const { scopeMatches, toReasonCode, doorbellCodes } = require('./door-flows');
+const { scopeMatches, toReasonCode, doorbellCodes, normalizePhone } = require('./door-flows');
 
 const REMOTE_PROVIDER = 'REMOTE_THROUGH_UAH';
+// The actor id this app stamps on every unlock it issues (unifi-client.js).
+const ORCHESTRATOR_ACTOR_ID = 'unifi-access-orchestrator';
 // A G3 Intercom answered from a UniFi viewer never sends
 // access.doorbell.completed. The controller logs access.remotecall.request /
 // .accepted and then the door unlock itself as an access.door.unlock whose
@@ -403,10 +405,19 @@ class DeadboltController {
 
   // ---- decisions ---------------------------------------------------------
 
-  _isSelfTriggered(grant) {
-    if (grant.credentialProvider === REMOTE_PROVIDER) return true;
+  // This app's own unlocks carry its actor id and name (unifi-client.js).
+  _isOrchestratorActor(grant) {
+    if (grant.actorId && String(grant.actorId) === ORCHESTRATOR_ACTOR_ID) return true;
     if (grant.actorName && normName(grant.actorName) === this.orchestratorActorName) return true;
     return false;
+  }
+
+  // The entry path skips every remote unlock: ours, and (at a door with no
+  // doorbell trigger) anyone else's. A remote unlock by a real user or phone
+  // at a doorbell door never gets here; _isIntercomAnswer routes it first.
+  _isSelfTriggered(grant) {
+    if (grant.credentialProvider === REMOTE_PROVIDER) return true;
+    return this._isOrchestratorActor(grant);
   }
 
   _matchDoor(eventName, configName) {
@@ -601,14 +612,26 @@ class DeadboltController {
     }
   }
 
-  // An intercom call answered and unlocked from a viewer, at a door that has a
-  // doorbell trigger. Only the unlock itself counts (result ACCESS): the
-  // controller also logs "Call Canceled" rows with the same provider, which
-  // must never fire anything. A door with no doorbell trigger keeps the old
-  // behavior and goes through the entry path.
+  // An intercom call answered and unlocked, at a door that has a doorbell
+  // trigger: from a viewer (credential provider CALL), or from a phone the
+  // call was forwarded to (the actor is the phone number; UniFi logs it as
+  // "unlocked remotely using phone number", possibly under the same remote
+  // provider this app's own unlocks use, so the actor decides, not the
+  // provider). Only the unlock itself counts (result ACCESS): the controller
+  // also logs "Call Canceled" rows with the same provider, which must never
+  // fire anything. A door with no doorbell trigger keeps the old behavior.
+  //
+  // A remote unlock by a named user (the UniFi app's "Nicole remotely
+  // unlocked Main Entrance") counts too: that user is letting someone in, so
+  // the doorbell trigger for the user's own group runs, resolved from the
+  // user's id exactly as a badge-in is.
   _isIntercomAnswer(g) {
-    if (normName(g.credentialProvider) !== CALL_PROVIDER) return false;
     if (g.result !== 'ACCESS') return false;
+    if (this._isOrchestratorActor(g)) return false;
+    const byPhone = !!normalizePhone(g.actorName);
+    const byCall = normName(g.credentialProvider) === CALL_PROVIDER;
+    const byRemoteUser = g.credentialProvider === REMOTE_PROVIDER && !!(g.actorId || g.actorName);
+    if (!byCall && !byPhone && !byRemoteUser) return false;
     const isBell = (spec) => (spec.type || 'entry') === 'doorbell';
     const atDoor = (spec, door, id) => this._matchDoorSpec(g.doorName, g.doorId, door, id);
     return this.edges.some((e) => isBell(e) && atDoor(e, e.trigger_door, e.trigger_door_id))
@@ -619,8 +642,11 @@ class DeadboltController {
   // (reason 107). The viewer that answered is the actor, so it is passed as
   // both actor and device name for the viewer_to_group lookup.
   _onIntercomAnswer(g) {
+    const phone = normalizePhone(g.actorName);
+    const how = phone ? `phone ${phone}`
+      : (normName(g.credentialProvider) === CALL_PROVIDER ? `"${g.actorName || 'unknown'}"` : `user "${g.actorName || g.actorId}" (remote unlock)`);
     this.log.info && this.log.info(
-      `deadbolt: intercom call answered at "${g.doorName || 'unknown'}" by "${g.actorName || 'unknown'}"; routing to doorbell triggers`
+      `deadbolt: intercom call answered at "${g.doorName || 'unknown'}" by ${how}; routing to doorbell triggers`
     );
     return this._onDoorbell({
       reasonCode: DEFAULT_DOORBELL_REASON_CODE,

@@ -273,6 +273,9 @@ let _viewerToGroupCI = {};
 // Matching on the id is what keeps a trigger working after the viewer is
 // renamed in the UniFi portal.
 let _viewerIdToGroup = {};
+// E.164 phone number -> group, for intercom calls forwarded to a phone and
+// answered there (the phone number is the actor).
+let _phoneToGroup = {};
 // Every intercom viewer the controller has reported (device list, system log,
 // live call events), keyed by id. Feeds the trigger card's viewer dropdown.
 const viewerCatalog = new ViewerCatalog({
@@ -731,6 +734,10 @@ function resolveGroupForEvent(info) {
     const r = resolver.resolve(i.actorId);
     group = (r && r.group) || null;
   }
+  if (!group) {
+    const phone = doorFlows.normalizePhone(i.actorName) || doorFlows.normalizePhone(i.deviceName);
+    if (phone) group = _phoneToGroup[phone] || null;
+  }
   if (!group && i.actorId) group = _viewerIdToGroup[String(i.actorId)] || null;
   if (!group) {
     const a = i.actorName ? String(i.actorName).trim().toLowerCase() : '';
@@ -753,6 +760,7 @@ function resolveGroupForEvent(info) {
 function rebuildViewerMaps() {
   _viewerToGroupCI = {};
   _viewerIdToGroup = {};
+  _phoneToGroup = {};
   for (const flow of Object.values(config.door_flows || {})) {
     for (const trig of doorFlows.triggersOf(flow)) {
       if (trig.type !== 'doorbell' || !trig.doorbell) continue;
@@ -764,6 +772,7 @@ function rebuildViewerMaps() {
       const group = trig.scope && Array.isArray(trig.scope.groups) ? trig.scope.groups[0] : null;
       if (!group) continue;
       for (const v of doorFlows.canonicalizeViewers(trig.doorbell.viewers)) {
+        if (v.phone) { _phoneToGroup[v.phone] = group; continue; }
         if (v.id) _viewerIdToGroup[v.id] = group;
         if (v.name) _viewerToGroupCI[v.name.toLowerCase()] = group;
       }

@@ -32,7 +32,7 @@ function load(groupNames) {
     + extractFn('escapeHtml') + '\n' + extractFn('cssId') + '\n' + extractFn('_dfGroups')
     + '\n' + extractFn('_scopeToValue')
     + '\n' + extractFn('buildRetractEdgeRow') + '\n' + extractFn('buildUnlockAction')
-    + '\n' + extractFn('_doorbellViewers') + '\n' + extractFn('buildTriggerBlock') + '\n' + extractFn('buildDoorFlowCard');
+    + '\n' + extractFn('_doorbellViewers') + '\n' + extractFn('_formatPhone') + '\n' + extractFn('_viewerKey') + '\n' + extractFn('buildTriggerBlock') + '\n' + extractFn('buildDoorFlowCard');
   return new Function(src + '; return buildDoorFlowCard;')();
 }
 
@@ -239,10 +239,10 @@ test('a group-scoped doorbell trigger picks viewers from the controller list, by
   assert.match(renamed, /Staff Front Desk/, 'label follows the controller name for the id');
   assert.doesNotMatch(renamed, />Staff Viewer</);
   assert.match(renamed, /id="dfViewerSel_[^"]+"[^>]*><option value="id:v2">Lobby Viewer<\/option><\/select>/, 'only unpicked viewers are offered');
-  assert.doesNotMatch(renamed, /No viewer picked/);
+  assert.doesNotMatch(renamed, /No viewer or phone picked/);
 
   const empty = load(['Staff'])('Front Door', bell({}), data);
-  assert.match(empty, /No viewer picked/, 'an empty trigger warns that it cannot fire');
+  assert.match(empty, /No viewer or phone picked/, 'an empty trigger warns that it cannot fire');
 
   const legacy = load(['Staff'])('Front Door', bell({ viewer_to_group: { 'Old Name': 'Staff' } }), data);
   assert.match(legacy, /Old Name.*\(name only\)/, 'a legacy name-only mapping is shown and flagged');
@@ -253,4 +253,26 @@ test('a group-scoped doorbell trigger picks viewers from the controller list, by
 
   const anyone = load(['Staff'])('Front Door', flow({ triggers: [{ type: 'doorbell', scope: null, doorbell: { reason_code: 107 }, actions: { unlock: null, retract: [] } }] }), data);
   assert.doesNotMatch(anyone, /dfViewerSel_|answered from viewer/, 'an anyone trigger needs no viewer');
+});
+
+test('a doorbell trigger shows phone numbers as chips, offers learned phones, and takes a typed number', () => {
+  const bell = flow({ triggers: [{ type: 'doorbell', scope: { groups: ['AnswerMD'] }, doorbell: { reason_code: 107, viewers: [{ id: null, name: '+19542630008', phone: '+19542630008' }] }, actions: { unlock: null, retract: [] } }] });
+  const data = Object.assign({}, DATA, { viewers: [
+    { id: null, name: '+19542630008', phone: '+19542630008' },
+    { id: null, name: '+13059891040', phone: '+13059891040' },
+  ] });
+  const out = load(['AnswerMD'])('Front Door', bell, data);
+  assert.match(out, /\+1 \(954\) 263-0008<button/, 'the picked phone is a formatted chip');
+  assert.match(out, /<option value="phone:\+13059891040">\+1 \(305\) 989-1040 \(phone\)<\/option>/, 'a learned phone is offered');
+  assert.doesNotMatch(out, /value="phone:\+19542630008"/, 'a picked phone is not offered again');
+  assert.match(out, /id="dfPhone_[^"]+"/, 'a number can be typed in');
+  assert.match(out, /remotely unlocks Front Door from the UniFi app also runs this trigger/, 'remote unlocks by members are explained');
+});
+
+test('the dashboard phone normalizer matches the server one', () => {
+  const ui = new Function(extractFn('_normalizePhone') + '; return _normalizePhone;')();
+  const { normalizePhone } = require('../src/door-flows');
+  for (const v of ['+19542630008', '(954) 263-0008', '954-263-0008', '954.263.0008', '19542630008', '+1 954 263 0008', '+44 20 7946 0958', '12345', 'AnswerMD Viewer', '', '+12']) {
+    assert.equal(ui(v), normalizePhone(v), v);
+  }
 });

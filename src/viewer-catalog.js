@@ -18,6 +18,7 @@
  */
 
 const fs = require('fs');
+const { normalizePhone } = require('./door-flows');
 
 const CALL_PROVIDER = 'call';
 const VIEWER_RE = /viewer/i;
@@ -37,16 +38,19 @@ function callActorFromSource(src) {
   const ev = src.event || {};
   const type = ev.type || '';
   const provider = normName(src.authentication && src.authentication.credential_provider);
-  const isAnswer = type === 'access.remotecall.accepted'
-    || (type === 'access.door.unlock' && provider === CALL_PROVIDER && (ev.result == null || ev.result === 'ACCESS'));
-  if (!isAnswer) return null;
   const actor = src.actor || {};
   const id = str(actor.id) || str(actor.user_id);
   const name = str(actor.display_name) || str(actor.name) || str(actor.alternate_name);
-  // A call forwarded to a phone answers as the phone number; that is not a
-  // viewer anyone can pick, so skip it.
-  if (!name || /^\+?\d[\d\s-]{6,}$/.test(name)) return null;
-  return { id, name };
+  if (!name) return null;
+  // A call forwarded to a phone and answered there names the phone number as
+  // the actor ("unlocked remotely using phone number ..."), and the unlock may
+  // not carry the CALL provider, so a phone-number actor on an unlock counts.
+  const phone = normalizePhone(name);
+  const granted = ev.result == null || ev.result === 'ACCESS';
+  const isAnswer = type === 'access.remotecall.accepted'
+    || (type === 'access.door.unlock' && granted && (provider === CALL_PROVIDER || !!phone));
+  if (!isAnswer) return null;
+  return phone ? { id: null, name: phone, phone } : { id, name };
 }
 
 // Flatten GET /devices: the controller returns either a flat array or one
@@ -92,11 +96,14 @@ class ViewerCatalog {
   }
 
   _key(e) {
+    if (e.phone) return `phone:${e.phone}`;
     return e.id ? `id:${e.id}` : `name:${normName(e.name)}`;
   }
 
   /** Record one viewer. Returns true when the catalog changed. */
-  note({ id = null, name, type = null, source }) {
+  note({ id = null, name, type = null, source, phone = null }) {
+    phone = normalizePhone(phone);
+    if (phone) { id = null; name = phone; }
     name = str(name);
     if (!name) return false;
     id = str(id);
@@ -107,9 +114,10 @@ class ViewerCatalog {
       const nameKey = `name:${normName(name)}`;
       if (this.entries.has(nameKey)) this.entries.delete(nameKey);
     }
-    const key = id ? `id:${id}` : `name:${normName(name)}`;
+    const key = this._key({ id, name, phone });
     const prev = this.entries.get(key);
     const next = { id, name, type: type || (prev && prev.type) || null, source: source || (prev && prev.source) || null, last_seen: at };
+    if (phone) next.phone = phone;
     const changed = !prev || prev.name !== next.name || prev.type !== next.type;
     if (changed && prev && prev.name !== name && this.log && this.log.info) {
       this.log.info(`Viewer ${id || ''} renamed on the controller: "${prev.name}" -> "${name}"`);
@@ -214,7 +222,7 @@ function upgradeNameOnlyViewers(flows, catalog) {
       }
       let changed = !Array.isArray(db.viewers) && list.some((v) => !v.id && bestIdFor(catalog, v.name));
       for (const v of list) {
-        if (v.id || !v.name) continue;
+        if (v.id || v.phone || !v.name) continue;
         const id = bestIdFor(catalog, v.name);
         if (!id || list.some((o) => o.id === id)) continue;
         v.id = id;
