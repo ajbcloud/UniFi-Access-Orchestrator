@@ -1165,3 +1165,44 @@ test('a remote user unlock at a door with no doorbell trigger stays skipped', as
   assert.equal(unifi.calls.length, 0);
   assert.equal(ctl.diag.self_skipped, 1);
 });
+
+// ---------------------------------------------------------------------------
+// A viewer shared by two tenants runs both tenants' doorbell triggers.
+// ---------------------------------------------------------------------------
+
+function makeSharedController(cascade, groups) {
+  const unifi = makeUnifi();
+  const ctl = new DeadboltController(
+    { edges: [], cascade_rules: { rules: cascade } },
+    { unifiClient: unifi, now: () => 0, logger: { debug() {}, info() {} }, resolveGroup: () => groups }
+  );
+  return { ctl, unifi };
+}
+
+test('a shared viewer runs every tenant trigger it is picked on', async () => {
+  const { ctl, unifi } = makeSharedController([
+    { trigger_door: 'Main Entrance', type: 'doorbell', scope: { groups: ['Rosemurgy'] }, doorbell: { reason_code: 107 }, unlock: ['Fourth Floor'], debounce_seconds: 8 },
+    { trigger_door: 'Main Entrance', type: 'doorbell', scope: { groups: ['Lane'] }, doorbell: { reason_code: 107 }, unlock: ['Third Floor'], debounce_seconds: 8 },
+    { trigger_door: 'Main Entrance', type: 'doorbell', scope: { groups: ['AnswerMD'] }, doorbell: { reason_code: 107 }, unlock: ['Double Doors'], debounce_seconds: 8 },
+  ], ['Rosemurgy', 'Lane']);
+  ctl.observe(callUnlock('Main Entrance', { viewer: 'Rosemurgy Viewer' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name).sort(), ['Fourth Floor', 'Third Floor']);
+});
+
+test('a door two shared tenants both unlock on the same delay gets one command', async () => {
+  const { ctl, unifi } = makeSharedController([
+    { trigger_door: 'Main Entrance', type: 'doorbell', scope: { groups: ['Rosemurgy'] }, doorbell: { reason_code: 107 }, unlock: ['Stairwell Interior'], debounce_seconds: 8 },
+    { trigger_door: 'Main Entrance', type: 'doorbell', scope: { groups: ['Lane'] }, doorbell: { reason_code: 107 }, unlock: ['Stairwell Interior', 'Lane Suite'], debounce_seconds: 8 },
+  ], ['Rosemurgy', 'Lane']);
+  ctl.observe(callUnlock('Main Entrance', { viewer: 'Rosemurgy Viewer' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name).sort(), ['Lane Suite', 'Stairwell Interior']);
+});
+
+test('a one-entry group list behaves exactly like a single group', async () => {
+  const { ctl, unifi } = makeSharedController(INTERCOM_FLOWS, ['AnswerMD']);
+  ctl.observe(callUnlock('Main Entrance', { viewer: 'AnswerMD Viewer' }));
+  await flush();
+  assert.deepEqual(unifi.calls.map((c) => c.name), ['Double Doors']);
+});

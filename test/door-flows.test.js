@@ -539,3 +539,12 @@ test('canonicalizeViewers keeps phone entries keyed by the normalized number', (
   assert.deepEqual(df.canonicalizeViewers([{ phone: '(954) 263-0008' }, { phone: '+19542630008' }, { phone: 'nope' }]),
     [{ id: null, name: '+19542630008', phone: '+19542630008' }]);
 });
+
+test('scopeMatches accepts a list of groups (a shared viewer)', () => {
+  const { scopeMatches } = require('../src/door-flows');
+  assert.equal(scopeMatches({ groups: ['Lane'] }, ['Rosemurgy', 'lane']), true);
+  assert.equal(scopeMatches({ groups: ['AnswerMD'] }, ['Rosemurgy', 'Lane']), false);
+  assert.equal(scopeMatches({ any_group: true }, []), false);
+  assert.equal(scopeMatches({ any_group: true }, ['Lane']), true);
+  assert.equal(scopeMatches({ groups: ['Lane'] }, 'Lane'), true, 'a single group still works');
+});

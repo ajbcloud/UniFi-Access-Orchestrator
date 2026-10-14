@@ -266,14 +266,14 @@ let resolver = new Resolver(config, unifiClient);
 // live entry/doorbell/cascade execution belongs to the deadbolt controller.
 let rulesEngine = new RulesEngine(rulesEngineConfig(config), unifiClient, resolver);
 let configSync = null;  // initialized in start() once Express + UniFi client are up
-// Case-insensitive viewer-device -> group map, merged from every doorbell
+// Case-insensitive viewer-device -> [groups] map, merged from every doorbell
 // trigger, used to resolve the answering viewer when a doorbell has no actor id.
 let _viewerToGroupCI = {};
-// UniFi viewer id -> group, from the viewers picked on each doorbell trigger.
+// UniFi viewer id -> [groups], from the viewers picked on each doorbell trigger.
 // Matching on the id is what keeps a trigger working after the viewer is
 // renamed in the UniFi portal.
 let _viewerIdToGroup = {};
-// E.164 phone number -> group, for intercom calls forwarded to a phone and
+// E.164 phone number -> [groups], for intercom calls forwarded to a phone and
 // answered there (the phone number is the actor).
 let _phoneToGroup = {};
 // Every intercom viewer the controller has reported (device list, system log,
@@ -729,52 +729,55 @@ function destroyDeadboltControllers() {
 // answered doorbell often carries no actor id). Returns null when unresolved.
 function resolveGroupForEvent(info) {
   const i = info || {};
-  let group = null;
   if (i.actorId) {
     const r = resolver.resolve(i.actorId);
-    group = (r && r.group) || null;
+    if (r && r.group) return r.group;
   }
-  if (!group) {
-    const phone = doorFlows.normalizePhone(i.actorName) || doorFlows.normalizePhone(i.deviceName);
-    if (phone) group = _phoneToGroup[phone] || null;
-  }
-  if (!group && i.actorId) group = _viewerIdToGroup[String(i.actorId)] || null;
-  if (!group) {
-    const a = i.actorName ? String(i.actorName).trim().toLowerCase() : '';
-    const d = i.deviceName ? String(i.deviceName).trim().toLowerCase() : '';
-    group = (a && _viewerToGroupCI[a]) || (d && _viewerToGroupCI[d]) || null;
-  }
+  // Viewers and phones map to a LIST of groups: one viewer can answer for
+  // several tenants, and then each tenant's trigger runs.
+  const pick = (list) => (list && list.length ? (list.length > 1 ? list.slice() : list[0]) : null);
+  const phone = doorFlows.normalizePhone(i.actorName) || doorFlows.normalizePhone(i.deviceName);
+  if (phone && _phoneToGroup[phone]) return pick(_phoneToGroup[phone]);
+  if (i.actorId && _viewerIdToGroup[String(i.actorId)]) return pick(_viewerIdToGroup[String(i.actorId)]);
+  const a = i.actorName ? String(i.actorName).trim().toLowerCase() : '';
+  const d = i.deviceName ? String(i.deviceName).trim().toLowerCase() : '';
+  if (a && _viewerToGroupCI[a]) return pick(_viewerToGroupCI[a]);
+  if (d && _viewerToGroupCI[d]) return pick(_viewerToGroupCI[d]);
   // The event carried a name but no id we know: look the name up in the
   // catalog, whose names follow renames on the controller, and match its id.
-  if (!group) {
-    for (const hit of [...viewerCatalog.allByName(i.actorName), ...viewerCatalog.allByName(i.deviceName)]) {
-      if (hit.id && _viewerIdToGroup[hit.id]) { group = _viewerIdToGroup[hit.id]; break; }
-    }
+  for (const hit of [...viewerCatalog.allByName(i.actorName), ...viewerCatalog.allByName(i.deviceName)]) {
+    if (hit.id && _viewerIdToGroup[hit.id]) return pick(_viewerIdToGroup[hit.id]);
   }
-  return group;
+  return null;
 }
 
-// Rebuild the viewer -> group lookups from every doorbell trigger. A picked
-// viewer maps to the trigger's (first) scoped group; an anyone trigger needs
-// no mapping. The legacy name-keyed viewer_to_group still counts.
+// Rebuild the viewer -> groups lookups from every doorbell trigger. A picked
+// viewer maps to the trigger's (first) scoped group, and a viewer picked on
+// several tenants' triggers maps to all of them; an anyone trigger needs no
+// mapping. The legacy name-keyed viewer_to_group still counts.
 function rebuildViewerMaps() {
   _viewerToGroupCI = {};
   _viewerIdToGroup = {};
   _phoneToGroup = {};
+  const add = (map, key, group) => {
+    if (!key || !group) return;
+    const list = map[key] || (map[key] = []);
+    if (!list.some((g) => g.toLowerCase() === String(group).toLowerCase())) list.push(group);
+  };
   for (const flow of Object.values(config.door_flows || {})) {
     for (const trig of doorFlows.triggersOf(flow)) {
       if (trig.type !== 'doorbell' || !trig.doorbell) continue;
       if (trig.doorbell.viewer_to_group) {
         for (const [k, v] of Object.entries(trig.doorbell.viewer_to_group)) {
-          if (typeof k === 'string' && v) _viewerToGroupCI[k.trim().toLowerCase()] = v;
+          if (typeof k === 'string') add(_viewerToGroupCI, k.trim().toLowerCase(), v);
         }
       }
       const group = trig.scope && Array.isArray(trig.scope.groups) ? trig.scope.groups[0] : null;
       if (!group) continue;
       for (const v of doorFlows.canonicalizeViewers(trig.doorbell.viewers)) {
-        if (v.phone) { _phoneToGroup[v.phone] = group; continue; }
-        if (v.id) _viewerIdToGroup[v.id] = group;
-        if (v.name) _viewerToGroupCI[v.name.toLowerCase()] = group;
+        if (v.phone) { add(_phoneToGroup, v.phone, group); continue; }
+        if (v.id) add(_viewerIdToGroup, v.id, group);
+        if (v.name) add(_viewerToGroupCI, v.name.toLowerCase(), group);
       }
     }
   }

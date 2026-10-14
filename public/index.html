@@ -5204,16 +5204,30 @@ function buildTriggerBlock(door, tIdx, trigger, data, hasSameTypeSiblings) {
   if (type === 'doorbell' && scopeGroups.length) {
     const catalog = (data && Array.isArray(data.viewers)) ? data.viewers : [];
     const picked = _doorbellViewers(trigger, catalog);
+    // Other groups this same viewer or phone is picked for, so a shared front
+    // desk is visible on every trigger it serves.
+    const sharedWith = (v) => {
+      const out = [];
+      for (const f of Object.values((data && data.flows) || {})) {
+        for (const t of (f && f.triggers) || []) {
+          if (t === trigger || t.type !== 'doorbell' || !t.scope || !Array.isArray(t.scope.groups) || !t.scope.groups.length) continue;
+          const vs = _doorbellViewers(t, catalog);
+          const same = vs.some((o) => (v.phone ? o.phone === v.phone : (v.id ? o.id === v.id : (!o.id && !o.phone && o.name && v.name && o.name.toLowerCase() === v.name.toLowerCase()))));
+          if (same && !scopeGroups.includes(t.scope.groups[0]) && !out.includes(t.scope.groups[0])) out.push(t.scope.groups[0]);
+        }
+      }
+      return out.length ? ` <span style="color:var(--text-muted)" title="This answer also runs these groups' doorbell triggers">(also ${escapeHtml(out.join(', '))})</span>` : '';
+    };
     const chips = picked.map((v, vIdx) => {
       if (v.phone) {
-        return `<span class="df-chip" title="Matches a call forwarded to this phone and answered there">&#9742; ${escapeHtml(_formatPhone(v.phone))}<button type="button" class="df-chip-x" title="Remove" onclick="removeViewer(${doorArg}, ${tIdx}, ${vIdx})">&times;</button></span>`;
+        return `<span class="df-chip" title="Matches a call forwarded to this phone and answered there">&#9742; ${escapeHtml(_formatPhone(v.phone))}${sharedWith(v)}<button type="button" class="df-chip-x" title="Remove" onclick="removeViewer(${doorArg}, ${tIdx}, ${vIdx})">&times;</button></span>`;
       }
       const live = v.id ? catalog.find((c) => c.id === v.id) : null;
       const label = (live && live.name) || v.name || v.id;
       const note = !v.id
         ? ' <span style="color:var(--yellow)" title="Saved by name only. Pick it from the list to match by its UniFi id.">(name only)</span>'
         : (live ? '' : ' <span style="color:var(--yellow)" title="The controller has not reported this viewer recently.">(not seen)</span>');
-      return `<span class="df-chip">${escapeHtml(label)}${note}<button type="button" class="df-chip-x" title="Remove" onclick="removeViewer(${doorArg}, ${tIdx}, ${vIdx})">&times;</button></span>`;
+      return `<span class="df-chip">${escapeHtml(label)}${note}${sharedWith(v)}<button type="button" class="df-chip-x" title="Remove" onclick="removeViewer(${doorArg}, ${tIdx}, ${vIdx})">&times;</button></span>`;
     }).join('');
     const pickedIds = new Set(picked.map((v) => v.id).filter(Boolean));
     const pickedPhones = new Set(picked.map((v) => v.phone).filter(Boolean));

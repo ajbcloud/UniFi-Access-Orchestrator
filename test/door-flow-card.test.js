@@ -276,3 +276,12 @@ test('the dashboard phone normalizer matches the server one', () => {
     assert.equal(ui(v), normalizePhone(v), v);
   }
 });
+
+test('a viewer picked on two tenants\' triggers shows who it is shared with', () => {
+  const trig = (group) => ({ type: 'doorbell', scope: { groups: [group] }, doorbell: { reason_code: 107, viewers: [{ id: 'v1', name: 'Rosemurgy Viewer' }] }, actions: { unlock: null, retract: [] } });
+  const f = flow({ triggers: [trig('Rosemurgy Properties'), trig('Lane & Ducheine')] });
+  const data = Object.assign({}, DATA, { viewers: [{ id: 'v1', name: 'Rosemurgy Viewer' }], flows: { 'Front Door': f } });
+  const out = load(['Rosemurgy Properties', 'Lane & Ducheine'])('Front Door', f, data);
+  assert.match(out, /Rosemurgy Viewer <span[^>]*>\(also Lane &amp; Ducheine\)<\/span>/);
+  assert.match(out, /Rosemurgy Viewer <span[^>]*>\(also Rosemurgy Properties\)<\/span>/);
+});

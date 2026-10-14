@@ -489,6 +489,9 @@ class DeadboltController {
         group = this.resolveGroup
           ? (this.resolveGroup({ actorId: ev.actorId || null, actorName: ev.actorName || null, deviceName: ev.deviceName || null }) || null)
           : null;
+        // A shared viewer resolves to a list; one entry is just that group,
+        // and an empty list is unresolved.
+        if (Array.isArray(group)) group = group.length > 1 ? group : (group[0] || null);
         resolved = true;
       }
       return group;
@@ -497,7 +500,8 @@ class DeadboltController {
 
   _who(ev, group) {
     const name = ev.actorName || 'user';
-    return group ? `${name} (${group})` : name;
+    const label = Array.isArray(group) ? group.join(', ') : group;
+    return label ? `${name} (${label})` : name;
   }
 
   _onAccessGrant(g) {
@@ -588,6 +592,9 @@ class DeadboltController {
     }
     const bellSpecificMatched = this._specificGroupMatchedGetter('doorbell', d, group,
       (r) => this._doorbellReasonOk(r, d.reasonCode));
+    // A viewer shared by several tenants runs each tenant's trigger; a door
+    // two of them unlock on the same delay gets one command, not two.
+    const sent = new Set();
     // Remember the codes a door-matched rule wanted, so a drop can name the
     // mismatch instead of just saying nothing happened.
     let wanted = null;
@@ -602,7 +609,10 @@ class DeadboltController {
       if (!scopeMatches(rule.scope, group())) return;
       if (!this._debounceOk(rule, idx)) return;
       acted++;
-      this._fireCascade(rule, d, group());
+      const doors = (Array.isArray(rule.unlock) ? rule.unlock : [])
+        .filter((door) => !sent.has(`${normName(door)}|${rule.delay_seconds || 0}`));
+      doors.forEach((door) => sent.add(`${normName(door)}|${rule.delay_seconds || 0}`));
+      if (doors.length) this._fireCascade(Object.assign({}, rule, { unlock: doors }), d, group());
     });
 
     if (!acted) {

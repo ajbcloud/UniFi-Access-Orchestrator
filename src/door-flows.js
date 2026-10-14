@@ -152,13 +152,17 @@ function normalizeScope(scope) {
  *   scope { groups: [...] }-> only these groups (case-insensitive)
  * @param {string|null} resolvedGroup null means the user resolved to no group.
  */
+// resolvedGroup is one group name, or a list when one actor answers for
+// several groups (a viewer shared by two tenants): the scope matches if any of
+// them does.
 function scopeMatches(scope, resolvedGroup) {
   const s = normalizeScope(scope);
   if (s == null) return true;
-  if (s.any_group === true) return !!resolvedGroup;
-  if (!resolvedGroup) return false;
-  const g = normName(resolvedGroup);
-  return s.groups.some((x) => normName(x) === g);
+  const list = (Array.isArray(resolvedGroup) ? resolvedGroup : [resolvedGroup]).filter(Boolean);
+  if (s.any_group === true) return list.length > 0;
+  if (!list.length) return false;
+  const wanted = new Set(s.groups.map(normName));
+  return list.some((g) => wanted.has(normName(g)));
 }
 
 // ---------------------------------------------------------------------------
