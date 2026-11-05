@@ -27,8 +27,11 @@ function extractFn(name) {
 function extractConst(name) {
   const start = html.indexOf('const ' + name);
   assert.ok(start >= 0, 'const not found: ' + name);
-  const end = html.indexOf(';\n', start);
-  return html.slice(start, end + 1);
+  // The statement ends at the first semicolon that finishes a line. A Windows
+  // checkout has CRLF line endings, so match an optional \r before the \n.
+  const m = /;[ \t]*\r?\n/.exec(html.slice(start));
+  assert.ok(m, 'end of const not found: ' + name);
+  return html.slice(start, start + m.index + 1);
 }
 
 const src = [
