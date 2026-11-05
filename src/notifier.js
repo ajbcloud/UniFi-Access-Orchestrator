@@ -55,16 +55,7 @@ class Notifier {
       type: config.chat.type === 'teams' ? 'teams' : 'slack',
       url: config.chat.webhook_url,
     } : null;
-    const em = config.email || {};
-    this.email = (em.smtp_host && em.from && Array.isArray(em.to) && em.to.length) ? {
-      host: em.smtp_host,
-      port: em.smtp_port || 587,
-      secure: !!em.smtp_secure,
-      user: em.smtp_user || null,
-      password: em.smtp_password || null,
-      from: em.from,
-      to: em.to,
-    } : null;
+    this.email = normalizeEmail(config.email);
     this.on = Array.isArray(config.on) ? config.on : [];
     this.minIntervalMs = (config.min_interval_seconds == null ? 60 : config.min_interval_seconds) * 1000;
     const anyChannel = !!(this.url || this.chat || this.email);
@@ -158,12 +149,7 @@ class Notifier {
     } catch (err) {
       throw new Error('email channel configured but nodemailer is not installed (reinstall the app, or npm install nodemailer)');
     }
-    this._transport = nodemailer.createTransport({
-      host: this.email.host,
-      port: this.email.port,
-      secure: this.email.secure,
-      auth: this.email.user ? { user: this.email.user, pass: this.email.password } : undefined,
-    });
+    this._transport = buildTransport(nodemailer, this.email);
     return this._transport;
   }
 
@@ -176,6 +162,77 @@ class Notifier {
       types: this.on,
       stats: Object.assign({}, this.stats),
     };
+  }
+}
+
+// Email settings as stored in config.alerts.email -> the shape the sender uses,
+// or null when the channel is not fully configured (host, from, and at least
+// one recipient are all required).
+function normalizeEmail(em) {
+  em = em || {};
+  if (!(em.smtp_host && em.from && Array.isArray(em.to) && em.to.length)) return null;
+  return {
+    host: em.smtp_host,
+    port: em.smtp_port || 587,
+    secure: !!em.smtp_secure,
+    user: em.smtp_user || null,
+    password: em.smtp_password || null,
+    from: em.from,
+    to: em.to,
+  };
+}
+
+function buildTransport(nodemailer, email, extra = {}) {
+  return nodemailer.createTransport(Object.assign({
+    host: email.host,
+    port: email.port,
+    secure: email.secure,
+    auth: email.user ? { user: email.user, pass: email.password } : undefined,
+  }, extra));
+}
+
+/**
+ * Send one test message with the given email settings (same shape as
+ * config.alerts.email), independent of the master switch, the allowlist, and
+ * the de-dupe window, so an operator can prove SMTP works before a real alert
+ * ever has to. Resolves { ok: true, to } or { ok: false, error } and never
+ * throws: the caller turns it straight into an API response.
+ *   deps.mailer  test seam, an object with sendMail()
+ *   deps.timeoutMs  connect/greeting/socket timeout (default 15000)
+ */
+async function sendTestEmail(emailCfg, deps = {}) {
+  const email = normalizeEmail(emailCfg);
+  if (!email) {
+    return { ok: false, error: 'Fill in the SMTP host, the from address, and at least one recipient first.' };
+  }
+  let transport = deps.mailer;
+  if (!transport) {
+    let nodemailer;
+    try {
+      nodemailer = require('nodemailer'); // eslint-disable-line global-require
+    } catch (err) {
+      return { ok: false, error: 'nodemailer is not installed on this machine (reinstall the app, or run npm install nodemailer).' };
+    }
+    const t = deps.timeoutMs || 15000;
+    transport = buildTransport(nodemailer, email, { connectionTimeout: t, greetingTimeout: t, socketTimeout: t });
+  }
+  try {
+    await transport.sendMail({
+      from: email.from,
+      to: email.to.join(', '),
+      subject: '[test] UniFi Access Orchestrator alert email',
+      text: [
+        'This is a test message from UniFi Access Orchestrator.',
+        '',
+        'If you are reading this, email alerts are set up correctly. Low battery',
+        'warnings and other lock alerts will be sent to this address.',
+        '',
+        `sent: ${new Date().toISOString()}`,
+      ].join('\n'),
+    });
+    return { ok: true, to: email.to };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
   }
 }
 
@@ -220,3 +277,6 @@ async function defaultSender(url, body) {
 }
 
 module.exports = Notifier;
+module.exports.sendTestEmail = sendTestEmail;
+module.exports.normalizeEmail = normalizeEmail;
+module.exports.SEVERITY = SEVERITY;
