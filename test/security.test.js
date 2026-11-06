@@ -312,3 +312,26 @@ test('ReplayGuard evicts down to max and treats empty/undefined bodies consisten
   assert.strictEqual(g2.isReplay(''), true);
   assert.strictEqual(g2.isReplay(undefined), true); // hashes the same as ''
 });
+
+test('validateConfigUpdates checks the alerts block', () => {
+  const ok = validateConfigUpdates({ alerts: { enabled: true, email: { smtp_host: 'smtp.example.com', smtp_port: 587, from: 'a@example.com', to: ['b@example.com'] }, on: ['deadbolt_low_battery'] } });
+  assert.equal(ok.ok, true);
+  assert.equal(validateConfigUpdates({ alerts: 'x' }).ok, false);
+  assert.equal(validateConfigUpdates({ alerts: { enabled: 'yes' } }).ok, false);
+  assert.equal(validateConfigUpdates({ alerts: { on: 'deadbolt_low_battery' } }).ok, false);
+  assert.equal(validateConfigUpdates({ alerts: { email: { smtp_port: 99999 } } }).ok, false);
+  assert.equal(validateConfigUpdates({ alerts: { email: { to: 'a@example.com' } } }).ok, false);
+  const bad = validateConfigUpdates({ alerts: { email: { to: ['a@example.com', 'not-an-address'] } } });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /not-an-address/);
+  assert.equal(validateConfigUpdates({ alerts: { email: { from: 'Alerts <alerts@example.com>' } } }).ok, true);
+});
+
+test('validateConfigUpdates checks a lock low_battery_pct', () => {
+  const mk = (v) => ({ devices: { zwave: { locks: { front_door: { low_battery_pct: v } } } } });
+  assert.equal(validateConfigUpdates(mk(15)).ok, true);
+  assert.equal(validateConfigUpdates(mk(0)).ok, false);
+  assert.equal(validateConfigUpdates(mk(101)).ok, false);
+  assert.equal(validateConfigUpdates(mk(15.5)).ok, false);
+  assert.equal(validateConfigUpdates(mk('15')).ok, false);
+});

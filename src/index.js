@@ -62,6 +62,7 @@ const {
   validateConfigUpdates,
   clearIdentityOnPathChange,
   ReplayGuard,
+  REDACTION_MARKER,
 } = require('./security');
 const APP_VERSION = require('../package.json').version;
 const { UpdateChecker, HeadlessInstaller } = require('./update-checker');
@@ -3409,6 +3410,39 @@ app.get('/api/security/status', (req, res) => {
   });
 });
 
+// Send one test email with the settings currently in the Alerts panel, saved
+// or not, so SMTP can be proven before a real alert has to rely on it. Behind
+// requireAdminApiKey like every /api route. The stored SMTP password is used
+// whenever the form leaves it blank or still shows the redaction marker (the
+// UI never receives the real one). Bypasses alerts.enabled, the allowlist and
+// the de-dupe window by design: this is a deliberate operator action.
+app.post('/api/alerts/test-email', async (req, res) => {
+  const body = (req.body && req.body.email) || {};
+  const stored = (config.alerts && config.alerts.email) || {};
+  const to = Array.isArray(body.to) ? body.to : stored.to;
+  const pw = body.smtp_password;
+  const emailCfg = {
+    smtp_host: typeof body.smtp_host === 'string' ? body.smtp_host.trim() : stored.smtp_host,
+    smtp_port: body.smtp_port != null && body.smtp_port !== '' ? Number(body.smtp_port) : stored.smtp_port,
+    smtp_secure: body.smtp_secure != null ? !!body.smtp_secure : stored.smtp_secure,
+    smtp_user: typeof body.smtp_user === 'string' ? body.smtp_user.trim() : stored.smtp_user,
+    smtp_password: (typeof pw === 'string' && pw !== '' && pw !== REDACTION_MARKER) ? pw : stored.smtp_password,
+    from: typeof body.from === 'string' ? body.from.trim() : stored.from,
+    to,
+  };
+  if (!Notifier.normalizeEmail(emailCfg)) {
+    return res.status(400).json({ error: 'Fill in the SMTP host, the from address, and at least one recipient first.' });
+  }
+  const result = await Notifier.sendTestEmail(emailCfg);
+  if (result.ok) {
+    logger.info(`Test alert email sent to ${result.to.join(', ')}`);
+    safeAudit({ actor: 'API', action: 'alerts.test_email', target: result.to.join(', ') });
+    return res.json({ status: 'sent', to: result.to });
+  }
+  logger.warn(`Test alert email failed: ${result.error}`);
+  return res.status(502).json({ error: result.error });
+});
+
 // Set the admin PIN (first time) or change it (requires the current PIN).
 app.post('/api/security/admin-pin', (req, res) => {
   const b = req.body || {};
@@ -5154,6 +5188,18 @@ function isEventSourceDegraded() {
 //   - Config Sync background job (when config.json changed on disk)
 // Broadcasts a `system.auto_reload` SSE event so the dashboard can
 // auto-refresh in place without a manual Refresh click.
+// Push each lock's configured low_battery_pct into its running driver. The
+// drivers are deliberately not rebuilt on a config reload (that would
+// reconnect the Z-Wave stick), so without this a threshold edit would only
+// take effect after an app restart.
+function applyLockBatteryThresholds() {
+  const locks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  for (const [lockId, driver] of lockDrivers) {
+    const pct = locks[lockId] && locks[lockId].low_battery_pct;
+    if (pct != null && typeof driver.setLowBatteryPct === 'function') driver.setLowBatteryPct(pct);
+  }
+}
+
 async function reloadOrchestrator({
   reason,
   actor = 'auto-sync',
@@ -5167,6 +5213,7 @@ async function reloadOrchestrator({
   try {
     const newConfig = loadConfig();
     const result = await reloadServices(newConfig);
+    applyLockBatteryThresholds();
     // reloadServices reassigns the global config; make sure a reload can never
     // leave the admin key empty (auth disabled) or auto-lock tokenless.
     ensureAdminApiKey();

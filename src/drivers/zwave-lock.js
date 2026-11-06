@@ -447,6 +447,20 @@ class ZwaveLock extends LockDriver {
     }
   }
 
+  /**
+   * Change the low-battery threshold on a running driver (the Settings alerts
+   * panel edits it without a restart). Re-evaluates the last known level, so
+   * raising the threshold above the current battery raises the alert at once
+   * and lowering it clears the low flag. A no-op when the value is unchanged
+   * or not a sane percentage.
+   */
+  setLowBatteryPct(pct) {
+    const n = Number(pct);
+    if (!Number.isFinite(n) || n < 1 || n > 100 || n === this.lowBatteryPct) return;
+    this.lowBatteryPct = n;
+    if (typeof this._state.battery === 'number') this._setBattery(this._state.battery);
+  }
+
   _setBattery(level) {
     this._state.battery = level;
     this._state.batteryLow = level <= this.lowBatteryPct;

@@ -406,6 +406,26 @@ test('ZwaveLock: low battery alert is edge triggered and re-arms on recovery', a
   await lock.shutdown();
 });
 
+test('ZwaveLock: setLowBatteryPct applies live and re-evaluates the last reading', async () => {
+  const { node, lock } = await makeZwave({ current: 0xff }, { low_battery_pct: 25 });
+  const alerts = [];
+  lock.on('alert', (a) => alerts.push(a));
+  const report = (level) => node.emit('value updated', node, { commandClassName: 'Battery', property: 'level', newValue: level });
+  report(20); // below 25: alert
+  assert.equal(alerts.filter((a) => a.type === 'deadbolt_low_battery').length, 1);
+  lock.setLowBatteryPct(15); // 20% is fine under a 15% threshold: low flag clears, re-armed
+  assert.equal(lock.snapshot().batteryLow, false);
+  report(14); // crosses the new threshold: alert again
+  assert.equal(alerts.filter((a) => a.type === 'deadbolt_low_battery').length, 2);
+  assert.match(alerts[alerts.length - 1].detail, /threshold 15%/);
+  lock.setLowBatteryPct(15); // unchanged: no extra alert
+  lock.setLowBatteryPct('nope'); // junk ignored
+  lock.setLowBatteryPct(0);
+  assert.equal(lock.lowBatteryPct, 15);
+  assert.equal(alerts.filter((a) => a.type === 'deadbolt_low_battery').length, 2);
+  await lock.shutdown();
+});
+
 test('ZwaveLock: spontaneous jam emits deadbolt_jammed once per transition', async () => {
   const { node, lock } = await makeZwave({ current: 0xff });
   const alerts = [];

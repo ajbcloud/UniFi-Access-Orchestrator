@@ -2026,6 +2026,30 @@ button[data-df-save]:disabled { background: var(--neon-dim); border-color: var(-
           <div class="sect"><span class="lbl">&raquo; EVENT SOURCE</span><span class="rule"></span></div>
           <div class="panel set-panel" style="margin-bottom:22px" id="settingsEventSource"><span class="loading"><span class="loading-spinner" aria-hidden="true"></span>Loading</span></div>
 
+          <div class="sect"><span class="lbl">&raquo; ALERTS</span><span class="rule"></span></div>
+          <div class="panel set-panel" style="margin-bottom:22px" id="settingsAlerts">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><span style="font-size:12.5px;color:var(--text-primary)">send alerts</span><label class="pill-switch"><input type="checkbox" id="alertsEnabled"><span class="pill-knob"></span></label></div>
+            <div class="set-field"><label>send alerts to (separate several with commas)</label><input type="text" id="alertsTo" placeholder="you@example.com, team@example.com" autocomplete="off"></div>
+            <div class="set-field"><label>low battery warning at (% left)</label><input type="number" id="alertsLowBattery" min="1" max="100" placeholder="25"><div class="cmt" style="border:none;padding:0;margin-top:6px">// applies to every paired deadbolt; one email when it drops to this level</div></div>
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+              <div class="set-field" style="margin-bottom:0"><label>smtp host</label><input type="text" id="alertsSmtpHost" placeholder="smtp.example.com" autocomplete="off"></div>
+              <div class="set-field" style="margin-bottom:0"><label>port</label><input type="number" id="alertsSmtpPort" min="1" max="65535" placeholder="587"></div>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0"><span style="font-size:12.5px;color:var(--text-primary)">use TLS from the start (port 465)</span><label class="pill-switch"><input type="checkbox" id="alertsSmtpSecure"><span class="pill-knob"></span></label></div>
+            <div class="set-field"><label>smtp username</label><input type="text" id="alertsSmtpUser" placeholder="alerts@example.com" autocomplete="off"></div>
+            <div class="set-field"><label>smtp password</label><input type="password" id="alertsSmtpPassword" autocomplete="new-password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;"><div class="cmt" style="border:none;padding:0;margin-top:6px" id="alertsPasswordHint">// masked for security, re-enter to change</div></div>
+            <div class="set-field"><label>from address</label><input type="text" id="alertsFrom" placeholder="alerts@example.com" autocomplete="off"></div>
+            <details style="margin-bottom:14px">
+              <summary style="cursor:pointer;font-size:12px;color:var(--text-secondary)">Choose which alerts to send</summary>
+              <div id="alertsTypes" style="margin-top:10px"></div>
+            </details>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button type="button" class="btn btn-sm btn-secondary" id="alertsTestBtn" onclick="sendTestAlertEmail()">Send Test Email</button>
+              <span id="alertsTestResult" style="font-size:11.5px;color:var(--text-muted)"></span>
+            </div>
+            <div class="cmt" style="border:none;padding:0;margin-top:12px">// the test uses the values above, saved or not. Use the Save button at the top to keep them.</div>
+          </div>
+
           <div class="sect"><span class="lbl">&raquo; BACKUP &amp; RESTORE</span><span class="rule"></span></div>
           <div class="panel set-panel">
             <div class="cmt" style="border:none;padding:0;margin-bottom:12px">// auto-backed-up on every save; create, download, or restore below</div>
@@ -3609,6 +3633,168 @@ function buildEventSourceEditor(es) {
   `;
 }
 
+// ---- Alerts panel (Settings) ----------------------------------------------
+// Alert types the panel can switch on or off, grouped by the severity the
+// notifier ships with each one. A test keeps this list in step with
+// src/notifier.js SEVERITY so a new alert type cannot be left unreachable.
+const ALERT_TYPE_OPTIONS = [
+  { type: 'deadbolt_low_battery', label: 'Deadbolt battery is low', severity: 'warning' },
+  { type: 'deadbolt_retract_failed', label: 'Retract failed (someone may be locked out)', severity: 'critical' },
+  { type: 'deadbolt_lock_failed', label: 'Lock command failed', severity: 'critical' },
+  { type: 'deadbolt_jammed', label: 'Deadbolt jammed', severity: 'critical' },
+  { type: 'deadbolt_no_transport', label: 'Lock controller (Z-Wave stick) not available', severity: 'critical' },
+  { type: 'deadbolt_lock_offline', label: 'Deadbolt went offline', severity: 'warning' },
+  { type: 'controller_disconnected', label: 'UniFi controller disconnected', severity: 'warning' },
+  { type: 'cascade_failed', label: 'Cascade unlock failed', severity: 'warning' },
+  { type: 'missed_triggers', label: 'Missed door triggers after an outage', severity: 'warning' },
+  { type: 'deadbolt_lock_online', label: 'Deadbolt back online', severity: 'info' },
+  { type: 'controller_reconnected', label: 'UniFi controller reconnected', severity: 'info' },
+];
+const ALERT_DEFAULT_LOW_BATTERY_PCT = 25;
+
+function parseAlertRecipients(text) {
+  return String(text || '').split(/[,;\s]+/).map((a) => a.trim()).filter(Boolean);
+}
+
+// Alert type checkboxes. An empty stored allowlist means "send everything".
+function buildAlertTypeChecks(onList) {
+  const all = !Array.isArray(onList) || onList.length === 0;
+  return ALERT_TYPE_OPTIONS.map((o) => {
+    const checked = all || onList.includes(o.type);
+    return '<label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:6px;color:var(--text-primary)">'
+      + '<input type="checkbox" class="alertTypeCheck" value="' + escapeHtml(o.type) + '"' + (checked ? ' checked' : '') + '>'
+      + '<span>' + escapeHtml(o.label) + '</span>'
+      + '<span style="margin-left:auto;font-size:10.5px;color:var(--text-muted)">' + escapeHtml(o.severity) + '</span></label>';
+  }).join('');
+}
+
+// Pure: the form values -> a human-readable problem, or null when fine.
+function validateAlertsForm(f) {
+  f = f || {};
+  // An empty allowlist means "send everything", so unticking every type would
+  // do the opposite of what it looks like. Refuse it.
+  if (f.selectedTypes && f.selectedTypes.length === 0) return 'Pick at least one alert type, or turn alerts off.';
+  if (f.lowBatteryPct !== '' && f.lowBatteryPct != null) {
+    const n = Number(f.lowBatteryPct);
+    if (!(Number.isInteger(n) && n >= 1 && n <= 100)) return 'The low battery level must be a whole number from 1 to 100.';
+  }
+  // No email fields at all is valid (alerts may go to a webhook or chat only).
+  const anyEmail = !!((f.host || '').trim() || (f.from || '').trim() || (f.to || []).length);
+  if (!anyEmail) return null;
+  if (!(f.host || '').trim()) return 'Enter the SMTP host.';
+  if (f.port !== '' && f.port != null && !(Number.isInteger(Number(f.port)) && Number(f.port) >= 1 && Number(f.port) <= 65535)) return 'The SMTP port must be a number from 1 to 65535.';
+  if (!(f.from || '').trim()) return 'Enter the from address.';
+  if (!(f.to || []).length) return 'Enter at least one address to send alerts to.';
+  const bad = (f.to || []).find((a) => !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(a));
+  if (bad) return 'This does not look like an email address: ' + bad;
+  return null;
+}
+
+// Pure: the form values -> the PUT /api/config body fragment. The PUT deep
+// merges, so a blank password is simply left out and the stored one is kept.
+function buildAlertsConfigBody(f) {
+  f = f || {};
+  const email = {
+    smtp_host: (f.host || '').trim(),
+    smtp_port: f.port === '' || f.port == null ? 587 : parseInt(f.port, 10),
+    smtp_secure: !!f.secure,
+    smtp_user: (f.user || '').trim(),
+    from: (f.from || '').trim(),
+    to: f.to || [],
+  };
+  if (f.password) email.smtp_password = f.password;
+  const all = !f.selectedTypes || f.selectedTypes.length === ALERT_TYPE_OPTIONS.length;
+  return {
+    enabled: !!f.enabled,
+    email,
+    on: all ? [] : f.selectedTypes.slice(),
+  };
+}
+
+function readAlertsForm() {
+  const val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+  const chk = (id) => { const el = document.getElementById(id); return !!(el && el.checked); };
+  return {
+    enabled: chk('alertsEnabled'),
+    to: parseAlertRecipients(val('alertsTo')),
+    host: val('alertsSmtpHost'),
+    port: val('alertsSmtpPort'),
+    secure: chk('alertsSmtpSecure'),
+    user: val('alertsSmtpUser'),
+    password: val('alertsSmtpPassword'),
+    from: val('alertsFrom'),
+    lowBatteryPct: val('alertsLowBattery'),
+    selectedTypes: Array.from(document.querySelectorAll('#alertsTypes .alertTypeCheck'))
+      .filter((c) => c.checked).map((c) => c.value),
+  };
+}
+
+// The threshold lives on each lock. Show the first paired lock's value; saving
+// writes the one number to every lock so they stay in step.
+let alertsLoadedLowPct = ALERT_DEFAULT_LOW_BATTERY_PCT;
+function lockLowBatteryPct(cfg) {
+  const locks = (cfg && cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks) || {};
+  for (const id of Object.keys(locks)) {
+    const v = locks[id] && locks[id].low_battery_pct;
+    if (Number.isInteger(v)) return v;
+  }
+  return ALERT_DEFAULT_LOW_BATTERY_PCT;
+}
+function buildLowBatteryDevicesPatch(cfg, pct) {
+  const locks = (cfg && cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks) || {};
+  const out = {};
+  for (const id of Object.keys(locks)) out[id] = { low_battery_pct: pct };
+  return Object.keys(out).length ? { zwave: { locks: out } } : null;
+}
+
+function populateAlertsPanel(cfg) {
+  const a = (cfg && cfg.alerts) || {};
+  const em = a.email || {};
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v == null ? '' : v; };
+  const setChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+  setChk('alertsEnabled', a.enabled);
+  set('alertsTo', (em.to || []).join(', '));
+  set('alertsSmtpHost', em.smtp_host || '');
+  set('alertsSmtpPort', em.smtp_port || 587);
+  setChk('alertsSmtpSecure', em.smtp_secure);
+  set('alertsSmtpUser', em.smtp_user || '');
+  set('alertsSmtpPassword', '');
+  set('alertsFrom', em.from || '');
+  alertsLoadedLowPct = lockLowBatteryPct(cfg);
+  set('alertsLowBattery', alertsLoadedLowPct);
+  const hint = document.getElementById('alertsPasswordHint');
+  if (hint) hint.textContent = em.smtp_password ? '// a password is saved; leave blank to keep it, or type a new one' : '// no password saved yet';
+  const types = document.getElementById('alertsTypes');
+  if (types) types.innerHTML = buildAlertTypeChecks(a.on);
+  const res = document.getElementById('alertsTestResult'); if (res) res.textContent = '';
+}
+
+async function sendTestAlertEmail() {
+  const f = readAlertsForm();
+  const resEl = document.getElementById('alertsTestResult');
+  const btn = document.getElementById('alertsTestBtn');
+  const problem = validateAlertsForm(Object.assign({}, f, { selectedTypes: null }));
+  if (problem || !(f.host || '').trim()) {
+    const msg = problem || 'Enter the SMTP host, the from address, and an address to send to first.';
+    if (resEl) { resEl.style.color = 'var(--red)'; resEl.textContent = msg; }
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (resEl) { resEl.style.color = 'var(--text-muted)'; resEl.textContent = 'Sending...'; }
+  try {
+    const body = buildAlertsConfigBody(Object.assign({}, f, { selectedTypes: null }));
+    const r = await api('POST', '/api/alerts/test-email', { email: body.email });
+    if (r && r.error) throw new Error(r.error);
+    if (resEl) { resEl.style.color = 'var(--green)'; resEl.textContent = 'Sent to ' + ((r && r.to) || f.to).join(', ') + '. Check the inbox (and spam).'; }
+    toast('Test email sent', 'success');
+  } catch (e) {
+    if (resEl) { resEl.style.color = 'var(--red)'; resEl.textContent = 'Failed: ' + e.message; }
+    toast('Test email failed', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function loadSettings() {
   try {
     const cfg = await api('GET', '/api/config');
@@ -3628,6 +3814,7 @@ async function loadSettings() {
       esEl.innerHTML = buildEventSourceEditor(cfg.event_source || {});
       armDirtySave('#settingsEventSource', 'button[onclick^="saveEventSource"]');
     }
+    populateAlertsPanel(cfg);
     // Security panel is driven by its own status endpoint and its own Save
     // button, not the connection config.
     await populateSecurityPanel();
@@ -3716,6 +3903,21 @@ async function saveSettings() {
       enabled: document.getElementById('settingAutoSyncEnabled').checked,
       interval_seconds: Math.min(600, Math.max(5, intervalRaw)),
     };
+
+    // Alerts: validated before anything is written, so a typo in an address
+    // cannot half-save the rest of the page.
+    const alertsForm = readAlertsForm();
+    const alertsProblem = validateAlertsForm(alertsForm);
+    if (alertsProblem) { toast(alertsProblem, 'error'); btn.disabled = false; return; }
+    body.alerts = buildAlertsConfigBody(alertsForm);
+    // Only touch the locks when the threshold actually changed (a Z-Wave config
+    // write is refused while a pairing session runs).
+    const newPct = parseInt(alertsForm.lowBatteryPct, 10);
+    if (Number.isInteger(newPct) && newPct !== alertsLoadedLowPct) {
+      const cfgNow = await api('GET', '/api/config');
+      const patch = buildLowBatteryDevicesPatch(cfgNow, newPct);
+      if (patch) body.devices = patch;
+    }
 
     await api('PUT', '/api/config', body);
     toast('Settings saved. Reloading service...', 'success');
