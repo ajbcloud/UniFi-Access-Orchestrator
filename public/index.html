@@ -5094,19 +5094,42 @@ function buildRetractEdgeRow(door, tIdx, edge, eIdx, locks) {
 // and delay. `includeSelf` adds the trigger door itself to the candidates (a
 // doorbell buzzing open the door it is on); entry leaves it out since badging
 // already unlocks that door. Pure builder.
-// The unlock actions of a trigger, always as an array (normalizes a legacy
-// single object in place so later edits work on the array).
+// Split unlock actions into one action per door, the shape the editor builds.
+// A migrated legacy rule (or a hand-written config) can carry several doors in
+// one action; each door becomes its own action with the same debounce and
+// delay (and its own door_ids entry), so every door gets a visible chip and
+// none is hidden behind doors[0]. The runtime fires each action on the same
+// event with the same timing, so the split does not change what unlocks.
+// Pure: returns a new array and leaves one-door actions untouched.
+function _splitUnlockActions(list) {
+  const out = [];
+  for (const u of (Array.isArray(list) ? list : (list ? [list] : []))) {
+    if (!u || !Array.isArray(u.doors) || u.doors.length <= 1) { out.push(u); continue; }
+    u.doors.forEach((d, i) => {
+      const one = Object.assign({}, u, { doors: [d] });
+      if (Array.isArray(u.door_ids)) one.door_ids = [u.door_ids[i] == null ? null : u.door_ids[i]];
+      out.push(one);
+    });
+  }
+  return out;
+}
+
+// The unlock actions of a trigger, always as a one-door-per-action array
+// (normalizes a legacy single object or multi-door action in place so later
+// edits and the render indexes line up).
 function _unlockList(trig) {
   if (!trig.actions) trig.actions = { unlock: [], retract: [] };
   const u = trig.actions.unlock;
-  if (!Array.isArray(u)) trig.actions.unlock = u ? [u] : [];
+  const needsSplit = !Array.isArray(u) || u.some((a) => a && Array.isArray(a.doors) && a.doors.length > 1);
+  if (needsSplit) trig.actions.unlock = _splitUnlockActions(u);
   return trig.actions.unlock;
 }
 
 // One "Unlock a door" action card: a single target door with its own debounce
 // and delay. A trigger stacks one card per door (added via the + add action
 // picker). Renders nothing for an empty action (a door is always chosen on add).
-// Pure builder.
+// Callers pass actions through _splitUnlockActions first, so doors[0] is the
+// action's only door. Pure builder.
 function buildUnlockAction(door, tIdx, unlock, aIdx) {
   if (!unlock || !Array.isArray(unlock.doors) || !unlock.doors.length) return '';
   const cssD = cssId(door);
@@ -5136,7 +5159,9 @@ function buildTriggerBlock(door, tIdx, trigger, data, hasSameTypeSiblings) {
   const sfx2 = `${cssD}_${tIdx}`;
   const actions = trigger.actions || {};
   const edges = Array.isArray(actions.retract) ? actions.retract : [];
-  const unlockActions = Array.isArray(actions.unlock) ? actions.unlock : (actions.unlock ? [actions.unlock] : []);
+  // One door per action, matching _unlockList so the dfDebounce_/dfDelay_
+  // indexes read back by collectDoorFlowCard line up with these rows.
+  const unlockActions = _splitUnlockActions(actions.unlock);
   const usableLocks = locks.filter((l) => l.paired || l.bound);
   const freeLocks = usableLocks.filter((l) => !edges.some((e) => e && e.lock_id === l.lock_id));
 
@@ -5476,7 +5501,8 @@ function collectDoorFlowCard(door) {
     });
     // unlock actions (each card is one door with its own debounce/delay). The
     // target door is fixed when the action is added, so collect only reads the
-    // debounce/delay inputs and keeps the stored door.
+    // debounce/delay inputs and keeps the stored door. _unlockList has already
+    // split any multi-door action, so every stored door has its own row.
     const uList = _unlockList(trig);
     uList.forEach((u, aIdx) => {
       const debEl = document.getElementById(`dfDebounce_${cssD}_${tIdx}_${aIdx}`);
@@ -5484,7 +5510,9 @@ function collectDoorFlowCard(door) {
       const deb = parseInt(debEl.value, 10);
       const delay = parseInt(document.getElementById(`dfDelay_${cssD}_${tIdx}_${aIdx}`)?.value, 10);
       const doors = Array.isArray(u.doors) ? u.doors : [];
-      uList[aIdx] = { doors, debounce_seconds: Number.isFinite(deb) ? deb : 8, delay_seconds: Number.isFinite(delay) ? delay : 0 };
+      const next = { doors, debounce_seconds: Number.isFinite(deb) ? deb : 8, delay_seconds: Number.isFinite(delay) ? delay : 0 };
+      if (Array.isArray(u.door_ids)) next.door_ids = u.door_ids;
+      uList[aIdx] = next;
     });
     // doorbell reason code
     if (trig.type === 'doorbell') {
