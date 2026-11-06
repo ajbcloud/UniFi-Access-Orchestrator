@@ -5281,7 +5281,11 @@ async function reloadServices(newConfig, { force = false } = {}) {
   }
 
   resolver = new Resolver(newConfig, unifiClient);
-  rulesEngine = new RulesEngine(newConfig, unifiClient, resolver);
+  // Same projection as startup and the full reload: the engine reads
+  // unlock_rules / doorbell_rules, which exist only as a projection of
+  // door_flows. Passing the raw config here left the Test Tools preflight and
+  // simulator with zero rules after any save or Reload Service.
+  rulesEngine = new RulesEngine(rulesEngineConfig(newConfig), unifiClient, resolver);
   patchEngineForBroadcast(rulesEngine);
   const alertsChanged = JSON.stringify(config.alerts || {}) !== JSON.stringify(newConfig.alerts || {});
   config = newConfig;
