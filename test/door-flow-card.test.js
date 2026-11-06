@@ -31,7 +31,7 @@ function load(groupNames) {
   const src = 'function _getDiscoveredGroupNames() { return ' + JSON.stringify(groupNames || []) + '; }\n'
     + extractFn('escapeHtml') + '\n' + extractFn('cssId') + '\n' + extractFn('_dfGroups')
     + '\n' + extractFn('_scopeToValue')
-    + '\n' + extractFn('buildRetractEdgeRow') + '\n' + extractFn('buildUnlockAction')
+    + '\n' + extractFn('buildRetractEdgeRow') + '\n' + extractFn('_splitUnlockActions') + '\n' + extractFn('buildUnlockAction')
     + '\n' + extractFn('_doorbellViewers') + '\n' + extractFn('_formatPhone') + '\n' + extractFn('_viewerKey') + '\n' + extractFn('buildTriggerBlock') + '\n' + extractFn('buildDoorFlowCard');
   return new Function(src + '; return buildDoorFlowCard;')();
 }
@@ -284,4 +284,84 @@ test('a viewer picked on two tenants\' triggers shows who it is shared with', ()
   const out = load(['Rosemurgy Properties', 'Lane & Ducheine'])('Front Door', f, data);
   assert.match(out, /Rosemurgy Viewer <span[^>]*>\(also Lane &amp; Ducheine\)<\/span>/);
   assert.match(out, /Rosemurgy Viewer <span[^>]*>\(also Rosemurgy Properties\)<\/span>/);
+});
+
+// A migrated legacy unlock_rules / doorbell_rules entry keeps every door in ONE
+// action ({doors: [a, b]}), while the editor builds one door per action. The
+// card used to render only doors[0], hiding the rest even though the runtime
+// unlocked all of them. Each door must get its own chip, remove button and
+// timing inputs, and collect/remove must work per door without dropping any.
+test('a migrated multi-door unlock action shows, saves and removes every door', () => {
+  const doorFlows = require('../src/door-flows');
+  const migrated = doorFlows.migrateToTriggers({
+    door_flows: {},
+    unlock_rules: { rules: [{ group: 'Staff', trigger: 'Main Entrance', unlock: ['Lobby Elevator', 'Suite 100'], delay: 3 }], default_action: { unlock: [] } },
+  }).flows;
+  const mf = migrated['Main Entrance'];
+  const raw = doorFlows.unlockActionsOf(mf.triggers[0]);
+  assert.equal(raw.length, 1, 'precondition: migration stores both doors in one action');
+  assert.deepEqual(raw[0].doors, ['Lobby Elevator', 'Suite 100']);
+
+  const data = {
+    doors: [
+      { name: 'Main Entrance', id: 'dm', discovered: true },
+      { name: 'Lobby Elevator', id: 'de', discovered: true },
+      { name: 'Suite 100', id: 'ds', discovered: true },
+    ],
+    locks: [],
+  };
+
+  // Render: one chip + one remove button + one timing pair per door.
+  const out = load(['Staff'])('Main Entrance', JSON.parse(JSON.stringify(mf)), data);
+  assert.match(out, /Lobby Elevator <button[^>]*removeUnlockAction\(&quot;Main Entrance&quot;, 0, 0\)/, 'first door has its own chip');
+  assert.match(out, /Suite 100 <button[^>]*removeUnlockAction\(&quot;Main Entrance&quot;, 0, 1\)/, 'second door is no longer hidden');
+  assert.match(out, /id="dfDebounce_[^"]+_0_0"/);
+  assert.match(out, /id="dfDebounce_[^"]+_0_1"/);
+  assert.match(out, /id="dfDelay_[^"]+_0_1" value="3"/, 'the split door keeps the migrated delay');
+  assert.match(out, /every other door already added/, 'neither door is offered again in the add picker');
+
+  // Collect + remove against the REAL editor functions with a stub DOM.
+  const harness = (flow, inputs) => {
+    const src = extractFn('cssId') + '\n' + extractFn('_splitUnlockActions') + '\n' + extractFn('_unlockList')
+      + '\n' + extractFn('_triggersOf') + '\n' + extractFn('collectDoorFlowCard') + '\n' + extractFn('removeUnlockAction')
+      + '\n; return { cssId, collectDoorFlowCard, removeUnlockAction };';
+    const doorFlowsData = { flows: { 'Main Entrance': flow }, viewers: [] };
+    const document = { getElementById: (id) => (id in inputs ? { value: inputs[id] } : null) };
+    const fns = new Function('doorFlowsData', 'document', 'repaintDoorFlowCard', '_valueToScope', src)(
+      doorFlowsData, document, () => {}, () => flow.triggers[0].scope);
+    return fns;
+  };
+
+  // Saving the card (collect) persists BOTH doors, each with its own edited timing.
+  const f1 = JSON.parse(JSON.stringify(mf));
+  const c = harness(f1, {}).cssId('Main Entrance');
+  const inputs = {};
+  inputs[`dfDebounce_${c}_0_0`] = '5'; inputs[`dfDelay_${c}_0_0`] = '3';
+  inputs[`dfDebounce_${c}_0_1`] = '9'; inputs[`dfDelay_${c}_0_1`] = '0';
+  harness(f1, inputs).collectDoorFlowCard('Main Entrance');
+  const saved = f1.triggers[0].actions.unlock;
+  assert.deepEqual(saved.map((u) => u.doors), [['Lobby Elevator'], ['Suite 100']], 'no door dropped on save');
+  assert.deepEqual(saved.map((u) => [u.debounce_seconds, u.delay_seconds]), [[5, 3], [9, 0]], 'each door saves its own timing');
+  const rules = doorFlows.unlockRulesFromFlows({ 'Main Entrance': f1 });
+  assert.deepEqual(rules.map((r) => r.unlock).flat().sort(), ['Lobby Elevator', 'Suite 100'], 'the runtime still unlocks both doors');
+
+  // The remove chip on the second door removes only that door.
+  const f2 = JSON.parse(JSON.stringify(mf));
+  const in2 = {};
+  in2[`dfDebounce_${c}_0_0`] = '0'; in2[`dfDelay_${c}_0_0`] = '3';
+  in2[`dfDebounce_${c}_0_1`] = '0'; in2[`dfDelay_${c}_0_1`] = '3';
+  harness(f2, in2).removeUnlockAction('Main Entrance', 0, 1);
+  assert.deepEqual(f2.triggers[0].actions.unlock.map((u) => u.doors), [['Lobby Elevator']], 'only the clicked door is removed');
+});
+
+test('splitting a multi-door action keeps door_ids aligned with their doors', () => {
+  const split = new Function(extractFn('_splitUnlockActions') + '; return _splitUnlockActions;')();
+  const out = split([{ doors: ['A', 'B'], door_ids: ['ia', null], debounce_seconds: 4, delay_seconds: 2 }, { doors: ['C'], debounce_seconds: 8, delay_seconds: 0 }]);
+  assert.deepEqual(out, [
+    { doors: ['A'], door_ids: ['ia'], debounce_seconds: 4, delay_seconds: 2 },
+    { doors: ['B'], door_ids: [null], debounce_seconds: 4, delay_seconds: 2 },
+    { doors: ['C'], debounce_seconds: 8, delay_seconds: 0 },
+  ]);
+  assert.deepEqual(split({ doors: ['X'] }), [{ doors: ['X'] }], 'a legacy single object reads as one action');
+  assert.deepEqual(split(null), []);
 });
