@@ -43,11 +43,13 @@ function markerKey(lockId, slot) {
  * alerted:  Set of markerKeys already alerted (mutated: dropped when a marker
  *           vanishes, so a later clear of the same slot can alert again)
  *
- * Returns { dueLockIds: string[], toAlert: [{ lock_id, slot, marker, age_ms }] }.
+ * Returns { due: [{ lock_id, slots: string[] }], toAlert: [{ lock_id, slot, marker, age_ms }] }.
+ * Only the due slots are listed, so the caller retries exactly the slots
+ * whose schedule just advanced and a lock's other markers keep their backoff.
  */
 function planPendingClearSweep(locks, schedule, alerted, now) {
   const live = new Set();
-  const due = new Set();
+  const due = new Map(); // lockId -> slots due now
   const toAlert = [];
   for (const [lockId, lock] of Object.entries(locks || {})) {
     const pend = (lock && lock.pending_clears) || {};
@@ -62,7 +64,8 @@ function planPendingClearSweep(locks, schedule, alerted, now) {
         schedule.set(key, s);
       }
       if (now >= s.nextAt) {
-        due.add(lockId);
+        if (!due.has(lockId)) due.set(lockId, []);
+        due.get(lockId).push(String(slot));
         s.attempts += 1;
         s.nextAt = now + retryDelayMs(s.attempts + 1);
       }
@@ -76,7 +79,22 @@ function planPendingClearSweep(locks, schedule, alerted, now) {
   }
   for (const key of [...schedule.keys()]) if (!live.has(key)) schedule.delete(key);
   for (const key of [...alerted]) if (!live.has(key)) alerted.delete(key);
-  return { dueLockIds: [...due], toAlert };
+  return { due: [...due].map(([lockId, slots]) => ({ lock_id: lockId, slots })), toAlert };
+}
+
+/**
+ * One alert body for every stale removal found in a sweep. The notifier
+ * de-dupes by alert type, so separate alerts for a user removed from several
+ * locks would deliver only the first; one combined alert names them all.
+ */
+function describeStaleClears(toAlert, labelFor) {
+  const parts = (toAlert || []).map((a) => {
+    const who = (a.marker && (a.marker.name || a.marker.user_id)) || `slot ${a.slot}`;
+    return `${labelFor(a.lock_id)} (${who}, ${Math.round(a.age_ms / 60000)} min)`;
+  });
+  if (!parts.length) return '';
+  return `${parts.length} keypad code removal(s) not confirmed by the lock and may still open it: ${parts.join('; ')}. `
+    + 'Retrying automatically; check that each lock is online and in range of the Z-Wave stick';
 }
 
 /**
@@ -98,5 +116,6 @@ module.exports = {
   retryDelayMs,
   markerKey,
   planPendingClearSweep,
+  describeStaleClears,
   slotsClosedByLockReport,
 };

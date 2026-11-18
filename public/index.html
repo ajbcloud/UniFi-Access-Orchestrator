@@ -3643,6 +3643,8 @@ const ALERT_TYPE_OPTIONS = [
   { type: 'deadbolt_lock_failed', label: 'Lock command failed', severity: 'critical' },
   { type: 'deadbolt_jammed', label: 'Deadbolt jammed', severity: 'critical' },
   { type: 'deadbolt_no_transport', label: 'Lock controller (Z-Wave stick) not available', severity: 'critical' },
+  { type: 'revoked_code_used', label: 'A removed keypad code was used at a lock', severity: 'critical' },
+  { type: 'keypad_clear_unconfirmed', label: 'Keypad code removal not confirmed by the lock', severity: 'critical' },
   { type: 'deadbolt_lock_offline', label: 'Deadbolt went offline', severity: 'warning' },
   { type: 'controller_disconnected', label: 'UniFi controller disconnected', severity: 'warning' },
   { type: 'cascade_failed', label: 'Cascade unlock failed', severity: 'warning' },

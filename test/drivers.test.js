@@ -783,6 +783,39 @@ test('ZwaveLock: a deletion for another slot does not confirm this clear', async
   await lock.shutdown();
 });
 
+test('ZwaveLock: overlapping clears are serialized, so one slotless deletion cannot confirm both', async () => {
+  // Review finding: two concurrent clears both accepted a single slotless
+  // "user code deleted" and reported confirmed while one slot stayed enabled.
+  const node = new MockNode({ userCodes: { failGet: true } });
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let announced = false;
+  node.commandClasses['User Code'].clear = async (slot) => {
+    inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+    node.userCodeClearCalls.push(slot);
+    // Only the first clear is ever announced, and without a slot number.
+    if (!announced) {
+      announced = true;
+      setImmediate(() => node.emit('notification', node, 0x71, { type: 6, event: 0x0d }));
+    }
+    await new Promise((r) => setTimeout(r, 5));
+    inFlight--;
+  };
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const [a, b] = await Promise.all([
+    lock.clearUserCode(3, { graceMs: 100 }),
+    lock.clearUserCode(4, { graceMs: 100 }),
+  ]);
+  assert.equal(maxInFlight, 1, 'the second clear waits for the first');
+  assert.equal(a.confirmed, true);
+  assert.equal(b.confirmed, null, 'the unannounced slot is not falsely confirmed');
+  await lock.shutdown();
+});
+
 test('ZwaveLock: unsolicited deletion notification and late report emit user-code-cleared', async () => {
   const { node, lock } = await makeZwave({ userCodes: {} });
   const seen = [];

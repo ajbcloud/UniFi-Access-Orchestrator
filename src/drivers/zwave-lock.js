@@ -130,6 +130,11 @@ class ZwaveLock extends LockDriver {
     const who = cfg.name || cfg.id || null;
     this._label = who ? `${who}/node ${cfg.node_id}` : `node ${cfg.node_id}`;
     this._injectedNode = deps.node || null;
+    // Serializes every User Code write/clear on this lock, whatever the caller
+    // (a Save, a Remove, a pending-clear retry, the post-interview restore).
+    // Each op watches the node's notifications for its verdict, and a slotless
+    // "code deleted" announcement must never confirm two overlapping ops.
+    this._userCodeOpChain = Promise.resolve();
 
     // A shared manager (production) is owned by the caller; a private one
     // (standalone/headless or the driverFactory test seam) is owned here and
@@ -1235,7 +1240,17 @@ class ZwaveLock extends LockDriver {
    * false when the slot did not take the code, which is how Schlage's silent
    * duplicate-PIN rejection surfaces. Digits are never logged.
    */
-  async setUserCode(slot, pin) {
+  _serializeUserCodeOp(fn) {
+    const run = this._userCodeOpChain.then(() => fn());
+    this._userCodeOpChain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  setUserCode(slot, pin) {
+    return this._serializeUserCodeOp(() => this._setUserCodeRaw(slot, pin));
+  }
+
+  async _setUserCodeRaw(slot, pin) {
     if (!this._node) {
       throw new Error('Z-Wave driver is not running (stick unplugged or failed to start)');
     }
@@ -1293,7 +1308,11 @@ class ZwaveLock extends LockDriver {
    * When the read-back is inconclusive we wait a short grace window for that
    * announcement, since it often trails the clear by a few seconds.
    */
-  async clearUserCode(slot, { graceMs = ZwaveLock.CLEAR_CONFIRM_GRACE_MS } = {}) {
+  clearUserCode(slot, opts) {
+    return this._serializeUserCodeOp(() => this._clearUserCodeRaw(slot, opts));
+  }
+
+  async _clearUserCodeRaw(slot, { graceMs = ZwaveLock.CLEAR_CONFIRM_GRACE_MS } = {}) {
     if (!this._node) {
       throw new Error('Z-Wave driver is not running (stick unplugged or failed to start)');
     }

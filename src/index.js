@@ -1603,14 +1603,15 @@ async function revokeHeldCode({ lockId, driver, label }, slot, userId, reason) {
 
 // Re-attempt every armed pending clear. Deletes the marker only when the
 // physical clear confirms. onlyLockId scopes a wake-triggered retry to the lock
-// that woke, so it never pokes sleeping siblings. Raw: callers serialize with
-// withKeypadLock.
-async function retryPendingClears(onlyLockId) {
+// that woke, so it never pokes sleeping siblings; onlySlots (string slot keys)
+// narrows it further to the slots the backoff sweep found due. Raw: callers
+// serialize with withKeypadLock.
+async function retryPendingClears(onlyLockId, onlySlots) {
   const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
   for (const [lockId, lock] of Object.entries(zwLocks)) {
     if (onlyLockId && lockId !== onlyLockId) continue;
     const pend = (lock && lock.pending_clears) || {};
-    const slots = Object.keys(pend);
+    const slots = Object.keys(pend).filter((s) => !onlySlots || onlySlots.includes(s));
     if (!slots.length) continue;
     const driver = lockDrivers.get(lockId);
     if (!driver || typeof driver.clearUserCode !== 'function') {
@@ -1675,18 +1676,16 @@ async function sweepPendingClears() {
   if (zwavePairing.isActive()) return; // S2 pairing owns the controller
   const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
   const plan = pendingClears.planPendingClearSweep(zwLocks, _pendingClearSchedule, _pendingClearAlerted, Date.now());
-  for (const a of plan.toAlert) {
-    const mins = Math.round(a.age_ms / 60000);
-    monitorAlert('keypad_clear_unconfirmed',
-      `${lockLabel(a.lock_id)}: the keypad code removed for ${a.marker.name || a.marker.user_id || `slot ${a.slot}`} `
-      + `has not been confirmed cleared after ${mins} minute(s) and may still open the lock. Retrying automatically; `
-      + 'check that the lock is online and in range of the Z-Wave stick');
+  if (plan.toAlert.length) {
+    monitorAlert('keypad_clear_unconfirmed', pendingClears.describeStaleClears(plan.toAlert, lockLabel));
   }
-  if (!plan.dueLockIds.length) return;
+  if (!plan.due.length) return;
   _pendingClearSweepRunning = true;
   try {
-    for (const lockId of plan.dueLockIds) {
-      await withKeypadLock(() => retryPendingClears(lockId));
+    // Retry only the slots whose backoff just advanced, so a lock's other
+    // pending markers keep their own schedule (battery protection).
+    for (const d of plan.due) {
+      await withKeypadLock(() => retryPendingClears(d.lock_id, d.slots));
     }
   } finally {
     _pendingClearSweepRunning = false;
@@ -3047,28 +3046,27 @@ app.delete('/api/deadbolt/user-codes/:slot', async (req, res) => {
     return res.status(503).json({ error: 'the active lock driver does not support keypad codes' });
   }
   try {
-    const result = await target.driver.clearUserCode(slot);
-    // Persist the removal even on an unconfirmed clear: the command is queued
-    // on the lock, and keeping the entry would resurrect the code on the next
-    // manual rewrite.
-    let removedName = null;
-    persistZwaveMutation((cfg) => {
-      const lockId = target.lockId;
-      const uc = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
-        && cfg.devices.zwave.locks[lockId] && cfg.devices.zwave.locks[lockId].user_codes;
-      if (uc && uc[String(slot)]) {
-        removedName = uc[String(slot)].name || null;
-        delete uc[String(slot)];
-      }
-    });
+    // Same path as every other removal: serialized with Saves and retries,
+    // the entry is deleted so a rewrite cannot resurrect it, and an
+    // unconfirmed clear arms a pending_clears marker so the app keeps
+    // retrying until the lock confirms (this endpoint used to drop the entry
+    // with no retry, leaving the code live on a lock that never answered).
+    const held = savedUserCodes(target.lockId)[String(slot)];
+    const removedName = (held && held.name) || null;
+    const r = await withKeypadLock(() => revokeHeldCode(
+      { lockId: target.lockId, driver: target.driver, label: lockLabel(target.lockId) },
+      slot, (held && held.user_id) || null, 'removed by admin'));
     broadcastEvent({
       type: 'deadbolt.user_code',
       actor: 'GUI Admin',
       location: lockLabel(target.lockId),
-      action: `Keypad code removed (slot ${slot}${removedName ? `, ${removedName}` : ''}). The user's UniFi PIN is untouched`,
+      action: `Keypad code removed (slot ${slot}${removedName ? `, ${removedName}` : ''})`
+        + (r.revoke_pending ? '; clear pending, retrying until the lock confirms' : '')
+        + ". The user's UniFi PIN is untouched",
       success: true,
     });
-    res.json({ lock_id: target.lockId, slot, confirmed: result.confirmed });
+    res.json(Object.assign({ lock_id: target.lockId, slot, confirmed: r.confirmed, revoke_pending: r.revoke_pending },
+      r.error ? { error: r.error } : {}));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
