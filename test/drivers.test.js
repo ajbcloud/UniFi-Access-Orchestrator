@@ -162,6 +162,13 @@ class MockNode extends EventEmitter {
         clear: async (slot) => {
           self.userCodeClearCalls.push(slot);
           delete self.userCodeSlots[slot];
+          // Yale-style: the lock announces "Single user code deleted" on its
+          // own, which is the only confirmation when its GET times out.
+          if (uc.notifyOnClear) {
+            setImmediate(() => self.emit('notification', self, 0x71, {
+              type: 6, event: 0x0d, eventLabel: 'Single user code deleted', parameters: { userId: slot },
+            }));
+          }
         },
         getUsersCount: async () => (uc.usersCount == null ? 30 : uc.usersCount),
       };
@@ -707,6 +714,133 @@ test('ZwaveLock: masked read-back yields confirmed null (best effort), clear wor
   const c = await lock.clearUserCode(5);
   assert.equal(c.confirmed, true);
   assert.deepEqual(node.userCodeClearCalls, [5]);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: a Yale clear whose read-back times out is confirmed by the lock\'s deletion notification', async () => {
+  // Field case: a Yale on S0 times out on every User Code GET, so the clear
+  // used to stay "removal pending" forever and the old PIN kept working.
+  const node = new MockNode({ userCodes: { failGet: true, notifyOnClear: true, slots: { 4: { status: 1, code: '1357' } } } });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const before = node.listenerCount('notification') + node.listenerCount('value updated');
+  const c = await lock.clearUserCode(4, { graceMs: 500 });
+  assert.equal(c.confirmed, true, 'the lock\'s own "Single user code deleted" confirms the clear');
+  assert.deepEqual(node.userCodeClearCalls, [4]);
+  assert.equal(node.listenerCount('notification') + node.listenerCount('value updated'), before,
+    'the temporary watchers are removed after the clear');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: a late User Code report showing the slot Available confirms the clear', async () => {
+  const node = new MockNode({ userCodes: { failGet: true } });
+  node.commandClasses['User Code'].clear = async (slot) => {
+    node.userCodeClearCalls.push(slot);
+    setTimeout(() => node.emit('value updated', node, {
+      commandClassName: 'User Code', commandClass: 0x63, property: 'userIdStatus', propertyKey: slot, newValue: 0,
+    }), 20);
+  };
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const c = await lock.clearUserCode(6, { graceMs: 500 });
+  assert.equal(c.confirmed, true);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: a silent lock with a failing read-back stays unconfirmed (never a false "removed")', async () => {
+  const node = new MockNode({ userCodes: { failGet: true } });
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const c = await lock.clearUserCode(7, { graceMs: 50 });
+  assert.equal(c.confirmed, null);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: a deletion for another slot does not confirm this clear', async () => {
+  const node = new MockNode({ userCodes: { failGet: true } });
+  node.commandClasses['User Code'].clear = async (slot) => {
+    node.userCodeClearCalls.push(slot);
+    setImmediate(() => node.emit('notification', node, 0x71, {
+      type: 6, event: 0x0d, parameters: { userId: slot + 1 },
+    }));
+  };
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const c = await lock.clearUserCode(8, { graceMs: 50 });
+  assert.equal(c.confirmed, null);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: overlapping clears are serialized, so one slotless deletion cannot confirm both', async () => {
+  // Review finding: two concurrent clears both accepted a single slotless
+  // "user code deleted" and reported confirmed while one slot stayed enabled.
+  const node = new MockNode({ userCodes: { failGet: true } });
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let announced = false;
+  node.commandClasses['User Code'].clear = async (slot) => {
+    inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+    node.userCodeClearCalls.push(slot);
+    // Only the first clear is ever announced, and without a slot number.
+    if (!announced) {
+      announced = true;
+      setImmediate(() => node.emit('notification', node, 0x71, { type: 6, event: 0x0d }));
+    }
+    await new Promise((r) => setTimeout(r, 5));
+    inFlight--;
+  };
+  const lock = new ZwaveLock(
+    { node_id: 2, model_key: 'schlage-be469zp' },
+    { node, logger: { warn() {}, info() {} } }
+  );
+  await lock.init();
+  const [a, b] = await Promise.all([
+    lock.clearUserCode(3, { graceMs: 100 }),
+    lock.clearUserCode(4, { graceMs: 100 }),
+  ]);
+  assert.equal(maxInFlight, 1, 'the second clear waits for the first');
+  assert.equal(a.confirmed, true);
+  assert.equal(b.confirmed, null, 'the unannounced slot is not falsely confirmed');
+  await lock.shutdown();
+});
+
+test('ZwaveLock: unsolicited deletion notification and late report emit user-code-cleared', async () => {
+  const { node, lock } = await makeZwave({ userCodes: {} });
+  const seen = [];
+  lock.on('user-code-cleared', (e) => seen.push(e));
+  node.emit('notification', node, 0x71, { type: 6, event: 0x0d, parameters: { userId: 9 } });
+  node.emit('notification', node, 0x71, { type: 6, event: 0x0c });
+  node.emit('value updated', node, { commandClassName: 'User Code', property: 'userIdStatus', propertyKey: 11, newValue: 0 });
+  node.emit('value updated', node, { commandClassName: 'User Code', property: 'userIdStatus', propertyKey: 12, newValue: 1 });
+  assert.deepEqual(seen, [
+    { slot: 9, all: false, via: 'notification' },
+    { slot: null, all: true, via: 'notification' },
+    { slot: 11, all: false, via: 'report' },
+  ]);
+  await lock.shutdown();
+});
+
+test('ZwaveLock: any Access Control notification emits a throttled node-activity', async () => {
+  // A Yale (FLiRS) never sends "wake up"; a notification is the signal that
+  // it is listening, so queued keypad clears can retry.
+  const { node, lock } = await makeZwave({ current: 0xff });
+  let n = 0;
+  lock.on('node-activity', () => { n++; });
+  node.emit('notification', node, 0x71, { type: 6, event: 0x02 });
+  node.emit('notification', node, 0x71, { type: 6, event: 0x09 });
+  assert.equal(n, 1, 'a burst of notifications yields one activity event');
   await lock.shutdown();
 });
 
