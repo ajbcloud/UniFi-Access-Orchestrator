@@ -29,7 +29,7 @@ function extractFn(name) {
 
 function loadSection() {
   const src = extractFn('escapeHtml') + '\n' + extractFn('cssId') + '\n' + extractFn('_dfGroups')
-    + '\n' + extractFn('buildRetractEdgeRow') + '\n' + extractFn('buildUnlockAction')
+    + '\n' + extractFn('buildRetractEdgeRow') + '\n' + extractFn('_splitUnlockActions') + '\n' + extractFn('buildUnlockAction')
     + '\n' + extractFn('buildTriggerBlock') + '\n' + extractFn('buildDoorFlowCard')
     + '\n' + extractFn('buildDoorFlowsSection');
   return new Function(src + '; return buildDoorFlowsSection;')();

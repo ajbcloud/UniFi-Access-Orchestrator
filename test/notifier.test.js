@@ -226,3 +226,72 @@ test('a chat-only config still counts as enabled; a dead channel cannot silence 
   assert.equal(n2.getStatus().stats.failed, 1);
   assert.equal(n2.getStatus().stats.sent, 1);
 });
+
+// ---------------------------------------------------------------------------
+// sendTestEmail: the Settings "Send Test Email" button
+// ---------------------------------------------------------------------------
+
+const GOOD_EMAIL = {
+  smtp_host: 'smtp.example.com', smtp_port: 587, smtp_secure: false,
+  smtp_user: 'alerts@example.com', smtp_password: 'pw',
+  from: 'alerts@example.com', to: ['a@example.com', 'b@example.com'],
+};
+
+test('sendTestEmail sends one message to every recipient and reports ok', async () => {
+  const sent = [];
+  const r = await Notifier.sendTestEmail(GOOD_EMAIL, { mailer: { sendMail: async (m) => { sent.push(m); } } });
+  assert.deepEqual(r, { ok: true, to: ['a@example.com', 'b@example.com'] });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, 'a@example.com, b@example.com');
+  assert.equal(sent[0].from, 'alerts@example.com');
+  assert.match(sent[0].subject, /test/i);
+});
+
+test('sendTestEmail refuses incomplete settings without touching the network', async () => {
+  let called = false;
+  const mailer = { sendMail: async () => { called = true; } };
+  for (const bad of [{}, Object.assign({}, GOOD_EMAIL, { smtp_host: '' }), Object.assign({}, GOOD_EMAIL, { from: '' }), Object.assign({}, GOOD_EMAIL, { to: [] })]) {
+    const r = await Notifier.sendTestEmail(bad, { mailer });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /SMTP host|recipient/i);
+  }
+  assert.equal(called, false);
+});
+
+test('sendTestEmail returns the SMTP error instead of throwing', async () => {
+  const r = await Notifier.sendTestEmail(GOOD_EMAIL, { mailer: { sendMail: async () => { throw new Error('Invalid login: 535 5.7.3 Authentication unsuccessful'); } } });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /535/);
+});
+
+test('sendTestEmail ignores the master switch and the de-dupe window', async () => {
+  // A real notifier that is disabled and has a long de-dupe window must not
+  // matter: the test is a deliberate operator action.
+  const sent = [];
+  const mailer = { sendMail: async (m) => { sent.push(m); } };
+  await Notifier.sendTestEmail(GOOD_EMAIL, { mailer });
+  await Notifier.sendTestEmail(GOOD_EMAIL, { mailer });
+  assert.equal(sent.length, 2);
+});
+
+test('normalizeEmail needs host, from, and a recipient', () => {
+  assert.equal(Notifier.normalizeEmail(undefined), null);
+  assert.equal(Notifier.normalizeEmail(Object.assign({}, GOOD_EMAIL, { to: [] })), null);
+  const ok = Notifier.normalizeEmail(Object.assign({}, GOOD_EMAIL, { smtp_port: 0 }));
+  assert.equal(ok.port, 587);
+  assert.equal(ok.secure, false);
+});
+
+test('a low battery alert reaches the email channel through notify()', async () => {
+  const sent = [];
+  const n = new Notifier(
+    { enabled: true, email: GOOD_EMAIL, on: ['deadbolt_low_battery'] },
+    { logger: { warn() {} }, mailer: { sendMail: async (m) => { sent.push(m); } } }
+  );
+  n.notify({ type: 'deadbolt_low_battery', detail: 'lock battery at 15% (threshold 15%); replace the batteries soon' });
+  n.notify({ type: 'deadbolt_lock_online' }); // not on the allowlist
+  await flush();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].subject, /deadbolt_low_battery/);
+  assert.match(sent[0].text, /15%/);
+});

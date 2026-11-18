@@ -658,6 +658,18 @@ Time limits are not enforced on the deadbolt. A synced PIN works 24/7 even if th
 
 The orchestrator can send an out-of-band alert when something needs a human: a deadbolt retract failed and left someone locked out, a lock jammed, a lock went offline, the controller connection dropped, a battery ran low. This matters most on an unattended box in a rack, where nobody is watching the dashboard. Configure it under **Settings**, or directly in the `alerts` block of `config.json`.
 
+### The Alerts panel
+
+The easiest way to set up email alerts is **Settings > Alerts**:
+
+1. Turn on **send alerts** and enter the address (or several, separated by commas) that should get the emails.
+2. Set **low battery warning at** to the percentage you want. It applies to every paired deadbolt, and one email goes out when a lock drops to that level (default 25). The change takes effect on Save, with no restart.
+3. Fill in the SMTP host, port, username, password, and from address. Turn on **use TLS from the start** only for port 465. Ports 587 and 25 use STARTTLS when the server offers it.
+4. Click **Send Test Email**. It uses the values currently on screen, saved or not, and reports the SMTP error right there if it fails. A blank password field means the saved password is used.
+5. Click **Save** at the top of the page.
+
+Under **Choose which alerts to send** you can switch individual alert types on or off. Every type is on by default. The panel manages the email channel and the master switch. A webhook or chat channel is still set in `config.json` (see below).
+
 ### Channels
 
 Any subset can be enabled at once. A single alert fans out to every configured channel, and one dead channel never silences the others.
@@ -687,6 +699,7 @@ Any subset can be enabled at once. A single alert fans out to every configured c
 ```
 
 - `enabled` is the master switch. With it off, nothing is sent.
+- A low battery alert fires once when a lock crosses its `low_battery_pct` (set per lock under `devices.zwave.locks`, default 25) and fires again only after the battery has gone back above it. It does not repeat while the battery stays low.
 - `on` is an allowlist of alert types to send. Leave it empty to send all of them.
 - `min_interval_seconds` is a per-type de-dupe window, so a flapping lock cannot spam you (default 60).
 - `offline_grace_seconds` is how long a lock or the controller must stay down before the sustained-offline alert fires (default 60), so a brief blip stays quiet.

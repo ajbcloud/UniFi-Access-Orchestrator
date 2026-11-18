@@ -72,6 +72,10 @@ function isValidPort(v) {
 // if malformed are checked (a bad port, an unknown event mode, rules that are
 // not arrays); anything not listed is allowed through unchanged, matching the
 // existing safe-key merge. Returns { ok:true } or { ok:false, error }.
+// Deliberately loose: one @, no spaces, a dot in the domain. Catches typos and
+// stray commas without rejecting unusual but valid addresses.
+const EMAIL_RX = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+
 function validateConfigUpdates(updates) {
   if (!isPlainObject(updates)) {
     return { ok: false, error: 'Config must be a JSON object' };
@@ -111,6 +115,31 @@ function validateConfigUpdates(updates) {
     if (sub !== undefined) {
       if (!isPlainObject(sub)) return { ok: false, error: `${key} must be an object` };
       if (sub.rules !== undefined && !Array.isArray(sub.rules)) return { ok: false, error: `${key}.rules must be an array` };
+    }
+  }
+
+  if (updates.alerts !== undefined) {
+    if (!isPlainObject(updates.alerts)) return { ok: false, error: 'alerts must be an object' };
+    const a = updates.alerts;
+    if (a.enabled !== undefined && typeof a.enabled !== 'boolean') return { ok: false, error: 'alerts.enabled must be true or false' };
+    if (a.on !== undefined && !(Array.isArray(a.on) && a.on.every((t) => typeof t === 'string'))) {
+      return { ok: false, error: 'alerts.on must be an array of alert type names' };
+    }
+    if (a.email !== undefined) {
+      if (!isPlainObject(a.email)) return { ok: false, error: 'alerts.email must be an object' };
+      const e = a.email;
+      if (e.smtp_port !== undefined && !isValidPort(e.smtp_port)) return { ok: false, error: 'alerts.email.smtp_port must be an integer 1-65535' };
+      for (const k of ['smtp_host', 'smtp_user', 'smtp_password', 'from']) {
+        if (e[k] !== undefined && typeof e[k] !== 'string') return { ok: false, error: `alerts.email.${k} must be a string` };
+      }
+      if (e.to !== undefined) {
+        if (!Array.isArray(e.to)) return { ok: false, error: 'alerts.email.to must be an array of email addresses' };
+        const bad = e.to.find((addr) => typeof addr !== 'string' || !EMAIL_RX.test(addr.trim()));
+        if (bad !== undefined) return { ok: false, error: `alerts.email.to has an invalid address: ${String(bad).slice(0, 80)}` };
+      }
+      if (e.from !== undefined && e.from !== '' && !EMAIL_RX.test(e.from.trim()) && !/<[^<>\s@]+@[^<>\s@]+>/.test(e.from)) {
+        return { ok: false, error: 'alerts.email.from must be an email address' };
+      }
     }
   }
 
@@ -204,6 +233,14 @@ function validateConfigUpdates(updates) {
         }
       }
       if (zw.locks !== undefined && !isPlainObject(zw.locks)) return { ok: false, error: 'devices.zwave.locks must be an object' };
+      if (isPlainObject(zw.locks)) {
+        for (const [id, lk] of Object.entries(zw.locks)) {
+          if (isPlainObject(lk) && lk.low_battery_pct !== undefined
+              && !(Number.isInteger(lk.low_battery_pct) && lk.low_battery_pct >= 1 && lk.low_battery_pct <= 100)) {
+            return { ok: false, error: `devices.zwave.locks.${id}.low_battery_pct must be a whole number 1-100` };
+          }
+        }
+      }
       if (zw.security_keys !== undefined) {
         if (!isPlainObject(zw.security_keys)) return { ok: false, error: 'devices.zwave.security_keys must be an object' };
         for (const [k, v] of Object.entries(zw.security_keys)) {
