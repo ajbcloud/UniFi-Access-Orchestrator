@@ -29,7 +29,17 @@ const AC_NOTIFICATION = Object.freeze({
   KEYPAD_UNLOCK: 0x06,
   AUTO_LOCK: 0x09,
   LOCK_JAMMED: 0x0b,
+  // "All user codes deleted" / "Single user code deleted". Yale announces a
+  // cleared slot with these (zwave-js maps its V1 alarm 33 to 0x0d), which is
+  // the only reliable confirmation on an S0 Yale whose User Code GET times out.
+  ALL_USER_CODES_DELETED: 0x0c,
+  SINGLE_USER_CODE_DELETED: 0x0d,
 });
+
+// Minimum gap between 'node-activity' events. Any notification proves a
+// listening lock is reachable right now, but a burst (unlock + auto-relock)
+// should only trigger one pending-clear retry.
+const NODE_ACTIVITY_THROTTLE_MS = 30 * 1000;
 
 const LOCK_EVENTS = new Set([
   AC_NOTIFICATION.MANUAL_LOCK,
@@ -364,6 +374,18 @@ class ZwaveLock extends LockDriver {
     }
     if (args.type != null && args.type !== 6) return;
     const event = args.event;
+    // The lock is talking. A FLiRS lock (Yale) never sends "wake up", so this
+    // is the only moment the app learns it is reachable; let queued keypad
+    // clears retry now instead of waiting for a wake that never comes.
+    this._noteNodeActivity();
+    // The lock announced a code slot was emptied. Surface it so a queued
+    // clear whose read-back timed out can be closed by the lock's own word.
+    if (event === AC_NOTIFICATION.SINGLE_USER_CODE_DELETED || event === AC_NOTIFICATION.ALL_USER_CODES_DELETED) {
+      const all = event === AC_NOTIFICATION.ALL_USER_CODES_DELETED;
+      const slot = all ? null : this._notificationSlot(args);
+      this.emit('user-code-cleared', { slot, all, via: 'notification' });
+      return;
+    }
     if (event === AC_NOTIFICATION.LOCK_JAMMED) {
       this._updateState(LockState.JAMMED);
       return;
@@ -392,7 +414,21 @@ class ZwaveLock extends LockDriver {
     return null;
   }
 
+  _noteNodeActivity() {
+    const now = Date.now();
+    if (this._lastActivityEmit && now - this._lastActivityEmit < NODE_ACTIVITY_THROTTLE_MS) return;
+    this._lastActivityEmit = now;
+    this.emit('node-activity', { node_id: this.nodeId });
+  }
+
   _onValueUpdated(args) {
+    // A User Code report that arrives after its GET already timed out still
+    // lands in the value DB. A slot reading Available is proof the clear took.
+    const isUserCode = args.commandClassName === 'User Code' || args.commandClass === 0x63;
+    if (isUserCode && args.property === 'userIdStatus' && args.newValue === ZwaveLock.USER_ID_STATUS.AVAILABLE) {
+      const slot = Number(args.propertyKey);
+      if (Number.isInteger(slot) && slot > 0) this.emit('user-code-cleared', { slot, all: false, via: 'report' });
+    }
     const isDoorLock = args.commandClassName === 'Door Lock' || args.commandClass === 0x62;
     if (isDoorLock && args.property === 'currentMode') {
       // A non-definitive mode (the BE469ZP answers every read with 0xfe
@@ -1149,13 +1185,30 @@ class ZwaveLock extends LockDriver {
         seen = 'added';
       } else if (a.event === 0x0f || label.includes('duplicate')) {
         seen = 'rejected';
+      } else if (a.event === AC_NOTIFICATION.SINGLE_USER_CODE_DELETED || a.event === AC_NOTIFICATION.ALL_USER_CODES_DELETED
+        || label.includes('user code deleted') || label.includes('user codes deleted')) {
+        seen = 'deleted';
       }
     };
-    if (node && typeof node.on === 'function') node.on('notification', handler);
+    // A late User Code report (the GET reply arriving after zwave-js gave up
+    // waiting) updates the value DB; a slot reading Available counts as deleted.
+    const valueHandler = (_node, v) => {
+      const a = v || {};
+      if (!(a.commandClassName === 'User Code' || a.commandClass === 0x63)) return;
+      if (a.property !== 'userIdStatus' || Number(a.propertyKey) !== Number(slot)) return;
+      if (a.newValue === ZwaveLock.USER_ID_STATUS.AVAILABLE) seen = 'deleted';
+    };
+    if (node && typeof node.on === 'function') {
+      node.on('notification', handler);
+      node.on('value updated', valueHandler);
+    }
     return {
       result: () => seen,
       stop: () => {
-        if (node && typeof node.removeListener === 'function') node.removeListener('notification', handler);
+        if (node && typeof node.removeListener === 'function') {
+          node.removeListener('notification', handler);
+          node.removeListener('value updated', valueHandler);
+        }
       },
     };
   }
@@ -1217,29 +1270,56 @@ class ZwaveLock extends LockDriver {
     return { slot, confirmed };
   }
 
-  /** Clear a keypad code slot (best-effort read-back like setUserCode). */
-  async clearUserCode(slot) {
+  /**
+   * Clear a keypad code slot. confirmed is true when the read-back shows the
+   * slot Available, OR when the lock itself announced the deletion ("Single
+   * user code deleted") or a late User Code report shows it Available. That
+   * fallback matters for a Yale on S0, whose GET times out on every read-back
+   * (field log): without it every clear on that lock stayed "pending" forever.
+   * When the read-back is inconclusive we wait a short grace window for that
+   * announcement, since it often trails the clear by a few seconds.
+   */
+  async clearUserCode(slot, { graceMs = ZwaveLock.CLEAR_CONFIRM_GRACE_MS } = {}) {
     if (!this._node) {
       throw new Error('Z-Wave driver is not running (stick unplugged or failed to start)');
     }
     this._guardReservedSlot(slot);
     const uc = this._userCodeCC();
     if (!uc) throw new Error('this lock does not expose keypad codes over Z-Wave (User Code CC unavailable)');
-    if (typeof uc.clear === 'function') await uc.clear(slot);
-    else if (typeof uc.set === 'function') await uc.set(slot, ZwaveLock.USER_ID_STATUS.AVAILABLE);
-    else throw new Error('User Code CC exposes no clear/set');
+    const noteWatch = this._watchUserCodeNotification(slot);
     let confirmed = null;
-    if (typeof uc.get === 'function') {
-      try {
-        const rep = await uc.get(slot);
-        if (rep && typeof rep.userIdStatus === 'number') {
-          confirmed = rep.userIdStatus === ZwaveLock.USER_ID_STATUS.AVAILABLE;
+    let how = 'read-back';
+    try {
+      if (typeof uc.clear === 'function') await uc.clear(slot);
+      else if (typeof uc.set === 'function') await uc.set(slot, ZwaveLock.USER_ID_STATUS.AVAILABLE);
+      else throw new Error('User Code CC exposes no clear/set');
+      if (typeof uc.get === 'function') {
+        try {
+          const rep = await uc.get(slot);
+          if (rep && typeof rep.userIdStatus === 'number') {
+            confirmed = rep.userIdStatus === ZwaveLock.USER_ID_STATUS.AVAILABLE;
+          }
+        } catch (e) { confirmed = null; }
+      }
+      if (confirmed !== true) {
+        // Inconclusive (or a stale Enabled read racing the clear): give the
+        // lock's own announcement a short window to arrive.
+        const deadline = Date.now() + Math.max(0, graceMs);
+        while (noteWatch.result() !== 'deleted' && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
         }
-      } catch (e) { confirmed = null; }
+        if (noteWatch.result() === 'deleted') { confirmed = true; how = 'lock announcement'; }
+      }
+    } finally {
+      noteWatch.stop();
     }
-    this._log('info', `user code slot ${slot} cleared (confirmed: ${confirmed})`);
+    this._log('info', `user code slot ${slot} cleared (confirmed: ${confirmed}${confirmed === true ? `, via ${how}` : ''})`);
     return { slot, confirmed };
   }
+
+  /** How long clearUserCode waits for the lock's own deletion announcement
+   *  after an inconclusive read-back. */
+  static get CLEAR_CONFIRM_GRACE_MS() { return 8000; }
 
   /**
    * Capability report for the dashboard: whether this lock takes keypad

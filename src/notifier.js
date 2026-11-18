@@ -35,6 +35,8 @@ const SEVERITY = Object.freeze({
   deadbolt_lock_failed: 'critical',
   deadbolt_jammed: 'critical',
   deadbolt_no_transport: 'critical',
+  revoked_code_used: 'critical',
+  keypad_clear_unconfirmed: 'critical',
   cascade_failed: 'warning',
   deadbolt_lock_offline: 'warning',
   deadbolt_low_battery: 'warning',

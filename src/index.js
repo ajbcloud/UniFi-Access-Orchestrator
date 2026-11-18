@@ -51,6 +51,7 @@ const doorFlows = require('./door-flows');
 const { planUnifiPinPush, markStaleAfterPush, recordUnifiPin } = require('./user-code-sync');
 const { removeLockEntry, pruneGhostLocks } = require('./lock-cleanup');
 const keypadUsers = require('./keypad-users');
+const pendingClears = require('./pending-clears');
 const accessGating = require('./access-gating');
 const adminPin = require('./admin-pin');
 const pinCrypto = require('./pin-crypto');
@@ -654,6 +655,18 @@ function wireDriverEvents(lockId, driver) {
     });
   });
   driver.on('keypad-activity', (e) => {
+    // A keypad entry on a slot whose clear never confirmed means a removed
+    // user's code just worked (or someone is trying it). Alert loudly and
+    // retry the clear right now: the lock is provably awake and listening.
+    const zl = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+    const revokedMarker = zl[lockId] && zl[lockId].pending_clears && zl[lockId].pending_clears[String(e.slot)];
+    if (revokedMarker) {
+      monitorAlert('revoked_code_used',
+        `${label}: keypad ${e.action} on slot ${e.slot}, whose code was removed for ${revokedMarker.name || revokedMarker.user_id} `
+        + 'but the lock never confirmed the clear. Retrying the clear now; check the door');
+      withKeypadLock(() => retryPendingClears(lockId))
+        .catch((err) => logger.debug(`Deadbolt ${label}: pending-clear retry after keypad use failed: ${err.message}`));
+    }
     const entry = savedUserCodes(lockId)[String(e.slot)];
     const who = (entry && entry.name) || `slot ${e.slot}, unassigned`;
     logger.info(`Deadbolt ${label}: keypad ${e.action} (slot ${e.slot}${entry && entry.name ? `, ${entry.name}` : ''})`);
@@ -704,6 +717,44 @@ function wireDriverEvents(lockId, driver) {
     withKeypadLock(() => retryPendingClears(lockId))
       .catch((e) => logger.debug(`Deadbolt ${label}: pending-clear retry on wake failed: ${e.message}`));
   });
+  // A listening (FLiRS) lock such as a Yale never sends "wake up"; any
+  // notification it sends (someone used the lock) is the equivalent signal.
+  // The driver throttles this, and a lock with no pending clears is a no-op.
+  driver.on('node-activity', () => {
+    if (!lockHasPendingClears(lockId)) return;
+    withKeypadLock(() => retryPendingClears(lockId))
+      .catch((e) => logger.debug(`Deadbolt ${label}: pending-clear retry on activity failed: ${e.message}`));
+  });
+  // The lock announced on its own that a code slot is now empty (a "user code
+  // deleted" notification, or a User Code report that arrived after the GET
+  // timed out). That is the confirmation an unconfirmed clear was waiting for.
+  driver.on('user-code-cleared', (e) => {
+    withKeypadLock(async () => {
+      const lock = config.devices && config.devices.zwave && config.devices.zwave.locks
+        && config.devices.zwave.locks[lockId];
+      const slots = pendingClears.slotsClosedByLockReport(lock && lock.pending_clears, e);
+      if (!slots.length) return;
+      persistZwaveMutation((cfg) => {
+        const pc = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
+          && cfg.devices.zwave.locks[lockId] && cfg.devices.zwave.locks[lockId].pending_clears;
+        if (pc) for (const s of slots) delete pc[s];
+      });
+      logger.info(`Deadbolt ${label}: lock confirmed pending clear(s) on slot ${slots.join(', ')} (${e.via || 'report'})`);
+      broadcastEvent({
+        type: 'deadbolt.user_code',
+        actor: 'Deadbolt Controller',
+        location: label,
+        action: `Lock confirmed ${slots.length} pending keypad code removal(s)`,
+        success: true,
+      });
+    }).catch((err) => logger.debug(`Deadbolt ${label}: closing pending clear failed: ${err.message}`));
+  });
+}
+
+function lockHasPendingClears(lockId) {
+  const lock = config.devices && config.devices.zwave && config.devices.zwave.locks
+    && config.devices.zwave.locks[lockId];
+  return !!(lock && lock.pending_clears && Object.keys(lock.pending_clears).length);
 }
 
 // Controllers only (no driver teardown): one per automated lock with ITS
@@ -1604,6 +1655,49 @@ function onUnifiStateChange(state) {
     withKeypadLock(() => retryPendingClears())
       .catch((e) => logger.debug(`Deadbolt: pending-clear retry failed: ${e.message}`));
   }
+}
+
+// Periodic safety net for unconfirmed keypad clears. Wake and activity events
+// cover locks that announce themselves, but a lock that never does (a Yale
+// whose read-back always times out, a lock nobody touches) must still be
+// retried with no human in the loop. Backoff lives in pending-clears.js so a
+// lock that never answers is not polled flat; an unconfirmed clear older than
+// 15 minutes raises a critical alert once.
+const PENDING_CLEAR_SWEEP_MS = 30 * 1000;
+const _pendingClearSchedule = new Map();
+const _pendingClearAlerted = new Set();
+let _pendingClearTimer = null;
+let _pendingClearSweepRunning = false;
+
+async function sweepPendingClears() {
+  if (_pendingClearSweepRunning) return;
+  if (zwavePairing.isActive()) return; // S2 pairing owns the controller
+  const zwLocks = (config.devices && config.devices.zwave && config.devices.zwave.locks) || {};
+  const plan = pendingClears.planPendingClearSweep(zwLocks, _pendingClearSchedule, _pendingClearAlerted, Date.now());
+  for (const a of plan.toAlert) {
+    const mins = Math.round(a.age_ms / 60000);
+    monitorAlert('keypad_clear_unconfirmed',
+      `${lockLabel(a.lock_id)}: the keypad code removed for ${a.marker.name || a.marker.user_id || `slot ${a.slot}`} `
+      + `has not been confirmed cleared after ${mins} minute(s) and may still open the lock. Retrying automatically; `
+      + 'check that the lock is online and in range of the Z-Wave stick');
+  }
+  if (!plan.dueLockIds.length) return;
+  _pendingClearSweepRunning = true;
+  try {
+    for (const lockId of plan.dueLockIds) {
+      await withKeypadLock(() => retryPendingClears(lockId));
+    }
+  } finally {
+    _pendingClearSweepRunning = false;
+  }
+}
+
+function startPendingClearSweep() {
+  if (_pendingClearTimer) return;
+  _pendingClearTimer = setInterval(() => {
+    sweepPendingClears().catch((e) => logger.debug(`Deadbolt: pending-clear sweep failed: ${e.message}`));
+  }, PENDING_CLEAR_SWEEP_MS);
+  if (_pendingClearTimer.unref) _pendingClearTimer.unref();
 }
 
 // Revoke keypad codes for users who lost UniFi access to a lock's gating door,
@@ -5412,6 +5506,8 @@ async function start() {
   // no-op when not applicable; the notifier gates actual delivery.
   lockLinkMonitor.start();
   controllerLinkMonitor.start();
+  // Keep retrying unconfirmed keypad clears until every lock confirms.
+  startPendingClearSweep();
 
   // Start the periodic Config Sync job. Detects local config.json edits
   // and upstream UniFi controller drift (door/user/group changes) and
