@@ -142,6 +142,24 @@ test('index starts the pending-clear sweep and wires lock self-reports', () => {
   assert.match(indexSrc, /retryPendingClears\(d\.lock_id, d\.slots\)/, 'the sweep retries only the due slots');
 });
 
+test('a removal the lock confirms later leaves a named Live Events and audit trail', () => {
+  const rec = indexSrc.slice(indexSrc.indexOf('function recordPendingClearConfirmed'));
+  assert.match(rec, /broadcastEvent\(/, 'Live Events shows the confirmation');
+  assert.match(rec, /action: 'pin_removal_confirmed'/, 'the audit log records it');
+  assert.match(rec, /m\.name \|\| m\.user_id/, 'the entry names the person, not just a slot');
+  const retry = indexSrc.slice(indexSrc.indexOf('async function retryPendingClears'));
+  assert.match(retry.slice(0, 3500), /recordPendingClearConfirmed\(lockId, slotKey, marker, via\)/,
+    'a retry that confirms is recorded');
+  assert.match(indexSrc, /slots\.forEach\(\(s, i\) => recordPendingClearConfirmed\(/,
+    'a lock announcement that confirms is recorded');
+});
+
+test('automatic (UniFi-driven) removals are written to the audit log', () => {
+  const start = indexSrc.indexOf('async function reconcileAccessRevocations');
+  const body = indexSrc.slice(start, indexSrc.indexOf('function scheduleReconcile', start));
+  assert.match(body, /action: r\.revoked \? 'pin_revoked_auto' : 'pin_revoke_pending_auto'/);
+});
+
 test('the per-slot DELETE endpoint uses the serialized, retry-arming revoke path', () => {
   const start = indexSrc.indexOf("app.delete('/api/deadbolt/user-codes/:slot'");
   assert.ok(start >= 0);

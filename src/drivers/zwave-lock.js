@@ -1347,7 +1347,7 @@ class ZwaveLock extends LockDriver {
       noteWatch.stop();
     }
     this._log('info', `user code slot ${slot} cleared (confirmed: ${confirmed}${confirmed === true ? `, via ${how}` : ''})`);
-    return { slot, confirmed };
+    return { slot, confirmed, via: confirmed === true ? how : null };
   }
 
   /** How long clearUserCode waits for the lock's own deletion announcement

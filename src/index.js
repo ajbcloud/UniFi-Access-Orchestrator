@@ -735,19 +735,14 @@ function wireDriverEvents(lockId, driver) {
         && config.devices.zwave.locks[lockId];
       const slots = pendingClears.slotsClosedByLockReport(lock && lock.pending_clears, e);
       if (!slots.length) return;
+      const markers = slots.map((s) => lock.pending_clears[s]);
       persistZwaveMutation((cfg) => {
         const pc = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
           && cfg.devices.zwave.locks[lockId] && cfg.devices.zwave.locks[lockId].pending_clears;
         if (pc) for (const s of slots) delete pc[s];
       });
-      logger.info(`Deadbolt ${label}: lock confirmed pending clear(s) on slot ${slots.join(', ')} (${e.via || 'report'})`);
-      broadcastEvent({
-        type: 'deadbolt.user_code',
-        actor: 'Deadbolt Controller',
-        location: label,
-        action: `Lock confirmed ${slots.length} pending keypad code removal(s)`,
-        success: true,
-      });
+      const via = e.via === 'notification' ? 'lock announcement' : 'late lock report';
+      slots.forEach((s, i) => recordPendingClearConfirmed(lockId, s, markers[i], via));
     }).catch((err) => logger.debug(`Deadbolt ${label}: closing pending clear failed: ${err.message}`));
   });
 }
@@ -1560,6 +1555,7 @@ async function revokeHeldCode({ lockId, driver, label }, slot, userId, reason) {
   const revoked = confirmed === true;
   const requestedAt = new Date().toISOString(); // computed once, mutator runs twice
   let armed = false;
+  let heldName = null;
   persistZwaveMutation((cfg) => {
     const lock = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
       && cfg.devices.zwave.locks[lockId];
@@ -1570,6 +1566,7 @@ async function revokeHeldCode({ lockId, driver, label }, slot, userId, reason) {
     const held = lock.user_codes && lock.user_codes[String(slot)];
     const priorMarker = lock.pending_clears && lock.pending_clears[String(slot)];
     const name = (held && held.name) || (priorMarker && priorMarker.name) || null;
+    if (name) heldName = name;
     if (lock.user_codes) delete lock.user_codes[String(slot)];
     if (revoked) {
       if (lock.pending_clears) delete lock.pending_clears[String(slot)];
@@ -1598,7 +1595,32 @@ async function revokeHeldCode({ lockId, driver, label }, slot, userId, reason) {
   }
   // revoke_pending is true only when a retry is actually armed; a no-driver/unpaired
   // holding reports as removed (not pending) so the caller never shows it stuck.
-  return { lock_id: lockId, slot, confirmed, revoked, revoke_pending: armed, no_driver: !revoked && !armed, reason, error };
+  return { lock_id: lockId, slot, user_id: userId, name: heldName, confirmed, revoked, revoke_pending: armed, no_driver: !revoked && !armed, reason, error };
+}
+
+// The lock finally confirmed a removal that was pending (a retry's read-back,
+// or the lock's own "code deleted" announcement). Leave a trail an admin can
+// point to: a Live Events entry naming the person, a hash-chained audit entry,
+// and a log line with the slot and how it was confirmed.
+function recordPendingClearConfirmed(lockId, slotKey, marker, via) {
+  const m = marker || {};
+  const who = m.name || m.user_id || `slot ${slotKey}`;
+  const label = lockLabel(lockId);
+  const since = m.requested_at ? ` (pending since ${new Date(m.requested_at).toLocaleString()})` : '';
+  logger.info(`Deadbolt: removal confirmed for "${who}" on "${label}" slot ${slotKey} via ${via || 'read-back'}${since}`);
+  broadcastEvent({
+    type: 'deadbolt.user_code',
+    actor: 'Deadbolt Controller',
+    location: label,
+    action: `Keypad code removal confirmed by the lock for ${who} (slot ${slotKey}, via ${via || 'read-back'})`,
+    success: true,
+  });
+  safeAudit({
+    actor: 'Deadbolt Controller',
+    action: 'pin_removal_confirmed',
+    target: who,
+    detail: `${label} slot ${slotKey}; confirmed via ${via || 'read-back'}${since}`,
+  });
 }
 
 // Re-attempt every armed pending clear. Deletes the marker only when the
@@ -1632,19 +1654,27 @@ async function retryPendingClears(onlyLockId, onlySlots) {
     }
     for (const slotKey of slots) {
       let confirmed = null;
+      let via = null;
       try {
         const r = await driver.clearUserCode(Number(slotKey));
         confirmed = r ? r.confirmed : null;
+        via = (r && r.via) || null;
       } catch (e) {
         confirmed = null;
       }
       if (confirmed === true) {
+        // Re-read the marker from the live config (a reload may have swapped
+        // the object); skip if something already closed and recorded it.
+        const liveLock = config.devices && config.devices.zwave && config.devices.zwave.locks
+          && config.devices.zwave.locks[lockId];
+        const marker = liveLock && liveLock.pending_clears && liveLock.pending_clears[slotKey];
+        if (!marker) continue;
         persistZwaveMutation((cfg) => {
           const pc = cfg.devices && cfg.devices.zwave && cfg.devices.zwave.locks
             && cfg.devices.zwave.locks[lockId] && cfg.devices.zwave.locks[lockId].pending_clears;
           if (pc) delete pc[slotKey];
         });
-        logger.info(`Deadbolt: pending clear confirmed on "${lockLabel(lockId)}" slot ${slotKey}`);
+        recordPendingClearConfirmed(lockId, slotKey, marker, via);
       }
     }
   }
@@ -1795,6 +1825,17 @@ async function reconcileAccessRevocations(trigger) {
     }
 
     if (!done.length) return;
+    // One audit entry per automatic removal, so an offboarding that came from
+    // UniFi leaves the same trail as a manual Remove click.
+    for (const r of done) {
+      safeAudit({
+        actor: 'Access Reconciler',
+        action: r.revoked ? 'pin_revoked_auto' : 'pin_revoke_pending_auto',
+        target: r.name || r.user_id || `slot ${r.slot}`,
+        detail: `${lockLabel(r.lock_id)} slot ${r.slot}; ${r.reason}; `
+          + (r.revoked ? 'confirmed by the lock' : r.revoke_pending ? 'clear queued, retrying until the lock confirms' : 'lock unreachable/unpaired, entry removed'),
+      });
+    }
     const confirmed = done.filter((r) => r.revoked).length;
     const pending = done.filter((r) => r.revoke_pending).length;
     broadcastEvent({

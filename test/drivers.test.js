@@ -729,6 +729,7 @@ test('ZwaveLock: a Yale clear whose read-back times out is confirmed by the lock
   const before = node.listenerCount('notification') + node.listenerCount('value updated');
   const c = await lock.clearUserCode(4, { graceMs: 500 });
   assert.equal(c.confirmed, true, 'the lock\'s own "Single user code deleted" confirms the clear');
+  assert.equal(c.via, 'lock announcement', 'the result says how it was confirmed, for the audit trail');
   assert.deepEqual(node.userCodeClearCalls, [4]);
   assert.equal(node.listenerCount('notification') + node.listenerCount('value updated'), before,
     'the temporary watchers are removed after the clear');
